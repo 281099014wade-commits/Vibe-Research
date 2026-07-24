@@ -15,19 +15,36 @@ const pct = (v: number | undefined) => (v == null ? "—" : `${v > 0 ? "+" : ""}
 
 const LIVE_KEY = "vr-watchlist-live";
 
+// localStorage 在隐私模式 / 嵌入式浏览器里可能直接抛异常。读写都要兜底，
+// 否则初始化时一抛整个自选股页就白屏（与 lib/watchlist.ts 的处理保持一致）。
+const loadLive = (): boolean => {
+  try {
+    return localStorage.getItem(LIVE_KEY) === "on";
+  } catch {
+    return false;
+  }
+};
+const saveLive = (on: boolean) => {
+  try {
+    localStorage.setItem(LIVE_KEY, on ? "on" : "off");
+  } catch {
+    /* 存储不可用：开关本次会话内仍生效，只是不被记住 */
+  }
+};
+
 export function Watchlist() {
   const [codes, setCodes] = useState<string[]>(loadWatch);
   const [input, setInput] = useState("");
   const [hint, setHint] = useState<string | null>(null);
   // 实时行情默认**关闭**——开着会持续请求，让用户自己决定要不要开。
-  const [live, setLive] = useState(() => localStorage.getItem(LIVE_KEY) === "on");
+  const [live, setLive] = useState(loadLive);
 
   const { quotes, loading, updatedAt, polling, error, refresh } = useLiveQuotes(codes, live);
 
   const toggleLive = () => {
     setLive((on) => {
       const next = !on;
-      localStorage.setItem(LIVE_KEY, next ? "on" : "off");
+      saveLive(next);
       return next;
     });
   };

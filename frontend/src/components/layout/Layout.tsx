@@ -7,8 +7,9 @@ import {
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useDarkMode } from "@/hooks/useDarkMode";
+import { storageGet, storageSet } from "@/lib/storage";
 
-const APP_VERSION = "v0.2.1";
+const APP_VERSION = "v0.2.2";
 const REPO_URL = "https://github.com/simonlin1212/Vibe-Research";
 const SITE_URL = "https://www.simonlin.net"; // 作者主页
 
@@ -38,10 +39,10 @@ const SECTOR_LINKS = [
 export function Layout() {
   const { pathname } = useLocation();
   const { dark, toggle } = useDarkMode();
-  const [collapsed, setCollapsed] = useState(() => localStorage.getItem("vr-sidebar") === "collapsed");
+  const [collapsed, setCollapsed] = useState(() => storageGet("vr-sidebar") === "collapsed");
 
   useEffect(() => {
-    localStorage.setItem("vr-sidebar", collapsed ? "collapsed" : "expanded");
+    storageSet("vr-sidebar", collapsed ? "collapsed" : "expanded");
   }, [collapsed]);
 
   return (

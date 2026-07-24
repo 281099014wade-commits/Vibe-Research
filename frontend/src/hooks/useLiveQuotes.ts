@@ -65,6 +65,8 @@ export function useLiveQuotes(codes: string[], enabled: boolean): LiveQuotesStat
 
   const failuresRef = useRef(0);
   const inFlightRef = useRef(false);
+  const staleRef = useRef(false);          // 请求飞行途中自选变过 / 有请求被跳过
+  const fetchRef = useRef<(() => Promise<boolean>) | null>(null);
 
   const fetchOnce = useCallback(async (): Promise<boolean> => {
     const cs = codesRef.current;
@@ -72,11 +74,18 @@ export function useLiveQuotes(codes: string[], enabled: boolean): LiveQuotesStat
       setQuotes({});
       return true;
     }
-    if (inFlightRef.current) return true;   // 上一次还没回来，跳过这一拍
+    if (inFlightRef.current) {
+      // 上一次还没回来，跳过这一拍；但要记下来，等它回来后补拉一次。
+      // 否则「首次请求在飞 → 用户此时粘贴新代码」会让新代码的行情永远缺失
+      // （默认不开轮询时没有下一拍来兜底，只能手动刷新）。
+      staleRef.current = true;
+      return true;
+    }
     inFlightRef.current = true;
+    const requested = cs.join(",");
     setLoading(true);
     try {
-      const data = await api.quote(cs.join(","));
+      const data = await api.quote(requested);
       setQuotes(data);
       setUpdatedAt(Date.now());
       setError(null);
@@ -90,8 +99,16 @@ export function useLiveQuotes(codes: string[], enabled: boolean): LiveQuotesStat
     } finally {
       inFlightRef.current = false;
       setLoading(false);
+      // 这一趟拉的是不是已经过期的名单？过期就立刻补一次（只补一次，不会滚雪球：
+      // 补拉时 staleRef 已复位，只有再次发生变动才会再补）。
+      const changed = codesRef.current.join(",") !== requested;
+      if (staleRef.current || changed) {
+        staleRef.current = false;
+        void fetchRef.current?.();
+      }
     }
   }, []);
+  fetchRef.current = fetchOnce;
 
   const refresh = useCallback(() => {
     void fetchOnce();
