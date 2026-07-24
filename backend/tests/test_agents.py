@@ -101,9 +101,47 @@ def test_referee_prompt_forbids_recommendation():
 
 def test_dossier_spec_marks_rate_limited_sources_serial():
     """走 em_get 的项必须串行——并发会击穿它基于时间戳的节流、有被封 IP 的风险。"""
-    serial = {name for name, _e, _t, par in debate._DOSSIER_SPEC if not par}
+    serial = {name for name, _e, _t, par, _ok in debate._DOSSIER_SPEC if not par}
     for must in ("query_fund_flow", "query_margin", "query_holders", "query_lockup", "query_concepts"):
         assert must in serial, f"{must} 走 em_get，必须标为串行"
+
+
+@pytest.mark.parametrize("value,empty", [
+    ({"period": "近5年", "metrics": {}}, True),      # 估值分位上游全失败时的真实返回：有壳无肉
+    ({"history": [], "upcoming": []}, True),
+    ({"total_blocks": 0, "blocks": [], "hot_concepts": []}, True),
+    ({"unit": "元", "note": "仅当日", "recent": []}, True),
+    ([], True), ({}, True), (None, True), ([{}, {}], True),
+    ({"period": "近5年", "metrics": {"pe_ttm": {"current": 19.6}}}, False),
+    ({"name": "贵州茅台", "price": 1297.41}, False),
+    ({"unit": "元", "recent": [{"date": "2026-07-24"}]}, False),
+])
+def test_payload_empty_sees_through_wrappers(value, empty):
+    assert debate._payload_empty(value) is empty
+
+
+def test_structurally_empty_counts_as_gap(monkeypatch):
+    """有壳无肉的结果必须计入缺口，否则模型会对着空壳发挥（Codex 补审抓到的 P2）。"""
+    monkeypatch.setattr(tools, "exec_tool",
+                        lambda name, args: {"period": "近5年", "metrics": {}}
+                        if name == "query_valuation_percentile" else {"v": 1})
+    d = debate.build_dossier("600519")
+    assert "估值历史分位" in d["missing"]
+    assert all(s["title"] != "估值历史分位" for s in d["sections"])
+
+
+def test_legitimately_empty_section_is_not_a_gap(monkeypatch):
+    """空是合法事实的项（真没解禁 / 非两融标的）不该报成「数据缺失」，
+    但底稿里要写明「无记录」，跟「没取到」区分开。"""
+    monkeypatch.setattr(tools, "exec_tool",
+                        lambda name, args: {"history": [], "upcoming": []}
+                        if name == "query_lockup" else {"v": 1})
+    d = debate.build_dossier("600519")
+    assert "限售解禁" not in d["missing"]
+    hit = next(s for s in d["sections"] if s["title"] == "限售解禁")
+    assert hit["data"] == debate.NO_RECORD
+    # 说明要原样出现在底稿里（不被 json.dumps 套一层引号）
+    assert "未取到任何记录" in debate.dossier_text(d)
 
 
 def test_dossier_text_reports_gaps(monkeypatch):
@@ -112,8 +150,11 @@ def test_dossier_text_reports_gaps(monkeypatch):
         return {"ok": 1} if name == "query_quote" else {}
     monkeypatch.setattr(tools, "exec_tool", fake)
     d = debate.build_dossier("600519")
-    assert [s["tool"] for s in d["sections"]] == ["query_quote"]
-    assert "估值历史分位" in d["missing"]
+    # 空 = 数据源出问题的那些项进缺口；空可能合法的那些项进底稿但标「未取到记录」
+    assert "估值历史分位" in d["missing"] and "板块与概念归属" in d["missing"]
+    assert "限售解禁" not in d["missing"]
+    real = [s["tool"] for s in d["sections"] if not isinstance(s["data"], str)]
+    assert real == ["query_quote"]
     text = debate.dossier_text(d)
     assert "数据缺口" in text and "不得臆测" in text
 
@@ -148,10 +189,16 @@ def test_failed_stage_still_emits_terminal_event(monkeypatch):
 
 
 def test_debate_aborts_when_no_data(monkeypatch):
+    """全空时必须中止：让多空基于一份全是「未取到」的底稿互相质疑毫无意义。"""
     monkeypatch.setattr(tools, "exec_tool", lambda name, args: {})
     events = list(debate.run_debate_stream(_LLM, "600519", 1))
     assert events[-1]["type"] == "error"
     assert not any(e["type"] == "stage" for e in events)
+
+
+def test_no_record_wording_does_not_claim_certainty(monkeypatch):
+    """空既可能是真没有、也可能是数据源挂了，代码分不出来——措辞不能断言「确实没有」。"""
+    assert "可能" in debate.NO_RECORD and "不得据此推断" in debate.NO_RECORD
 
 
 # ---- 反思 ----

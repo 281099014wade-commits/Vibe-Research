@@ -30,34 +30,83 @@ import tools
 #    并发调用会让多个线程同时判定「不用等」从而击穿限流、有被东财封 IP 的风险。
 #    所以凡是走 em_get 的（估值/资金流/两融/股东户数/解禁/板块）一律标 False 串行跑；
 #    走腾讯、百度、同花顺、以及东财那几个不经 em_get 的直连接口才并行。
-_DOSSIER_SPEC: list[tuple[str, dict, str, bool]] = [
-    ("query_quote", {}, "实时行情", True),
-    ("query_valuation", {}, "估值与一致预期", False),
-    ("query_valuation_percentile", {}, "估值历史分位", True),
-    ("query_financials", {}, "最新财报关键指标", True),
-    ("query_kline", {"count": 60}, "近 60 日价格走势", True),
-    ("query_fund_flow", {"days": 5}, "资金流向", False),
-    ("query_margin", {}, "融资融券", False),
-    ("query_holders", {}, "股东户数", False),
-    ("query_announcements", {}, "近期公告", True),
-    ("query_lockup", {}, "限售解禁", False),
-    ("query_concepts", {}, "板块与概念归属", False),
-    ("query_reports", {}, "近期研报", True),
-    ("query_news", {}, "近期新闻", True),
+# 第 5 位 empty_ok = 「空结果是合法事实」还是「空结果等于没取到」。
+#   False：这项数据每只股票都该有，空了就是数据源出问题 → 计入缺口。
+#   True ：空可能是真实情况（真没解禁、非两融标的、小票没研报）→ 不算缺口，
+#          但底稿里会写明「无记录」，跟「没取到」区分开。
+_DOSSIER_SPEC: list[tuple[str, dict, str, bool, bool]] = [
+    ("query_quote", {}, "实时行情", True, False),
+    ("query_valuation", {}, "估值与一致预期", False, False),
+    ("query_valuation_percentile", {}, "估值历史分位", True, False),
+    ("query_financials", {}, "最新财报关键指标", True, False),
+    ("query_kline", {"count": 60}, "近 60 日价格走势", True, False),
+    ("query_fund_flow", {"days": 5}, "资金流向", False, False),
+    ("query_margin", {}, "融资融券", False, True),
+    ("query_holders", {}, "股东户数", False, True),
+    ("query_announcements", {}, "近期公告", True, True),
+    ("query_lockup", {}, "限售解禁", False, True),
+    ("query_concepts", {}, "板块与概念归属", False, False),
+    ("query_reports", {}, "近期研报", True, True),
+    ("query_news", {}, "近期新闻", True, True),
 ]
 
 _SECTION_CAP = 1800  # 单个小节注入上限，防止某项数据把整份底稿撑爆
 _PARALLEL_WORKERS = 4
 
+# 判空时要跳过的「元信息」字段：它们描述数据本身，不构成观测值。
+# 少了这一步，`{"period":"近5年","metrics":{}}` 会因为 period 非空而被当成有数据。
+_META_KEYS = {"period", "unit", "note", "code", "generated_at", "tracks", "total_cached"}
 
-def _fetch_section(spec: tuple[str, dict, str, bool], code: str) -> dict:
+# 注意措辞：这类项返回空时，代码分不出「真的没有这类事件」还是「数据源临时不可用」，
+# 所以不能断言「确实没有」——如实说明两种可能，并要求不得臆测。
+NO_RECORD = "（未取到任何记录：可能确实没有此类事件，也可能是该数据源暂时不可用。两种情况都不得据此推断。）"
+
+
+def _payload_empty(value) -> bool:
+    """判断「有壳无肉」：剥掉元信息字段后没有任何实质观测值。
+
+    只看顶层是不够的——上游失败时工具常返回带外壳的空结果，例如估值分位在两个请求
+    都失败时返回 `{"period":"近5年","metrics":{}}`。若把它当成功，底稿会凭空多出一个
+    空小节、还不进缺口列表，模型就可能对着空壳发挥。
+    """
+    if value is None or value == "" or value == [] or value == {}:
+        return True
+    if isinstance(value, list):
+        return all(_payload_empty(x) for x in value)
+    if isinstance(value, dict):
+        for k, v in value.items():
+            if k in _META_KEYS:
+                continue
+            if isinstance(v, (list, dict)):
+                if not _payload_empty(v):
+                    return False
+            elif isinstance(v, bool):
+                if v:
+                    return False
+            elif isinstance(v, (int, float)):
+                if v:  # 0 视为无内容（如 total_blocks=0）
+                    return False
+            elif v:
+                return False
+        return True
+    return False  # 非空标量
+
+
+def _fetch_section(spec: tuple[str, dict, str, bool, bool], code: str) -> dict:
     """跑一项底稿数据，返回 {title, tool, data, ok}。"""
-    name, extra, title, _ = spec
+    name, extra, title, _par, empty_ok = spec
     args = {"codes": [code]} if name == "query_quote" else {"code": code, **extra}
     result = tools.exec_tool(name, args)
-    empty = (isinstance(result, dict) and (result.get("error") or not result)) or \
-            (isinstance(result, list) and not result)
-    return {"title": title, "tool": name, "data": result, "ok": not empty}
+
+    if isinstance(result, dict) and result.get("error"):
+        return {"title": title, "tool": name, "data": result, "ok": False}
+    if _payload_empty(result):
+        # 空是合法事实的项照常进底稿，但内容换成明确说明，免得模型把空壳当数据读；
+        # 其余的算没取到，进缺口列表。
+        if empty_ok:
+            return {"title": title, "tool": name, "data": NO_RECORD, "ok": True}
+        return {"title": title, "tool": name, "data": result, "ok": False}
+    return {"title": title, "tool": name, "data": result, "ok": True}
 
 
 def collect_dossier(code: str):
@@ -93,7 +142,7 @@ def collect_dossier(code: str):
                "loaded": len(done), "total": total}
 
     sections, missing = [], []
-    for _, _, title, _p in _DOSSIER_SPEC:  # 按清单顺序还原，保证底稿可读性稳定
+    for _n, _e, title, _p, _ok in _DOSSIER_SPEC:  # 按清单顺序还原，保证底稿可读性稳定
         sec = done.get(title)
         if sec and sec["ok"]:
             sections.append({"title": sec["title"], "tool": sec["tool"], "data": sec["data"]})
@@ -116,7 +165,9 @@ def dossier_text(dossier: dict) -> str:
     """把底稿渲染成给模型看的纯文本。"""
     parts = [f"【客观事实底稿 · {dossier['code']}】", "以下全部为接口实时拉取的客观数据，不含任何观点：", ""]
     for s in dossier["sections"]:
-        body = json.dumps(s["data"], ensure_ascii=False)[:_SECTION_CAP]
+        data = s["data"]
+        # 「无记录」这类说明是给模型读的自然语言，别再套一层 JSON 引号
+        body = data if isinstance(data, str) else json.dumps(data, ensure_ascii=False)[:_SECTION_CAP]
         parts.append(f"## {s['title']}（来源工具 {s['tool']}）\n{body}\n")
     if dossier["missing"]:
         parts.append(f"## 数据缺口\n以下数据本次未取到，立论时不得臆测：{('、'.join(dossier['missing']))}")
@@ -210,7 +261,9 @@ def run_debate_stream(cfg: dict, code: str, rounds: int = 1):
 
     yield {"type": "status", "message": "正在拉取客观事实底稿…"}
     dossier = yield from collect_dossier(code)
-    if not dossier["sections"]:
+    # 只有「无记录」说明、没有一条真实数据时同样算取数失败——
+    # 让多空基于一份全是「未取到」的底稿互相质疑毫无意义。
+    if not any(not isinstance(s["data"], str) for s in dossier["sections"]):
         yield {"type": "error", "message": "未能取到任何客观数据，无法开始辩论（请检查代码是否正确、网络是否可达）"}
         return
     yield {"type": "dossier",
