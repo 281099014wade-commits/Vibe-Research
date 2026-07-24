@@ -3,12 +3,12 @@ import { Link, Outlet, useLocation } from "react-router-dom";
 import {
   Activity, Radar, LayoutGrid, Wallet, Settings, Search, NotebookPen,
   Moon, Sun, ChevronsLeft, ChevronsRight, LineChart, Github, UserRound,
-  Cog, Cpu, Database, Cable, Rocket, FlaskConical, Star, FileText,
+  Cog, Cpu, Database, Cable, Rocket, FlaskConical, Star, FileText, Swords,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useDarkMode } from "@/hooks/useDarkMode";
 
-const APP_VERSION = "v0.1.3";
+const APP_VERSION = "v0.2.0";
 const REPO_URL = "https://github.com/simonlin1212/Vibe-Research";
 const SITE_URL = "https://www.simonlin.net"; // 作者主页
 
@@ -17,6 +17,7 @@ const NAV = [
   { to: "/intel", icon: Radar, label: "资讯雷达" },
   { to: "/sectors", icon: LayoutGrid, label: "板块中心" },
   { to: "/stock-data", icon: Search, label: "个股数据" },
+  { to: "/debate", icon: Swords, label: "多空辩论" },
   { to: "/watchlist", icon: Star, label: "自选股" },
   { to: "/portfolio", icon: Wallet, label: "我的持仓" },
   { to: "/my-reports", icon: FileText, label: "我的研报" },
