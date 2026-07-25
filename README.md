@@ -238,6 +238,9 @@ Vibe-Research 用到的数据 / 工具，来自同一套自研开源体系（都
 作者 **Simon**，独立开发者。
 
 - 🌐 主页：<https://www.simonlin.net>
+- 🐦 X：[@linsizhen](https://x.com/linsizhen)
+- 🎵 TikTok：[@simonlin0423](https://www.tiktok.com/@simonlin0423)
+- ✉️ 邮箱：<simonlin0423@gmail.com>
 - 💬 欢迎交流**企业 AI 落地方案**；项目相关问题也可提 [Issue](https://github.com/simonlin1212/Vibe-Research/issues)。
 
 ## 🙏 致谢
