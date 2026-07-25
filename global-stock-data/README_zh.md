@@ -10,7 +10,14 @@
 [![数据源](https://img.shields.io/badge/数据源-11-2ea44f.svg)](#数据源)
 [![零鉴权](https://img.shields.io/badge/鉴权-零-success.svg)](#数据源)
 
-**[架构](#架构) · [合规分级](#合规分级) · [快速开始](#快速开始) · [端点](#端点) · [数据源](#数据源) · [FAQ](#faq) · [🇬🇧 English](README.md)**
+<p align="center">
+  <a href="#架构">架构</a> ·
+  <a href="#合规分级">合规分级</a> ·
+  <a href="#快速开始">快速开始</a> ·
+  <a href="#端点">端点</a> ·
+  <a href="#数据源">数据源</a> ·
+  <a href="#faq">FAQ</a>
+</p>
 
 > **给 AI 编程助手用的美股港股全栈数据工具包** — 13 层架构 · 30+ 个端点 · 11 个数据源 · 全部零鉴权 · 仅依赖 `requests`。
 >

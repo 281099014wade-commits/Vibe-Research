@@ -10,7 +10,14 @@
 [![Sources](https://img.shields.io/badge/sources-11-2ea44f.svg)](#data-sources)
 [![Zero-Auth](https://img.shields.io/badge/auth-zero-success.svg)](#data-sources)
 
-**[Architecture](#architecture) · [Compliance](#compliance-tiers) · [Quick Start](#quick-start) · [Endpoints](#endpoints) · [Data Sources](#data-sources) · [FAQ](#faq) · [🇨🇳 中文文档](README_zh.md)**
+<p align="center">
+  <a href="#architecture">Architecture</a> ·
+  <a href="#compliance-tiers">Compliance</a> ·
+  <a href="#quick-start">Quick Start</a> ·
+  <a href="#endpoints">Endpoints</a> ·
+  <a href="#data-sources">Data Sources</a> ·
+  <a href="#faq">FAQ</a>
+</p>
 
 > **Full-stack market data for US & HK equities** — 13 layers · 30+ endpoints · 11 sources · zero-auth · only `requests`.
 >
