@@ -225,7 +225,6 @@ All from the same open-source stack ([`simonlin1212`](https://github.com/simonli
 
 Built by **Simon**, independent developer.
 
-- 🌐 Homepage: <https://www.simonlin.net>
 - 🐦 X: [@linsizhen](https://x.com/linsizhen)
 - 🎵 TikTok: [@simonlin0423](https://www.tiktok.com/@simonlin0423)
 - ✉️ Email: <simonlin0423@gmail.com>
