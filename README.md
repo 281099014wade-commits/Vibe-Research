@@ -255,7 +255,11 @@ Vibe-Research 用到的数据 / 工具，来自同一套自研开源体系（都
 
 ## ☕ 赞赏
 
-如果这个工具帮到了你，欢迎请作者喝杯咖啡 —— [Buy Me a Coffee](https://buymeacoffee.com/simonlin1212)。
+如果这个工具帮到了你，欢迎请作者喝杯咖啡。
+
+<p align="center">
+  <a href="https://buymeacoffee.com/simonlin1212"><img src="./assets/bmc-qr.png" width="180" alt="Buy Me a Coffee"></a>
+</p>
 
 ## 📄 License
 
