@@ -1,3 +1,5 @@
+<p align="center"><b>简体中文</b> | <a href="README_en.md">English</a></p>
+
 # Vibe-Research · 个人 AI 投研系统（A股/美股/港股）
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
@@ -6,9 +8,18 @@
 [![FastAPI](https://img.shields.io/badge/FastAPI-009688?logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
 [![GitHub stars](https://img.shields.io/github/stars/simonlin1212/Vibe-Research?style=social)](https://github.com/simonlin1212/Vibe-Research/stargazers)
 [![官网 viberesearch.wiki](https://img.shields.io/badge/🌐_官网-viberesearch.wiki-F35D2B?style=flat)](https://viberesearch.wiki)
-[![English README](https://img.shields.io/badge/📖_English-README-1F6FEB?style=flat)](README.en.md)
+[![English README](https://img.shields.io/badge/📖_English-README-1F6FEB?style=flat)](README_en.md)
 
-**[🌐 官网](https://viberesearch.wiki) · [产品预览](#️-产品预览) · [功能](#-功能) · [数据源](#-数据源data-sources) · [快速开始](#-快速开始) · [接入 AI](#-接入-ai) · [合规](#️-合规) · [相关生态](#-相关生态) · [联系作者](#-联系作者)**
+<p align="center">
+  <a href="https://viberesearch.wiki">官网</a> ·
+  <a href="#产品预览">产品预览</a> ·
+  <a href="#功能">功能</a> ·
+  <a href="#数据源data-sources">数据源</a> ·
+  <a href="#快速开始">快速开始</a> ·
+  <a href="#接入-ai">接入 AI</a> ·
+  <a href="#合规">合规</a> ·
+  <a href="#相关生态">相关生态</a>
+</p>
 
 > **Vibe-Research: Your Personal Trading Research Agent** · A股 / 美股 / 港股 的个人投研 Agent。
 >
@@ -18,7 +29,7 @@ Vibe-Research 是一个开源的「个人 AI 投研看板」，**主推 A 股、
 
 > *Vibe-Research: Your Personal Trading Research Agent. An open dashboard for China A-share (plus US / HK): it wires up all the data and plugs into **your own AI / agent** — it never recommends a stock. You bring the model, it brings the data.*
 
-## 🖥️ 产品预览
+## 产品预览
 
 **每日复盘** — 大盘 / 短线情绪(连板股 · 成交额 TOP20) / 板块资金一屏看全，一键交给你的 AI 复盘
 
@@ -45,7 +56,7 @@ Vibe-Research 是一个开源的「个人 AI 投研看板」，**主推 A 股、
 
 ---
 
-## ✨ 功能
+## 功能
 
 每个页面的具体模块：
 
@@ -66,7 +77,7 @@ Vibe-Research 是一个开源的「个人 AI 投研看板」，**主推 A 股、
 >
 > 连板股 / 成交额榜等均为**客观公开榜单数据，只呈现事实、不推荐、不预测**。
 
-## 📡 数据源（Data Sources）
+## 数据源（Data Sources）
 
 Vibe-Research 把三套公开数据源**直接集成进仓库**——`git clone` 下来**开箱即用，无需另外下载、接线**。
 
@@ -92,7 +103,7 @@ Vibe-Research 把三套公开数据源**直接集成进仓库**——`git clone`
 
 > 数据均来自公开源。Vibe-Research 只做客观信息整理与公开榜单呈现（连板股 / 成交额榜等，与东财 / 同花顺同款客观数据），**只呈现事实、不推荐个股、不预测涨跌、不给买卖时机、不做主观评分**；用这些数据做什么分析、看什么方向，由你和你自己的 AI 决定。
 
-## 🏗 架构
+## 架构
 
 一套数据层 + 两条 AI 出口：
 
@@ -116,7 +127,7 @@ Vibe-Research/
 
 **分级依赖**：行情（腾讯）+ 研报 / 公告（东财）**秒装可用**；akshare / mootdx 惰性导入，缺失时对应端点返回 501 + 安装提示，不拖垮服务。
 
-## 🚀 快速开始
+## 快速开始
 
 ```bash
 # 后端（:8900）
@@ -128,7 +139,7 @@ cd frontend && npm install && npm run dev
 # 浏览器打开 http://localhost:5899
 ```
 
-## 🔌 接入 AI
+## 接入 AI
 
 在「接入 AI」页配置一次，全站的「问 AI / 复盘 / 今日要点」就都用你自己的模型。**分析都由你的模型给出，本产品不校准、无倾向。** 三种方式：
 
@@ -151,7 +162,7 @@ cd frontend && npm install && npm run dev
 
 把后端挂成 MCP server，agent 用自己的订阅额度调 Vibe-Research 的数据工具、多步分析。命令见 [`backend/README.md`](backend/README.md)。要更全量的 A 股数据端点，用根目录 [`a-stock-data/`](a-stock-data/SKILL.md) 工具箱。
 
-## ⚔️ 多 agent 是怎么设计的
+## 多 agent 是怎么设计的
 
 开源的多 agent 金融框架（TradingAgents、ai-hedge-fund 等）流程末端都有一个 trader /
 portfolio_manager 角色，产出「买 / 卖 / 仓位多少」。**本项目刻意不做那一层。**
@@ -174,7 +185,7 @@ portfolio_manager 角色，产出「买 / 卖 / 仓位多少」。**本项目刻
 - **中立主持不裁决谁对**，也不给评级或倾向——它的产出是「你接下来该去看什么」。
 - 走限流接口的数据项**保持串行抓取**：`em_get` 的防封节流靠时间戳而非锁，并发会击穿它。
 
-### ⏱ 一次辩论的开销（**跑之前先看这里**）
+### 一次辩论的开销（**跑之前先看这里**）
 
 辩论比「问 AI」重得多——它要跑一整套流程，而且**每个角色都会带上完整底稿**。实测数据：
 
@@ -206,7 +217,7 @@ portfolio_manager 角色，产出「买 / 卖 / 仓位多少」。**本项目刻
 
 开销小得多——**只有 1 次模型调用**，输入就是你选中的那段文本（超过 1.2 万字会自动截断并提示）。
 
-## 🧪 测试
+## 测试
 
 ```bash
 cd backend && .venv/bin/pip install -r requirements-dev.txt
@@ -214,7 +225,7 @@ cd backend && .venv/bin/pip install -r requirements-dev.txt
 .venv/bin/pytest -m live          # 联网核对数据源 shape（升级 / 发布前跑一遍）
 ```
 
-## ⚖️ 合规
+## 合规
 
 - 只做客观数据整理与公开榜单呈现：**不荐股、不预测涨跌、不给买卖时机、不承诺收益、不做主观评分**；中立无倾向。
 - 连板股 / 成交额榜等均为**客观公开榜单数据**（东财 / 同花顺同款），产品只如实呈现、不附带任何推荐或预测。
@@ -222,7 +233,7 @@ cd backend && .venv/bin/pip install -r requirements-dev.txt
 - **持仓 / 关注股 / 上传的研报 / API key 只存本地，不上传、不进仓库。**
 - 持仓与上传的研报默认存在**用户目录 `~/.vibe-research/`**（可用环境变量 `VR_DATA_DIR` 换根目录、`VR_REPORTS_DIR` 单独指定研报目录）——在项目文件夹之外，**重新下载 / 覆盖更新项目文件夹不会丢数据**；旧版本存在 `backend/.cache/` 的数据，新版首次启动自动迁移（复制，原文件保留）。
 
-## 🏛 相关生态
+## 相关生态
 
 Vibe-Research 用到的数据 / 工具，来自同一套自研开源体系（都在 [`simonlin1212`](https://github.com/simonlin1212)）：
 
@@ -233,7 +244,7 @@ Vibe-Research 用到的数据 / 工具，来自同一套自研开源体系（都
 | [**investment-news**](https://github.com/simonlin1212/investment-news) | 全球产业链资讯看板（12 赛道一一对应 A 股板块）—— 本项目的资讯源 |
 | [**Agent-Staff**](https://github.com/simonlin1212/Agent-Staff) | 把公司 Agent 化：每部门一个 AI agent + CEO 参谋长，常驻飞书 |
 
-## 📬 联系作者
+## 联系作者
 
 作者 **Simon**，独立开发者。
 
@@ -242,18 +253,18 @@ Vibe-Research 用到的数据 / 工具，来自同一套自研开源体系（都
 - ✉️ 邮箱：<simonlin0423@gmail.com>
 - 💬 欢迎交流**企业 AI 落地方案**；项目相关问题也可提 [Issue](https://github.com/simonlin1212/Vibe-Research/issues)。
 
-## 🙏 致谢
+## 致谢
 
 - A 股数据引擎：[a-stock-data](https://github.com/simonlin1212/a-stock-data)（作者：Simonlin1212）
 - 美股 / 港股数据引擎：[global-stock-data](https://github.com/simonlin1212/global-stock-data)（作者：Simonlin1212）
 - 资讯：[investment-news](https://github.com/simonlin1212/investment-news)（作者：Simonlin1212）
 - 界面设计语言参考并致谢：[HKUDS/Vibe-Trading](https://github.com/HKUDS/Vibe-Trading)（作者：HKUDS · 仅借鉴 UI，底层为全新实现）
 
-## ⚠️ 免责声明
+## 免责声明
 
 本项目仅供学习与研究，**不构成任何投资建议**。看板只做客观数据整理与公开榜单呈现——不推荐个股、不预测涨跌、不给买卖时机、不承诺收益；所有分析方向由你自己配置的 AI 给出，与本产品无关。股市有风险，请独立决策、自行核实，风险自担。
 
-## ☕ 赞赏
+## 赞赏
 
 如果这个工具帮到了你，欢迎请作者喝杯咖啡。
 
@@ -261,6 +272,6 @@ Vibe-Research 用到的数据 / 工具，来自同一套自研开源体系（都
   <a href="https://buymeacoffee.com/simonlin1212"><img src="./assets/bmc-qr.png" width="180" alt="Buy Me a Coffee"></a>
 </p>
 
-## 📄 License
+## License
 
 MIT

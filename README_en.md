@@ -1,3 +1,5 @@
+<p align="center"><a href="README.md">简体中文</a> | <b>English</b></p>
+
 # Vibe-Research · Your Personal AI Research Dashboard (A-share / US / HK)
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
@@ -7,7 +9,15 @@
 [![GitHub stars](https://img.shields.io/github/stars/simonlin1212/Vibe-Research?style=social)](https://github.com/simonlin1212/Vibe-Research/stargazers)
 [![中文 README](https://img.shields.io/badge/📖_中文-README-F35D2B?style=flat)](README.md)
 
-**[🌐 Website](https://viberesearch.wiki) · [Screenshots](#️-screenshots) · [Features](#-features) · [Data Sources](#-data-sources) · [Quick Start](#-quick-start) · [Bring Your Own AI](#-bring-your-own-ai) · [Compliance](#️-compliance) · [Contact](#-contact)**
+<p align="center">
+  <a href="https://viberesearch.wiki">Website</a> ·
+  <a href="#screenshots">Screenshots</a> ·
+  <a href="#features">Features</a> ·
+  <a href="#data-sources">Data Sources</a> ·
+  <a href="#quick-start">Quick Start</a> ·
+  <a href="#bring-your-own-ai">Bring Your Own AI</a> ·
+  <a href="#compliance">Compliance</a>
+</p>
 
 > **Vibe-Research: Your Personal Trading Research Agent.**
 >
@@ -17,7 +27,7 @@ Vibe-Research is an open-source research dashboard built primarily for **China A
 
 It does not make decisions for you. It pulls together quotes, analyst reports, valuation, financials, filings, fund flows and news into one clean dashboard, then leaves an interface where **you plug in your own AI**. The direction and the conclusions come from the model or agent *you* configure.
 
-## 🖥️ Screenshots
+## Screenshots
 
 **Daily Review** — indices, market breadth, sector fund flows and turnover leaders on one screen, then hand it to your AI
 
@@ -44,7 +54,7 @@ It does not make decisions for you. It pulls together quotes, analyst reports, v
 
 ---
 
-## ✨ Features
+## Features
 
 | Page | What's in it |
 |---|---|
@@ -63,7 +73,7 @@ It does not make decisions for you. It pulls together quotes, analyst reports, v
 >
 > Limit-up lists and turnover rankings are **objective public data, presented as-is — no recommendation, no prediction**.
 
-## 📡 Data Sources
+## Data Sources
 
 Three public data toolkits are **vendored directly into this repo** — `git clone` and everything works, no extra downloads or wiring.
 
@@ -89,7 +99,7 @@ Three public data toolkits are **vendored directly into this repo** — `git clo
 
 > All data comes from public sources. Vibe-Research only performs objective data aggregation and presents public rankings as-is — **it does not recommend stocks, predict price moves, time trades, or assign subjective scores**. What you do with the data is up to you and your AI.
 
-## 🏗 Architecture
+## Architecture
 
 One data layer, three AI outlets:
 
@@ -113,7 +123,7 @@ Vibe-Research/
 
 **Tiered dependencies**: quotes (Tencent) and reports/filings (Eastmoney) work with a minimal install. `akshare` / `mootdx` are imported lazily — if missing, only those endpoints return 501 with an install hint; the service still runs.
 
-## 🚀 Quick Start
+## Quick Start
 
 ```bash
 # Backend (:8900)
@@ -125,7 +135,7 @@ cd frontend && npm install && npm run dev
 # Open http://localhost:5899
 ```
 
-## 🔌 Bring Your Own AI
+## Bring Your Own AI
 
 Configure once on the "Bring your AI" page and every AI feature across the dashboard uses your model. **All analysis comes from your model — this project does not tune or bias it.** Three options:
 
@@ -145,7 +155,7 @@ Pick a model and the base URL is filled in for you — just paste the key. Built
 
 Mount the backend as an MCP server so your agent can call Vibe-Research's data tools with its own subscription. See [`backend/README.md`](backend/README.md).
 
-## ⚔️ How the Multi-Agent Part Is Designed
+## How the Multi-Agent Part Is Designed
 
 Open-source multi-agent finance frameworks (TradingAgents, ai-hedge-fund and friends) end their pipeline with a trader or portfolio_manager role that outputs "buy / sell / how much". **This project deliberately omits that layer.**
 
@@ -168,7 +178,7 @@ Deliberate constraints:
 - **The moderator does not pick a winner** and gives no rating or lean — its output is "here's what to look at next".
 - Rate-limited endpoints are fetched **serially**: the throttle is timestamp-based rather than lock-based, so concurrency would blow straight through it.
 
-### ⏱ What one debate costs (read before you run it)
+### What one debate costs (read before you run it)
 
 A debate is much heavier than a chat — it runs a full pipeline and **every role carries the complete dossier**. Measured:
 
@@ -194,7 +204,7 @@ The same idea applied to writing you already have: audit the reasoning and surfa
 
 Much cheaper — **a single model call** over the text you selected.
 
-## 🧪 Tests
+## Tests
 
 ```bash
 cd backend && .venv/bin/pip install -r requirements-dev.txt
@@ -202,7 +212,7 @@ cd backend && .venv/bin/pip install -r requirements-dev.txt
 .venv/bin/pytest -m live         # verifies live data source shapes (run before releases)
 ```
 
-## ⚖️ Compliance
+## Compliance
 
 - Objective data aggregation and public-ranking display only: **no stock recommendations, no price predictions, no trade timing, no return promises, no subjective scoring.** Neutral by design.
 - Limit-up lists and turnover rankings are **objective public data** (the same numbers Eastmoney and Tonghuashun publish); the product displays them as-is with nothing attached.
@@ -210,7 +220,7 @@ cd backend && .venv/bin/pip install -r requirements-dev.txt
 - **Your portfolio, watchlist, uploaded reports and API keys stay on your machine.** Nothing is uploaded; nothing enters the repo.
 - Portfolio and uploaded reports default to `~/.vibe-research/` (override with `VR_DATA_DIR` / `VR_REPORTS_DIR`) — outside the project folder, so re-downloading or overwriting the project never loses your data.
 
-## 🏛 Related Projects
+## Related Projects
 
 All from the same open-source stack ([`simonlin1212`](https://github.com/simonlin1212)):
 
@@ -221,7 +231,7 @@ All from the same open-source stack ([`simonlin1212`](https://github.com/simonli
 | [**investment-news**](https://github.com/simonlin1212/investment-news) | Global industry news dashboard (12 tracks mapped to A-share sectors) |
 | [**Agent-Staff**](https://github.com/simonlin1212/Agent-Staff) | Agentify a company: one AI agent per department plus a chief-of-staff |
 
-## 📬 Contact
+## Contact
 
 Built by **Simon**, independent developer.
 
@@ -230,18 +240,18 @@ Built by **Simon**, independent developer.
 - ✉️ Email: <simonlin0423@gmail.com>
 - 💬 Happy to talk about **enterprise AI adoption**; for project issues please open an [Issue](https://github.com/simonlin1212/Vibe-Research/issues).
 
-## 🙏 Acknowledgements
+## Acknowledgements
 
 - A-share data engine: [a-stock-data](https://github.com/simonlin1212/a-stock-data)
 - US / HK data engine: [global-stock-data](https://github.com/simonlin1212/global-stock-data)
 - News: [investment-news](https://github.com/simonlin1212/investment-news)
 - UI design language referenced with thanks: [HKUDS/Vibe-Trading](https://github.com/HKUDS/Vibe-Trading) (UI inspiration only; the implementation here is separate)
 
-## ⚠️ Disclaimer
+## Disclaimer
 
 This project is for learning and research purposes and **does not constitute investment advice**. The dashboard performs objective data aggregation and displays public rankings — it does not recommend stocks, predict price movements, time trades, or promise returns. All analytical conclusions come from the AI you configure yourself and have nothing to do with this project. Markets carry risk; verify independently and decide for yourself.
 
-## ☕ Support
+## Support
 
 If this tool saved you time, a coffee is appreciated.
 
@@ -249,6 +259,6 @@ If this tool saved you time, a coffee is appreciated.
   <a href="https://buymeacoffee.com/simonlin1212"><img src="./assets/bmc-qr.png" width="180" alt="Buy Me a Coffee"></a>
 </p>
 
-## 📄 License
+## License
 
 MIT
