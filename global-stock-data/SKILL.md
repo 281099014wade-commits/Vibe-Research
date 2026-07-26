@@ -248,24 +248,28 @@ def us_stock_quote_tencent(ticker: str) -> dict:
         return {}
     
     fields = m.group(1).split("~")
-    if len(fields) < 50:
+    if len(fields) < 52:   # 需读到 fields[51](PB)，美股正常返回 71 个
         return {}
     
+    # ⚠️ 下标以实测为准，勿照抄港股那套（两市布局不同，见本节末「腾讯行情字段对照表」）
     return {
         "name": fields[1],           # 中文名
-        "name_en": fields[27],       # 英文名
+        "name_en": fields[46],       # 英文名，如 "Apple Inc."
         "price": float(fields[3]) if fields[3] else 0,
         "prev_close": float(fields[4]) if fields[4] else 0,
         "open": float(fields[5]) if fields[5] else 0,
-        "volume": int(fields[6]) if fields[6] else 0,
+        "volume": int(float(fields[6])) if fields[6] else 0,
         "high": float(fields[33]) if fields[33] else 0,
         "low": float(fields[34]) if fields[34] else 0,
-        "high_52w": float(fields[35]) if fields[35] else 0,
-        "low_52w": float(fields[36]) if fields[36] else 0,
+        "high_52w": float(fields[48]) if fields[48] else 0,
+        "low_52w": float(fields[49]) if fields[49] else 0,
         "change_pct": float(fields[32]) if fields[32] else 0,
-        "market_cap": float(fields[44]) if fields[44] else 0,  # 亿美元
-        "pe": float(fields[53]) if fields[53] else 0,
-        "pb": float(fields[56]) if fields[56] else 0,
+        "float_market_cap": float(fields[44]) if fields[44] else 0,  # 流通市值，亿美元
+        "market_cap": float(fields[45]) if fields[45] else 0,        # 总市值，亿美元
+        "eps": float(fields[47]) if fields[47] else 0,
+        "pe": float(fields[39]) if fields[39] else 0,
+        "pb": float(fields[51]) if fields[51] else 0,
+        "currency": fields[35],      # "USD"
         "timestamp": fields[30],
     }
 ```
@@ -288,25 +292,29 @@ def hk_stock_quote_tencent(code: str) -> dict:
         return {}
     
     fields = m.group(1).split("~")
-    if len(fields) < 50:
+    if len(fields) < 76:   # 需读到 fields[75](币种)，港股正常返回 78 个
         return {}
     
+    # ⚠️ 下标以实测为准，与美股那套不同（见本节末「腾讯行情字段对照表」）
     return {
         "name": fields[1],           # 中文名
-        "name_en": fields[2],        # 英文名
+        "code": fields[2],           # 五位代码，如 "00700"（旧版误当英文名）
+        "name_en": fields[46],       # 英文名，如 "TENCENT"
         "price": float(fields[3]) if fields[3] else 0,
         "prev_close": float(fields[4]) if fields[4] else 0,
         "open": float(fields[5]) if fields[5] else 0,
         "high": float(fields[33]) if fields[33] else 0,
         "low": float(fields[34]) if fields[34] else 0,
-        "volume": int(fields[6]) if fields[6] else 0,    # 成交量(股)
-        "amount": float(fields[37]) if fields[37] else 0,  # 成交额
+        "volume": int(float(fields[6])) if fields[6] else 0,  # 成交量(股)
+        "amount": float(fields[37]) if fields[37] else 0,     # 成交额
         "change_pct": float(fields[32]) if fields[32] else 0,
         "pe": float(fields[39]) if fields[39] else 0,
-        "pb": float(fields[56]) if fields[56] else 0,
-        "high_52w": float(fields[35]) if fields[35] else 0,
-        "low_52w": float(fields[36]) if fields[36] else 0,
-        "market_cap": float(fields[44]) if fields[44] else 0,  # 亿港元
+        "pb": float(fields[58]) if fields[58] else 0,
+        "high_52w": float(fields[48]) if fields[48] else 0,
+        "low_52w": float(fields[49]) if fields[49] else 0,
+        "float_market_cap": float(fields[44]) if fields[44] else 0,  # 流通市值，亿港元
+        "market_cap": float(fields[45]) if fields[45] else 0,        # 总市值，亿港元
+        "currency": fields[75],      # "HKD"
         "timestamp": fields[30],
     }
 
@@ -346,6 +354,41 @@ def hk_stock_quote_sina(code: str) -> dict:
         "amount": float(fields[11]) if fields[11] else 0,
     }
 ```
+
+#### 腾讯行情字段对照表（`qt.gtimg.cn` · 2026-07-26 实测校准）
+
+⚠️ **美股与港股的字段布局不同，不能共用一套下标。** 美股返回 71 个字段，港股 78 个。
+下面每个下标都以真实响应逐个核对过（`usAAPL` / `hk00700`），网上流传的映射表多处有误。
+
+| 含义 | 美股下标 | 港股下标 | 实测值（AAPL / 00700） |
+|---|---|---|---|
+| 中文名 | 1 | 1 | 苹果 / 腾讯控股 |
+| 代码 | 2 | 2 | AAPL.OQ / 00700 |
+| **英文名** | **46** | **46** | Apple Inc. / TENCENT |
+| 现价 | 3 | 3 | 333.02 / 434.600 |
+| 昨收 / 今开 | 4 / 5 | 4 / 5 | — |
+| 成交量 | 6 | 6 | ⚠️ 港股带小数位（`22959603.0`），必须 `int(float(x))` |
+| 涨跌幅 % | 32 | 32 | 3.53 / -2.38 |
+| 当日最高 / 最低 | 33 / 34 | 33 / 34 | — |
+| **币种** | **35** | **75** | USD / HKD |
+| **PE** | **39** | **39** | 40.32 / 15.87 |
+| **流通市值**（亿本币） | **44** | **44** | 48881.62 / 39516.08 |
+| **总市值**（亿本币） | **45** | **45** | 48911.83 / 39516.08 |
+| EPS | 47 | — | 8.26（333.02 ÷ 8.26 = 40.32 ✓ 与 PE 自洽） |
+| **52 周最高 / 最低** | **48 / 49** | **48 / 49** | 334.99·200.72 / 677.7·411.0 |
+| **PB** | **51** | **58** | 45.93 / 3.14 |
+
+**市值单位是「亿本币」，不是股数**：AAPL 总市值 48911.83（亿美元）= 现价 333.02 × 总股本 14,687,356,000，可用 `fields[62]` 的总股本反算核对。港股同理，单位为亿港元。
+
+**自行复现命令**（行号 N ↔ 数组下标 N−1）：
+
+```bash
+curl -s "https://qt.gtimg.cn/q=usAAPL"  | iconv -f GBK -t UTF-8 | tr '~' '\n' | cat -n
+curl -s "https://qt.gtimg.cn/q=hk00700" | iconv -f GBK -t UTF-8 | tr '~' '\n' | cat -n
+```
+
+> 港股 `hk` 与 `r_hk` 两种前缀返回的字段布局完全一致（均 78 个），可互换。
+> 感谢 [@HoRiZonn0](https://github.com/HoRiZonn0) 在 issue #2 中提供的完整对照，本表据此逐条复测后修订。
 
 ### 1.3 东财 push2 实时行情 — 美股 + 港股
 
