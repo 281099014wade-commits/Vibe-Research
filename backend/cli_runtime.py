@@ -190,7 +190,8 @@ def run_cli_stream(kind: str, system_prompt: str, user_prompt: str):
             except Exception:
                 pass
 
-        threading.Thread(target=_drain_err, daemon=True).start()
+        err_thread = threading.Thread(target=_drain_err, daemon=True)
+        err_thread.start()
         if stdin_payload is not None:
             try:
                 proc.stdin.write(stdin_payload)
@@ -231,6 +232,10 @@ def run_cli_stream(kind: str, system_prompt: str, user_prompt: str):
         except subprocess.TimeoutExpired as e:
             raise RuntimeError(f"{kind} 输出已结束但进程未退出") from e
         if rc != 0:
+            # 必须等排空线程收完再读 err_tail：CLI 常常是「写完错误立刻退出」，
+            # proc.wait() 可能先于排空线程读完管道返回，此时 err_tail 还是空的，
+            # 报错信息又会退化成「退出码 1」——正是本次要修的症状。
+            err_thread.join(timeout=5)
             err = "".join(err_tail).strip()[-500:] or "（子进程未输出错误信息）"
             raise RuntimeError(f"{kind} 退出码 {rc}：{err}")
     finally:
