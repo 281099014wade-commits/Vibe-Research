@@ -13,7 +13,6 @@ const APP_VERSION = "v0.2.2";
 const REPO_URL = "https://github.com/simonlin1212/Vibe-Research";
 // 作者联系方式
 const X_URL = "https://x.com/linsizhen";
-const TIKTOK_URL = "https://www.tiktok.com/@simonlin0423";
 const MAIL_URL = "mailto:simonlin0423@gmail.com";
 
 const NAV = [
@@ -155,8 +154,6 @@ export function Layout() {
               <div className="flex items-center gap-1.5 text-[11px] text-primary/80">
                 <span className="text-muted-foreground/60">联系作者</span>
                 <a href={X_URL} target="_blank" rel="noreferrer" className="transition-colors hover:text-primary">X</a>
-                <span className="text-muted-foreground/40">·</span>
-                <a href={TIKTOK_URL} target="_blank" rel="noreferrer" className="transition-colors hover:text-primary">TikTok</a>
                 <span className="text-muted-foreground/40">·</span>
                 <a href={MAIL_URL} className="transition-colors hover:text-primary">Email</a>
               </div>
