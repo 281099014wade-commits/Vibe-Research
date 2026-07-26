@@ -79,7 +79,7 @@ Three public data toolkits are **vendored directly into this repo** — `git clo
 
 ### A-share full-stack data · AStockData
 
-- Lives in [`a-stock-data/`](a-stock-data/) (v3.3.0). Ten data layers, 40 endpoints. [`a-stock-data/SKILL.md`](a-stock-data/SKILL.md) **embeds every call as runnable code** — self-contained, with built-in rate limiting for Eastmoney endpoints.
+- Lives in [`a-stock-data/`](a-stock-data/) (v3.5.1). Ten data layers, 44 endpoints, 15 sources, with fallback sources when a primary one gets blocked. [`a-stock-data/SKILL.md`](a-stock-data/SKILL.md) **embeds every call as runnable code** — self-contained, with built-in rate limiting for Eastmoney endpoints.
 - **Covers**: quotes / candles / analyst reports / consensus estimates / valuation / historical percentiles / financial statements / filings / Dragon-Tiger list / margin trading / block trades / shareholder counts / dividends / fund flows / lockup expiry / concept sectors / limit-up sentiment / ETF options / investor Q&A / market-wide industry rankings.
 - **For agents**: running this repo with Claude Code or similar? Point them at `SKILL.md` — every endpoint has copy-paste ready code. The backend data layer (`backend/astock.py`) is ported from it.
 - **Runtime deps**: `pip install mootdx requests pandas stockstats`
@@ -87,7 +87,7 @@ Three public data toolkits are **vendored directly into this repo** — `git clo
 
 ### US / HK data · global-stock-data
 
-- Lives in [`global-stock-data/`](global-stock-data/) (v1.0.1). Eight data layers, 18 endpoints, no auth required — quotes, candles, technicals, financial statements, fund flows, options and SEC filings.
+- Lives in [`global-stock-data/`](global-stock-data/) (v2.0.3). 13 data layers, 30+ endpoints, 11 sources, no auth required — quotes, candles, technicals, financial statements, fund flows, options (CBOE official chain with full Greeks and 0DTE flow), FINRA short volume, and the SEC EDGAR filing stream plus market-wide screener. Every source is labeled with its compliance tier.
 - `backend/gstock.py` ports the Eastmoney-domain subset: global indices (the "Global markets" row on Daily Review) plus US/HK quotes and key financials.
 - **Korean stocks**: append `.KS` to the 6-digit code (e.g. Samsung `005930.KS`). ⚠️ KR codes are also 6 digits like A-share tickers, so **the suffix is required** for correct routing. Quotes only, no financials. Taiwan is covered via US ADRs (e.g. `TSM`).
 - **Upstream**: <https://github.com/simonlin1212/global-stock-data>
@@ -105,8 +105,8 @@ One data layer, three AI outlets:
 
 ```
 Vibe-Research/
-├── a-stock-data/      A-share data toolkit (vendored, ready to use)
-├── global-stock-data/ US / HK data toolkit (vendored, ready to use)
+├── a-stock-data/      A-share data toolkit (vendored v3.5.1, ready to use)
+├── global-stock-data/ US / HK data toolkit (vendored v2.0.3, ready to use)
 ├── backend/           FastAPI :8900
 │   ├── astock.py        A-share data
 │   ├── gstock.py        US / HK data
@@ -226,8 +226,8 @@ All from the same open-source stack ([`simonlin1212`](https://github.com/simonli
 
 | Repo | What it is |
 |---|---|
-| [**a-stock-data**](https://github.com/simonlin1212/a-stock-data) | A-share full-stack data toolkit (10 layers · 40 endpoints) — this project's A-share engine |
-| [**global-stock-data**](https://github.com/simonlin1212/global-stock-data) | US / HK full-stack data toolkit |
+| [**a-stock-data**](https://github.com/simonlin1212/a-stock-data) | A-share full-stack data toolkit (10 layers · 44 endpoints · 15 sources) — this project's A-share engine |
+| [**global-stock-data**](https://github.com/simonlin1212/global-stock-data) | US / HK full-stack data toolkit (13 layers · 30+ endpoints · 11 sources) |
 | [**investment-news**](https://github.com/simonlin1212/investment-news) | Global industry news dashboard (12 tracks mapped to A-share sectors) |
 | [**Agent-Staff**](https://github.com/simonlin1212/Agent-Staff) | Agentify a company: one AI agent per department plus a chief-of-staff |
 

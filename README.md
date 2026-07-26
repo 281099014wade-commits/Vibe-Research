@@ -83,7 +83,7 @@ Vibe-Research 把三套公开数据源**直接集成进仓库**——`git clone`
 
 ### A 股全栈数据 · AStockData
 
-- **就在本仓库的 [`a-stock-data/`](a-stock-data/) 文件夹里**（v3.3.0）。十层数据架构、40 个端点，`a-stock-data/SKILL.md` **内嵌全部调用代码**，自包含、零第三方数据封装依赖，东财接口已内置限流防封。
+- **就在本仓库的 [`a-stock-data/`](a-stock-data/) 文件夹里**（v3.5.1）。十层数据架构、44 个端点、15 个数据源，`a-stock-data/SKILL.md` **内嵌全部调用代码**，自包含、零第三方数据封装依赖，东财接口已内置限流防封，主源被封还能降级到备用源。
 - **覆盖**：行情 / K线 / 研报 / 一致预期 / 估值 / 历史分位 / 财务三表 / 公告 / 龙虎榜 / 融资融券 / 大宗交易 / 股东户数 / 分红 / 资金流 / 解禁 / 概念板块 / 打板情绪 / ETF 期权 / 互动易 / 全市场行业排名 …
 - **给 agent 用**：用 Claude Code 等 agent 跑本仓库时，要调 A 股数据就看 [`a-stock-data/SKILL.md`](a-stock-data/SKILL.md)——每个接口都有 copy-paste 即用的代码。Vibe-Research 后端的数据层（`backend/astock.py`）也是从它移植的。
 - **运行依赖**：`pip install mootdx requests pandas stockstats`（自包含，v3.0 起已移除 akshare 依赖）。
@@ -91,7 +91,7 @@ Vibe-Research 把三套公开数据源**直接集成进仓库**——`git clone`
 
 ### 美股 / 港股数据 · global-stock-data
 
-- **就在本仓库的 [`global-stock-data/`](global-stock-data/) 文件夹里**（v1.0.1）。8 层数据架构、18 个端点、零鉴权，覆盖美港股行情 / K线 / 技术指标 / 三表财报 / 资金流 / 期权 / SEC。
+- **就在本仓库的 [`global-stock-data/`](global-stock-data/) 文件夹里**（v2.0.3）。13 层数据架构、30+ 个端点、11 个数据源、零鉴权，覆盖美港股行情 / K线 / 技术指标 / 三表财报 / 资金流 / 期权（CBOE 官方期权链含完整希腊字母与 0DTE 流）/ FINRA 空头成交量 / SEC EDGAR 申报流与全市场筛选。每个数据源都标注了合规级别。
 - 后端 `backend/gstock.py` 移植了**东财域内的合规子集**：全球指数（每日复盘「全球市场」栏）+ 美港股个股行情 & 关键财务指标（个股页输 `AAPL` / `00700` 即用）。东财调用复用 `astock.em_get`（直连优先，避开科学上网代理挂国内站）。
 - **韩股**：东财已覆盖，个股页输 6 位代码**加 `.KS` 后缀**即可（如三星 `005930.KS`、SK 海力士 `000660.KS`）。⚠️ 韩股代码与 A 股同为 6 位数字，**必须带 `.KS` 后缀**才能被识别为韩股（否则按 A 股处理）；东财对韩股仅给行情、无财务。台股走美股 ADR（如台积电 `TSM`）。
 - **上游**：<https://github.com/simonlin1212/global-stock-data> —— 想要 K线 / 技术指标 / 期权 / SEC 等全量端点，去这里看。
@@ -109,8 +109,8 @@ Vibe-Research 把三套公开数据源**直接集成进仓库**——`git clone`
 
 ```
 Vibe-Research/
-├── a-stock-data/      A 股全栈数据工具箱（数据源，v3.3，自带即用）
-├── global-stock-data/ 美股 / 港股数据工具箱（数据源，v1.0.1，自带即用）
+├── a-stock-data/      A 股全栈数据工具箱（数据源，v3.5.1，自带即用）
+├── global-stock-data/ 美股 / 港股数据工具箱（数据源，v2.0.3，自带即用）
 ├── backend/           FastAPI :8900
 │   ├── astock.py        A 股数据（移植自 a-stock-data）
 │   ├── gstock.py        美股 / 港股数据（移植自 global-stock-data）
@@ -239,8 +239,8 @@ Vibe-Research 用到的数据 / 工具，来自同一套自研开源体系（都
 
 | 仓库 | 定位 |
 |---|---|
-| [**a-stock-data**](https://github.com/simonlin1212/a-stock-data) | A 股全栈数据工具包（10 层 · 40 端点）—— 本项目的 A 股数据引擎 |
-| [**global-stock-data**](https://github.com/simonlin1212/global-stock-data) | 美股 / 港股全栈数据工具包（7 层 · 17 端点） |
+| [**a-stock-data**](https://github.com/simonlin1212/a-stock-data) | A 股全栈数据工具包（10 层 · 44 端点 · 15 数据源）—— 本项目的 A 股数据引擎 |
+| [**global-stock-data**](https://github.com/simonlin1212/global-stock-data) | 美股 / 港股全栈数据工具包（13 层 · 30+ 端点 · 11 数据源） |
 | [**investment-news**](https://github.com/simonlin1212/investment-news) | 全球产业链资讯看板（12 赛道一一对应 A 股板块）—— 本项目的资讯源 |
 | [**Agent-Staff**](https://github.com/simonlin1212/Agent-Staff) | 把公司 Agent 化：每部门一个 AI agent + CEO 参谋长，常驻飞书 |
 
