@@ -1,6 +1,6 @@
 <p align="center"><b>简体中文</b> | <a href="README_en.md">English</a></p>
 
-# Vibe-Research · 个人 AI 投研系统（A股/美股/港股）
+<h1 align="center">Vibe-Research · 个人 AI 投研系统（A股/美股/港股）</h1>
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Python 3.10+](https://img.shields.io/badge/Python-3.10+-3776AB?logo=python&logoColor=white)](https://www.python.org/)

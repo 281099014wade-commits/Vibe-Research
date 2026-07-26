@@ -1,6 +1,6 @@
 <p align="center"><a href="README.md">简体中文</a> | <b>English</b></p>
 
-# Vibe-Research · Your Personal AI Research Dashboard (A-share / US / HK)
+<h1 align="center">Vibe-Research · Your Personal AI Research Dashboard (A-share / US / HK)</h1>
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Python 3.10+](https://img.shields.io/badge/Python-3.10+-3776AB?logo=python&logoColor=white)](https://www.python.org/)
