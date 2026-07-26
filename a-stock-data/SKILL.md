@@ -376,7 +376,9 @@ def get_prefix(code: str) -> str:
     c = code.lower()
     if c.startswith(("sh", "sz", "bj")):     # 显式前缀透传（如 sh000001=上证指数 vs sz000001=平安银行）
         return c[:2]
-    if c.startswith(("5", "6", "9")):        # 5x=沪 ETF/LOF，6/9=沪个股
+    if c.startswith("92"):                   # 北交所 2024-10 起的新股号段，必须先于下面的 9x 判断
+        return "bj"
+    if c.startswith(("5", "6", "9")):        # 5x=沪 ETF/LOF，6/9=沪个股（900xxx=沪 B 股）
         return "sh"
     if c.startswith(("4", "8")):             # 4x/8x=北交所
         return "bj"
@@ -520,16 +522,21 @@ def tencent_quote(codes: list[str]) -> dict[str, dict]:
     # 前缀路由：与全局 get_prefix() 一致。5x 沪ETF / 000300 等沪指数不能落到 sz（会返回空或错票）。
     SH_INDEX = {"000300", "000905", "000016", "000688", "000852", "000010"}   # 沪指数白名单
     prefixed = []
+    key_of = {}          # 带前缀的查询键 → 调用方原始写法，保证结果键与入参一一对应
     for c in codes:
         low = c.lower()
         if low.startswith(("sh", "sz", "bj")):        # 显式前缀透传，解决 000001 等歧义
-            prefixed.append(low)
+            p = low
+        elif c.startswith("92"):                      # 北交所 920 号段须先于 9x 判断
+            p = f"bj{c}"
         elif c in SH_INDEX or c.startswith(("5", "6", "9")):
-            prefixed.append(f"sh{c}")
+            p = f"sh{c}"
         elif c.startswith(("4", "8")):
-            prefixed.append(f"bj{c}")
+            p = f"bj{c}"
         else:
-            prefixed.append(f"sz{c}")
+            p = f"sz{c}"
+        prefixed.append(p)
+        key_of[p] = c    # 显式前缀入参原样返回，裸代码返回裸代码
 
     url = "https://qt.gtimg.cn/q=" + ",".join(prefixed)
     req = urllib.request.Request(url)
@@ -545,7 +552,9 @@ def tencent_quote(codes: list[str]) -> dict[str, dict]:
         vals = line.split('"')[1].split("~")
         if len(vals) < 53:
             continue
-        code = key[2:]
+        # 用入参原样做键：批量里同时传 sh000001 与 sz000001 时，若都退回裸 6 位码
+        # 会撞成同一个键、后者静默覆盖前者，显式前缀这个特性就白做了。
+        code = key_of.get(key, key[2:])
         result[code] = {
             "name":         vals[1],
             "price":        float(vals[3]) if vals[3] else 0,
