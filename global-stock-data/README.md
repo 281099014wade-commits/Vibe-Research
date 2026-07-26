@@ -250,4 +250,4 @@ Want a data endpoint that isn't here? Open an [Issue](https://github.com/simonli
 
 ## License
 
-[Apache License 2.0](./LICENSE) — **Author:** Simon Lin · X [@linsizhen](https://x.com/linsizhen) · TikTok [@simonlin0423](https://www.tiktok.com/@simonlin0423) · Email: [simonlin0423@gmail.com](mailto:simonlin0423@gmail.com)
+[Apache License 2.0](./LICENSE) — **Author:** Simon Lin · X [@linsizhen](https://x.com/linsizhen) · Email: [simonlin0423@gmail.com](mailto:simonlin0423@gmail.com)

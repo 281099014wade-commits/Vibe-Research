@@ -7,7 +7,7 @@ version: 1.0.1
 
 > 📦 项目主页：https://github.com/simonlin1212/global-stock-data — 更新、反馈、支持作者
 > 
-> 作者：Simon 林 · X [@linsizhen](https://x.com/linsizhen) · TikTok [@simonlin0423](https://www.tiktok.com/@simonlin0423) · 邮箱：simonlin0423@gmail.com
+> 作者：Simon 林 · X [@linsizhen](https://x.com/linsizhen) · 邮箱：simonlin0423@gmail.com
 
 # 美股港股全栈数据工具包 V1.0.1
 

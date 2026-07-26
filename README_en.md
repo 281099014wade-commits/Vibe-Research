@@ -236,7 +236,6 @@ All from the same open-source stack ([`simonlin1212`](https://github.com/simonli
 Built by **Simon**, independent developer.
 
 - 🐦 X: [@linsizhen](https://x.com/linsizhen)
-- 🎵 TikTok: [@simonlin0423](https://www.tiktok.com/@simonlin0423)
 - ✉️ Email: <simonlin0423@gmail.com>
 - 💬 Happy to talk about **enterprise AI adoption**; for project issues please open an [Issue](https://github.com/simonlin1212/Vibe-Research/issues).
 

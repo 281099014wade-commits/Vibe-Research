@@ -244,4 +244,4 @@ pip install requests
 
 ## License
 
-[Apache License 2.0](./LICENSE) — 自由使用，注明出处即可。**Author:** Simon Lin · X [@linsizhen](https://x.com/linsizhen) · TikTok [@simonlin0423](https://www.tiktok.com/@simonlin0423) · Email: [simonlin0423@gmail.com](mailto:simonlin0423@gmail.com)
+[Apache License 2.0](./LICENSE) — 自由使用，注明出处即可。**Author:** Simon Lin · X [@linsizhen](https://x.com/linsizhen) · Email: [simonlin0423@gmail.com](mailto:simonlin0423@gmail.com)
