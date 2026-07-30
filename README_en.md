@@ -79,7 +79,7 @@ Three public data toolkits are **vendored directly into this repo** — `git clo
 
 ### A-share full-stack data · AStockData
 
-- Lives in [`a-stock-data/`](a-stock-data/) (v3.5.1). Ten data layers, 44 endpoints, 15 sources, with fallback sources when a primary one gets blocked. [`a-stock-data/SKILL.md`](a-stock-data/SKILL.md) **embeds every call as runnable code** — self-contained, with built-in rate limiting for Eastmoney endpoints.
+- Lives in [`a-stock-data/`](a-stock-data/) (v3.6.0). Ten data layers, 47 endpoints, 15 sources, with fallback sources when a primary one gets blocked. [`a-stock-data/SKILL.md`](a-stock-data/SKILL.md) **embeds every call as runnable code** — self-contained, with built-in rate limiting for Eastmoney endpoints.
 - **Covers**: quotes / candles / analyst reports / consensus estimates / valuation / historical percentiles / financial statements / filings / Dragon-Tiger list / margin trading / block trades / shareholder counts / dividends / fund flows / lockup expiry / concept sectors / limit-up sentiment / ETF options / investor Q&A / market-wide industry rankings.
 - **For agents**: running this repo with Claude Code or similar? Point them at `SKILL.md` — every endpoint has copy-paste ready code. The backend data layer (`backend/astock.py`) is ported from it.
 - **Runtime deps**: `pip install mootdx requests pandas stockstats`
@@ -105,7 +105,7 @@ One data layer, three AI outlets:
 
 ```
 Vibe-Research/
-├── a-stock-data/      A-share data toolkit (vendored v3.5.1, ready to use)
+├── a-stock-data/      A-share data toolkit (vendored v3.6.0, ready to use)
 ├── global-stock-data/ US / HK data toolkit (vendored v2.0.3, ready to use)
 ├── backend/           FastAPI :8900
 │   ├── astock.py        A-share data
