@@ -45,12 +45,27 @@ function loadChat(key: string): StoredMsg[] {
   }
 }
 
+// 只保留「完整的轮次」。partial 的 assistant 要连同它前面那条 user 一起丢：
+// 只丢 assistant 会留下一个孤立的提问，模型在 history 里看到连续两条 user 发言，
+// 会把那个被放弃的问题当成还在等回答，去答错的题。
+function completeTurns(msgs: StoredMsg[]): StoredMsg[] {
+  const out: StoredMsg[] = [];
+  for (const m of msgs) {
+    if (m.partial) {
+      if (out.length && out[out.length - 1].role === "user") out.pop();
+      continue;
+    }
+    out.push(m);
+  }
+  return out;
+}
+
 function saveChat(key: string, msgs: StoredMsg[]): void {
   if (!msgs.length) {
     storageRemove(key);
     return;
   }
-  const keep = msgs.filter((m) => !m.partial);
+  const keep = completeTurns(msgs);
   if (!keep.length) {
     storageRemove(key);
     return;
@@ -167,9 +182,10 @@ export function AskAiButton({ context, suggestions = [], label = "问 AI", scope
     if (!q || loading) return;
     setInput("");
     setErr(null);
-    // 半截回答不进 history：模型会把残句当成自己上一轮的完整发言继续推理。
+    // 未完成的轮次整轮不进 history（半截回答 + 它的提问）：
+    // 模型会把残句当成自己上一轮的完整发言继续推理，孤立的提问则会被当成待答问题。
     const history: ChatMsg[] = [
-      ...msgs.filter((m) => !m.partial).map(({ role, content }) => ({ role, content })),
+      ...completeTurns(msgs).map(({ role, content }) => ({ role, content })),
       { role: "user", content: q },
     ];
     // 先放用户气泡 + 一个空的 assistant 气泡，流式往里填。

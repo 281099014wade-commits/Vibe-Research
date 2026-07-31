@@ -93,6 +93,13 @@ test("streaming replies are partial from creation and only cleared on success", 
   assert.match(source, /partial\?: boolean/);
   assert.match(source, /role: "assistant", content: "", tools: \[\], partial: true/); // 创建即标
   assert.match(source, /const \{ partial: _drop, \.\.\.rest \} = msg;/);            // 成功才摘
-  assert.match(source, /const keep = msgs\.filter\(\(m\) => !m\.partial\)/);        // 不落盘
-  assert.match(source, /msgs\.filter\(\(m\) => !m\.partial\)\.map/);               // 不进 history
+  assert.match(source, /const keep = completeTurns\(msgs\)/);                        // 不落盘
+  assert.match(source, /completeTurns\(msgs\)\.map/);                                // 不进 history
+});
+
+test("an interrupted turn drops the question too, not just the half answer", () => {
+  // 只丢 assistant 会留下孤立的提问，模型在 history 里看到连续两条 user 发言，
+  // 会把那个被放弃的问题当成还在等回答，去答错的题。
+  assert.match(source, /function completeTurns/);
+  assert.match(source, /if \(out\.length && out\[out\.length - 1\]\.role === "user"\) out\.pop\(\);/);
 });
