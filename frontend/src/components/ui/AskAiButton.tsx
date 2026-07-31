@@ -83,35 +83,49 @@ export function AskAiButton({ context, suggestions = [], label = "问 AI", scope
 
   const [open, setOpen] = useState(false);
   const [configured, setConfigured] = useState(false);
+  // key 与消息放在**同一个 state 里原子更新**——这是正确性的关键，不是风格问题。
+  // 若分成 msgs + 一个记录归属的 ref，key 变化那一帧 ref 已指向新 key 而 msgs 仍是旧的
+  // （setState 下一帧才生效），落盘守卫会误放行，把来源页对话写进目标 key、
+  // 覆盖掉目标页已存的对话。捆在一起后，转场帧里 chat.key 天然还是旧值，守卫必然拦住。
   // 惰性初始化：首帧就带上已存的对话，避免先渲染空列表再闪一下补上。
-  const [msgs, setMsgs] = useState<StoredMsg[]>(() => loadChat(chatKey));
+  const [chat, setChat] = useState<{ key: string; msgs: StoredMsg[] }>(
+    () => ({ key: chatKey, msgs: loadChat(chatKey) }),
+  );
+  const msgs = chat.msgs;
+  const setMsgs = (
+    updater: StoredMsg[] | ((prev: StoredMsg[]) => StoredMsg[]),
+  ) =>
+    setChat((c) => ({
+      key: c.key,
+      msgs: typeof updater === "function" ? updater(c.msgs) : updater,
+    }));
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   // 在跑的流式请求：关面板/换问题时中止，省用户的订阅/API 额度，也防迟到 chunk 写进新气泡
   const abortRef = useRef<AbortController | null>(null);
-  // 当前 msgs 属于哪个 chatKey —— 防止 key 切换那一帧把旧对话写进新 key。
-  const loadedKeyRef = useRef(chatKey);
 
   useEffect(() => {
     if (open) setConfigured(hasLlm());
   }, [open]);
 
   // 换页面/换标的 = 换一份对话（key 变了），把目标 key 已存的读进来。
+  // 同时**中止在跑的流式请求**：否则它的 alive() 仍然成立，迟到的 chunk 会被
+  // 追加到目标页的最后一条助手消息上，并把「用来源页上下文生成的回答」存进目标 key。
   useEffect(() => {
-    loadedKeyRef.current = chatKey;
-    setMsgs(loadChat(chatKey));
+    abortRef.current?.abort();
+    abortRef.current = null;
+    setLoading(false);
+    setChat({ key: chatKey, msgs: loadChat(chatKey) });
   }, [chatKey]);
 
-  // 每次消息变动落盘。
-  // ⚠️ 必须校验 msgs 是否真的属于当前 chatKey：key 变化那一帧，两个 effect 都会跑，
-  // 而此时 msgs 还是**上一个 key 的内容**（setMsgs 要下一帧才生效）。不校验就会把
-  // 来源页的对话写进目标 key，**覆盖掉目标页已存的对话**——静默的数据丢失。
+  // 每次消息变动落盘。守卫见上方 chat state 的注释：转场帧里 chat.key 仍是旧值，
+  // 与 chatKey 不等，于是不会把旧对话写进新 key。
   useEffect(() => {
-    if (loadedKeyRef.current !== chatKey) return;
-    saveChat(chatKey, msgs);
-  }, [chatKey, msgs]);
+    if (chat.key !== chatKey) return;
+    saveChat(chatKey, chat.msgs);
+  }, [chatKey, chat]);
 
   useEffect(() => () => abortRef.current?.abort(), []); // 组件卸载兜底
 

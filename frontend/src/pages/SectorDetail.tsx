@@ -1,14 +1,24 @@
+import { useState } from "react";
 import { useParams, Link } from "react-router-dom";
 import { ArrowLeft, Plus, Wrench } from "lucide-react";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { GlassCard } from "@/components/ui/GlassCard";
 import { AskAiButton } from "@/components/ui/AskAiButton";
 import { Disclaimer } from "@/components/ui/Disclaimer";
 import sectorsData from "@/data/sectors.json";
 
+interface SectorTab {
+  title: string;
+  content: string;
+}
+
 export function SectorDetail() {
   const { key } = useParams();
   const sector = sectorsData.sectors.find((s) => s.key === key);
+  const tabs = (sector as { tabs?: SectorTab[] } | undefined)?.tabs ?? [];
+  const [activeTab, setActiveTab] = useState(0);
 
   if (!sector) {
     return (
@@ -53,6 +63,31 @@ export function SectorDetail() {
           <p className="mt-4 flex items-center gap-1.5 text-xs text-muted-foreground">
             <Plus className="h-3.5 w-3.5" /> 想在某个环节挂上自己关注的标的？数据存在你本地，不会上传、不进仓库。
           </p>
+
+          {tabs.length > 0 && (
+            <div className="mt-6">
+              <div className="mb-3 flex flex-wrap gap-2">
+                {tabs.map((t, i) => (
+                  <button
+                    key={t.title}
+                    onClick={() => setActiveTab(i)}
+                    className={
+                      i === activeTab
+                        ? "rounded-lg border border-primary/60 bg-primary/20 px-3.5 py-1.5 text-sm font-semibold text-foreground shadow-glow"
+                        : "rounded-lg border border-border/60 bg-background/40 px-3.5 py-1.5 text-sm text-muted-foreground transition-colors hover:text-foreground"
+                    }
+                  >
+                    {t.title}
+                  </button>
+                ))}
+              </div>
+              <GlassCard>
+                <div className="prose prose-sm prose-invert max-w-none text-foreground prose-table:text-sm">
+                  <ReactMarkdown remarkPlugins={[remarkGfm]}>{tabs[activeTab]?.content ?? ""}</ReactMarkdown>
+                </div>
+              </GlassCard>
+            </div>
+          )}
         </div>
       ) : (
         <GlassCard>
