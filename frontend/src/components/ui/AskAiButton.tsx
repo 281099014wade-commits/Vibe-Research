@@ -105,6 +105,9 @@ export function AskAiButton({ context, suggestions = [], label = "问 AI", scope
   const scrollRef = useRef<HTMLDivElement>(null);
   // 在跑的流式请求：关面板/换问题时中止，省用户的订阅/API 额度，也防迟到 chunk 写进新气泡
   const abortRef = useRef<AbortController | null>(null);
+  // 始终镜像当前 chatKey，供异步回调判断「对话是否已经被换掉」。
+  const chatKeyRef = useRef(chatKey);
+  chatKeyRef.current = chatKey;
 
   useEffect(() => {
     if (open) setConfigured(hasLlm());
@@ -163,6 +166,7 @@ export function AskAiButton({ context, suggestions = [], label = "问 AI", scope
     abortRef.current?.abort();
     const ac = new AbortController();
     abortRef.current = ac;
+    const startedKey = chatKeyRef.current;   // 这次请求属于哪份对话
     // 只有仍是「当前这次请求」才允许写 UI——旧请求的迟到 chunk 直接丢弃
     const alive = () => abortRef.current === ac && !ac.signal.aborted;
     try {
@@ -172,10 +176,13 @@ export function AskAiButton({ context, suggestions = [], label = "问 AI", scope
       }, ac.signal);
     } catch (e) {
       // 出错/中止：去掉尾部空 assistant 气泡；主动中止不算错误，不提示。
-      // ⚠️ 必须和下面 finally 用同一个身份校验：换页/换标的会中止旧请求，
-      // 而它的 catch 可能在用户已经在新页面发起提问之后才落地——不校验就会把
-      // **新请求**的空气泡删掉，后续 chunk 无处可写、对话残缺。
-      if (abortRef.current === ac) {
+      // 三种「不该清理」的情况要分开判，不能简单用 abortRef.current === ac：
+      //   · 有更新的请求接管了（abortRef 指向别人）→ 别删人家的气泡
+      //   · 对话已经被换掉（key 变了）→ 别动新对话
+      //   · 面板被关闭（close 把 abortRef 置 null，但对话没变）→ **仍要清理**，
+      //     否则空气泡会被持久化，重开/刷新看到一条空回复还进后续 history。
+      const superseded = abortRef.current !== null && abortRef.current !== ac;
+      if (!superseded && chatKeyRef.current === startedKey) {
         setMsgs((m) => m.filter((msg, i) => !(i === m.length - 1 && msg.role === "assistant" && !msg.content)));
         if (!ac.signal.aborted) setErr(e instanceof ApiError ? e.message : "对话失败");
       }

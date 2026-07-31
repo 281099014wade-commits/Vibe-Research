@@ -71,6 +71,8 @@ test("the stock page actually passes a per-symbol scope", async () => {
     new URL("../src/pages/StockData.tsx", import.meta.url), "utf8",
   );
   assert.match(page, /<AskAiButton[\s\S]*?scopeKey=/);
+  // 必须用已解析结果的代码，不能用一边打字一边变的输入框 state
+  assert.match(page, /scopeKey=\{gstock \? `g:\$\{gstock\.code\}` : val\?\.code\}/);
 });
 
 test("aborted-request cleanup is gated by request identity", () => {
@@ -78,5 +80,8 @@ test("aborted-request cleanup is gated by request identity", () => {
   // 不校验就会删掉新请求的空气泡，后续 chunk 无处可写、对话残缺。
   const block = source.match(/\} catch \(e\) \{[\s\S]*?\} finally \{/);
   assert.ok(block, "未找到 catch 块");
-  assert.match(block[0], /if \(abortRef\.current === ac\)/);
+  // 不能简单用 abortRef.current === ac：close() 会把它置 null，
+  // 那种情况下空气泡**仍要清理**，否则会被持久化成一条空回复。
+  assert.match(block[0], /const superseded = abortRef\.current !== null && abortRef\.current !== ac;/);
+  assert.match(block[0], /if \(!superseded && chatKeyRef\.current === startedKey\)/);
 });

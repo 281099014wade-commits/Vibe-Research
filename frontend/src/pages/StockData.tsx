@@ -203,8 +203,10 @@ export function StockData() {
         actions={(val || gstock) && (
           <AskAiButton
             context={gstock ? gAiContext : aiContext}
-            // 本页不换路由就能换标的，必须按代码分开存对话，否则会串台
-            scopeKey={gstock ? `g:${gstock.code || code}` : code}
+            // 本页不换路由就能换标的，必须按代码分开存对话，否则会串台。
+            // ⚠️ 用**已解析结果**的代码，不能用输入框的 code——后者一边打字一边变，
+            // 而 val/gstock 和 AI 上下文仍描述上一只票，会把旧上下文存到新代码名下。
+            scopeKey={gstock ? `g:${gstock.code}` : val?.code}
             label="让 AI 读这些数据"
             suggestions={gstock
               ? ["这家公司基本面怎么样", "盈利能力如何", "有什么风险"]
