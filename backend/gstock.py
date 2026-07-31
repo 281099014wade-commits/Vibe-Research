@@ -207,9 +207,14 @@ def hk_cashflow(query: str, periods: int = 8) -> dict:
     info = resolve_symbol(query)
     if not info or not info["secucode"].endswith(".HK"):
         return {}
+    # ⚠️ 该端点是**按科目逐行**返回的，一期就有几十行（实测腾讯 00700 最多 52 行/期、
+    # 工行 01398 38 行/期）。只按 SECUCODE 取 300 行，最新 8 期根本装不下——
+    # 最旧的那期会被截断成残缺科目，而且不报错。所以在**服务端**就按需要的科目码过滤：
+    # 实测同样 300 行，覆盖期数从 13 期升到 39 期，请求量反而更小。
+    item_filter = "(STD_ITEM_CODE in (" + ",".join(f'"{c}"' for c in _HK_CF_ORDER) + "))"
     rows = astock.eastmoney_datacenter(
         "RPT_HKSK_FN_CASHFLOW",
-        filter_str=f'(SECUCODE="{info["secucode"]}")',
+        filter_str=f'(SECUCODE="{info["secucode"]}"){item_filter}',
         page_size=300, sort_columns="REPORT_DATE", sort_types="-1")
     if not rows:
         return {}
