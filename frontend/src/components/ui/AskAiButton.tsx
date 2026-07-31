@@ -1,12 +1,51 @@
 import { useState, useRef, useEffect } from "react";
-import { Link } from "react-router-dom";
-import { Sparkles, X, Settings, Send, Loader2, Wrench, AlertCircle } from "lucide-react";
+import { Link, useLocation } from "react-router-dom";
+import { Sparkles, X, Settings, Send, Loader2, Wrench, AlertCircle, Trash2 } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { cn } from "@/lib/utils";
 import { hasLlm, chatStream, type ChatMsg } from "@/lib/llm";
 import { ApiError } from "@/lib/api";
 import { SaveNoteButton } from "@/components/ui/SaveNoteButton";
+import { storageGet, storageSet, storageRemove } from "@/lib/storage";
+
+// 对话持久化（#19）。此前 msgs 只是组件内的 useState：切页面卸载、刷新、
+// 关标签页，问过的东西全没了——用户反馈「关闭 AI 就找不回之前的对话」，
+// 而每轮对话是花了自己 API 额度换来的，丢掉的是真金白银。
+//
+// 按路由分开存：不同页面的「问 AI」上下文不同（个股页 vs 板块页），
+// 混在一起会把上一页的对话带到下一页，比不存更让人困惑。
+const CHAT_KEY_PREFIX = "vr-askai-chat:";
+// 单页对话上限。localStorage 总配额约 5MB，而一轮研报级回答可能上万字；
+// 不设上限迟早写爆，届时 storageSet 静默失败、用户以为存上了。
+const MAX_PERSISTED_MSGS = 40;
+
+type StoredMsg = ChatMsg & { tools?: ToolUse[] };
+
+function loadChat(key: string): StoredMsg[] {
+  const raw = storageGet(key);
+  if (!raw) return [];
+  try {
+    const parsed = JSON.parse(raw);
+    // 存量数据可能来自旧版本或被手工改坏，形状不对就当没有，别让页面崩。
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter(
+      (m): m is StoredMsg =>
+        m && typeof m === "object" && typeof m.content === "string" &&
+        (m.role === "user" || m.role === "assistant"),
+    );
+  } catch {
+    return [];
+  }
+}
+
+function saveChat(key: string, msgs: StoredMsg[]): void {
+  if (!msgs.length) {
+    storageRemove(key);
+    return;
+  }
+  storageSet(key, JSON.stringify(msgs.slice(-MAX_PERSISTED_MSGS)));
+}
 
 interface Props {
   // 本分栏/本页要喂给用户 AI 的上下文，作为对话的系统上下文。
@@ -34,9 +73,13 @@ interface ToolUse { name: string; arg: string }
 // 「问 AI」入口 —— 把当前分栏内容作为上下文，调用户自己配置的模型；
 // AI 可自行调 A股数据工具作答。结论由用户模型给出，本产品不校准、不负责。
 export function AskAiButton({ context, suggestions = [], label = "问 AI" }: Props) {
+  const { pathname } = useLocation();
+  const chatKey = CHAT_KEY_PREFIX + pathname;
+
   const [open, setOpen] = useState(false);
   const [configured, setConfigured] = useState(false);
-  const [msgs, setMsgs] = useState<(ChatMsg & { tools?: ToolUse[] })[]>([]);
+  // 惰性初始化：首帧就带上已存的对话，避免先渲染空列表再闪一下补上。
+  const [msgs, setMsgs] = useState<StoredMsg[]>(() => loadChat(chatKey));
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState<string | null>(null);
@@ -48,7 +91,26 @@ export function AskAiButton({ context, suggestions = [], label = "问 AI" }: Pro
     if (open) setConfigured(hasLlm());
   }, [open]);
 
+  // 换页面 = 换一份对话（key 变了），把当前这页已存的读进来。
+  useEffect(() => {
+    setMsgs(loadChat(chatKey));
+  }, [chatKey]);
+
+  // 每次消息变动落盘。流式回答期间会频繁触发，但写的是同一个 key、
+  // 数据量小，且 storageSet 已对配额异常兜底，代价可接受。
+  useEffect(() => {
+    saveChat(chatKey, msgs);
+  }, [chatKey, msgs]);
+
   useEffect(() => () => abortRef.current?.abort(), []); // 组件卸载兜底
+
+  const clearChat = () => {
+    abortRef.current?.abort();
+    abortRef.current = null;
+    setLoading(false);
+    setErr(null);
+    setMsgs([]);          // saveChat 见空数组会 storageRemove，不留空壳
+  };
 
   const close = () => {
     abortRef.current?.abort();
@@ -113,9 +175,22 @@ export function AskAiButton({ context, suggestions = [], label = "问 AI" }: Pro
               <span className="flex items-center gap-2 font-semibold text-glow">
                 <Sparkles className="h-4 w-4 text-primary" /> 问 AI · 本页上下文
               </span>
-              <button onClick={close} className="text-muted-foreground hover:text-foreground">
-                <X className="h-4 w-4" />
-              </button>
+              <div className="flex items-center gap-1">
+                {msgs.length > 0 && (
+                  // 存了就得能删：对话留在本机 localStorage，用户得有办法清掉。
+                  <button
+                    onClick={clearChat}
+                    title="清空本页对话"
+                    aria-label="清空本页对话"
+                    className="text-muted-foreground hover:text-foreground"
+                  >
+                    <Trash2 className="h-4 w-4" />
+                  </button>
+                )}
+                <button onClick={close} className="text-muted-foreground hover:text-foreground" aria-label="关闭">
+                  <X className="h-4 w-4" />
+                </button>
+              </div>
             </div>
 
             {!configured ? (
