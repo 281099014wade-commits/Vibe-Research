@@ -72,3 +72,11 @@ test("the stock page actually passes a per-symbol scope", async () => {
   );
   assert.match(page, /<AskAiButton[\s\S]*?scopeKey=/);
 });
+
+test("aborted-request cleanup is gated by request identity", () => {
+  // 换页会中止旧请求，其 catch 可能在用户已于新页面发起提问后才落地。
+  // 不校验就会删掉新请求的空气泡，后续 chunk 无处可写、对话残缺。
+  const block = source.match(/\} catch \(e\) \{[\s\S]*?\} finally \{/);
+  assert.ok(block, "未找到 catch 块");
+  assert.match(block[0], /if \(abortRef\.current === ac\)/);
+});

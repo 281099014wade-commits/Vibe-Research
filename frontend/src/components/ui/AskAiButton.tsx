@@ -171,9 +171,14 @@ export function AskAiButton({ context, suggestions = [], label = "问 AI", scope
         onDelta: (t) => { if (alive()) patchLast((msg) => ({ ...msg, content: msg.content + t })); },
       }, ac.signal);
     } catch (e) {
-      // 出错/中止：去掉尾部空 assistant 气泡；主动中止不算错误，不提示
-      setMsgs((m) => m.filter((msg, i) => !(i === m.length - 1 && msg.role === "assistant" && !msg.content)));
-      if (!ac.signal.aborted) setErr(e instanceof ApiError ? e.message : "对话失败");
+      // 出错/中止：去掉尾部空 assistant 气泡；主动中止不算错误，不提示。
+      // ⚠️ 必须和下面 finally 用同一个身份校验：换页/换标的会中止旧请求，
+      // 而它的 catch 可能在用户已经在新页面发起提问之后才落地——不校验就会把
+      // **新请求**的空气泡删掉，后续 chunk 无处可写、对话残缺。
+      if (abortRef.current === ac) {
+        setMsgs((m) => m.filter((msg, i) => !(i === m.length - 1 && msg.role === "assistant" && !msg.content)));
+        if (!ac.signal.aborted) setErr(e instanceof ApiError ? e.message : "对话失败");
+      }
     } finally {
       if (abortRef.current === ac) {
         abortRef.current = null;
