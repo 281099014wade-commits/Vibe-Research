@@ -20,7 +20,13 @@ const CHAT_KEY_PREFIX = "vr-askai-chat:";
 // 不设上限迟早写爆，届时 storageSet 静默失败、用户以为存上了。
 const MAX_PERSISTED_MSGS = 40;
 
-type StoredMsg = ChatMsg & { tools?: ToolUse[] };
+type StoredMsg = ChatMsg & {
+  tools?: ToolUse[];
+  // 流式中途被中止、只收到半截的回答。**不落盘、也不进下一轮 history**：
+  // 否则刷新后它会以「完整回答」的身份被喂回模型，后续推理建立在残句上。
+  // UI 仍然显示，用户能看到已经拿到的部分。
+  partial?: boolean;
+};
 
 function loadChat(key: string): StoredMsg[] {
   const raw = storageGet(key);
@@ -44,7 +50,12 @@ function saveChat(key: string, msgs: StoredMsg[]): void {
     storageRemove(key);
     return;
   }
-  storageSet(key, JSON.stringify(msgs.slice(-MAX_PERSISTED_MSGS)));
+  const keep = msgs.filter((m) => !m.partial);
+  if (!keep.length) {
+    storageRemove(key);
+    return;
+  }
+  storageSet(key, JSON.stringify(keep.slice(-MAX_PERSISTED_MSGS)));
 }
 
 interface Props {
@@ -156,7 +167,11 @@ export function AskAiButton({ context, suggestions = [], label = "问 AI", scope
     if (!q || loading) return;
     setInput("");
     setErr(null);
-    const history: ChatMsg[] = [...msgs.map(({ role, content }) => ({ role, content })), { role: "user", content: q }];
+    // 半截回答不进 history：模型会把残句当成自己上一轮的完整发言继续推理。
+    const history: ChatMsg[] = [
+      ...msgs.filter((m) => !m.partial).map(({ role, content }) => ({ role, content })),
+      { role: "user", content: q },
+    ];
     // 先放用户气泡 + 一个空的 assistant 气泡，流式往里填。
     setMsgs((m) => [...m, { role: "user", content: q }, { role: "assistant", content: "", tools: [] }]);
     setLoading(true);
@@ -183,7 +198,16 @@ export function AskAiButton({ context, suggestions = [], label = "问 AI", scope
       //     否则空气泡会被持久化，重开/刷新看到一条空回复还进后续 history。
       const superseded = abortRef.current !== null && abortRef.current !== ac;
       if (!superseded && chatKeyRef.current === startedKey) {
-        setMsgs((m) => m.filter((msg, i) => !(i === m.length - 1 && msg.role === "assistant" && !msg.content)));
+        setMsgs((m) =>
+          m.flatMap((msg, i) => {
+            if (i !== m.length - 1 || msg.role !== "assistant") return [msg];
+            // 一个字都没收到：整条气泡删掉。
+            if (!msg.content) return [];
+            // 收到了半截：留在界面上给用户看，但标记为 partial，
+            // 从此不落盘、不进 history（见 StoredMsg.partial 注释）。
+            return [{ ...msg, partial: true }];
+          }),
+        );
         if (!ac.signal.aborted) setErr(e instanceof ApiError ? e.message : "对话失败");
       }
     } finally {

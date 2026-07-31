@@ -85,3 +85,13 @@ test("aborted-request cleanup is gated by request identity", () => {
   assert.match(block[0], /const superseded = abortRef\.current !== null && abortRef\.current !== ac;/);
   assert.match(block[0], /if \(!superseded && chatKeyRef\.current === startedKey\)/);
 });
+
+test("aborted partial replies are marked and kept out of storage and history", () => {
+  // 持久化引入的新风险：中止前已收到半截的回答，以前只在内存里、刷新即消失；
+  // 现在会被存下来并当作**完整回答**喂回模型，后续推理建立在残句上。
+  assert.match(source, /partial\?: boolean/);
+  assert.match(source, /const keep = msgs\.filter\(\(m\) => !m\.partial\)/);       // 不落盘
+  assert.match(source, /msgs\.filter\(\(m\) => !m\.partial\)\.map/);               // 不进 history
+  assert.match(source, /return \[\{ \.\.\.msg, partial: true \}\]/);               // 中止时打标
+  assert.match(source, /if \(!msg\.content\) return \[\];/);                       // 空气泡仍直接删
+});
