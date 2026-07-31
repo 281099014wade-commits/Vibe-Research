@@ -173,10 +173,17 @@ export function AskAiButton({ context, suggestions = [], label = "问 AI", scope
       { role: "user", content: q },
     ];
     // 先放用户气泡 + 一个空的 assistant 气泡，流式往里填。
-    setMsgs((m) => [...m, { role: "user", content: q }, { role: "assistant", content: "", tools: [] }]);
+    // assistant 气泡**从创建就是 partial**，只有流式正常结束才摘掉这个标记。
+    // 这样「流到一半用户换页/换标的」时，落盘的那份天然就不含这条残句——
+    // 靠中止时再补标记是来不及的：每个 delta 都会触发落盘。
+    setMsgs((m) => [
+      ...m,
+      { role: "user", content: q },
+      { role: "assistant", content: "", tools: [], partial: true },
+    ]);
     setLoading(true);
     // 更新「最后一条 assistant 气泡」（不可变）。
-    const patchLast = (fn: (msg: ChatMsg & { tools?: ToolUse[] }) => ChatMsg & { tools?: ToolUse[] }) =>
+    const patchLast = (fn: (msg: StoredMsg) => StoredMsg) =>
       setMsgs((m) => m.map((msg, i) => (i === m.length - 1 && msg.role === "assistant" ? fn(msg) : msg)));
     abortRef.current?.abort();
     const ac = new AbortController();
@@ -189,6 +196,11 @@ export function AskAiButton({ context, suggestions = [], label = "问 AI", scope
         onTool: (tool, args) => { if (alive()) patchLast((msg) => ({ ...msg, tools: [...(msg.tools || []), { name: tool, arg: argStr(args) }] })); },
         onDelta: (t) => { if (alive()) patchLast((msg) => ({ ...msg, content: msg.content + t })); },
       }, ac.signal);
+      // 正常收完：摘掉 partial，这条回答才开始落盘、才进下一轮 history。
+      if (alive()) patchLast((msg) => {
+        const { partial: _drop, ...rest } = msg;
+        return rest;
+      });
     } catch (e) {
       // 出错/中止：去掉尾部空 assistant 气泡；主动中止不算错误，不提示。
       // 三种「不该清理」的情况要分开判，不能简单用 abortRef.current === ac：
@@ -198,15 +210,10 @@ export function AskAiButton({ context, suggestions = [], label = "问 AI", scope
       //     否则空气泡会被持久化，重开/刷新看到一条空回复还进后续 history。
       const superseded = abortRef.current !== null && abortRef.current !== ac;
       if (!superseded && chatKeyRef.current === startedKey) {
+        // 有内容的半截回答本来就带着 partial（创建时就标了），这里只需删掉
+        // 一个字都没收到的空气泡；半截的留在界面上给用户看。
         setMsgs((m) =>
-          m.flatMap((msg, i) => {
-            if (i !== m.length - 1 || msg.role !== "assistant") return [msg];
-            // 一个字都没收到：整条气泡删掉。
-            if (!msg.content) return [];
-            // 收到了半截：留在界面上给用户看，但标记为 partial，
-            // 从此不落盘、不进 history（见 StoredMsg.partial 注释）。
-            return [{ ...msg, partial: true }];
-          }),
+          m.filter((msg, i) => !(i === m.length - 1 && msg.role === "assistant" && !msg.content)),
         );
         if (!ac.signal.aborted) setErr(e instanceof ApiError ? e.message : "对话失败");
       }

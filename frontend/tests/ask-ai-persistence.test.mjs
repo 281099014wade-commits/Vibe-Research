@@ -86,12 +86,13 @@ test("aborted-request cleanup is gated by request identity", () => {
   assert.match(block[0], /if \(!superseded && chatKeyRef\.current === startedKey\)/);
 });
 
-test("aborted partial replies are marked and kept out of storage and history", () => {
-  // 持久化引入的新风险：中止前已收到半截的回答，以前只在内存里、刷新即消失；
-  // 现在会被存下来并当作**完整回答**喂回模型，后续推理建立在残句上。
+test("streaming replies are partial from creation and only cleared on success", () => {
+  // 每个 delta 都会触发落盘，所以「中止时再补标记」来不及：
+  // 流到一半换页/换标的，存下来的就是一条被当作完整回答的残句，
+  // 回到该对话时还会以完整发言的身份进入下一轮 history。
   assert.match(source, /partial\?: boolean/);
-  assert.match(source, /const keep = msgs\.filter\(\(m\) => !m\.partial\)/);       // 不落盘
+  assert.match(source, /role: "assistant", content: "", tools: \[\], partial: true/); // 创建即标
+  assert.match(source, /const \{ partial: _drop, \.\.\.rest \} = msg;/);            // 成功才摘
+  assert.match(source, /const keep = msgs\.filter\(\(m\) => !m\.partial\)/);        // 不落盘
   assert.match(source, /msgs\.filter\(\(m\) => !m\.partial\)\.map/);               // 不进 history
-  assert.match(source, /return \[\{ \.\.\.msg, partial: true \}\]/);               // 中止时打标
-  assert.match(source, /if \(!msg\.content\) return \[\];/);                       // 空气泡仍直接删
 });
