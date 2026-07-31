@@ -226,11 +226,16 @@ export function AskAiButton({ context, suggestions = [], label = "问 AI", scope
       //     否则空气泡会被持久化，重开/刷新看到一条空回复还进后续 history。
       const superseded = abortRef.current !== null && abortRef.current !== ac;
       if (!superseded && chatKeyRef.current === startedKey) {
-        // 有内容的半截回答本来就带着 partial（创建时就标了），这里只需删掉
-        // 一个字都没收到的空气泡；半截的留在界面上给用户看。
-        setMsgs((m) =>
-          m.filter((msg, i) => !(i === m.length - 1 && msg.role === "assistant" && !msg.content)),
-        );
+        // 有内容的半截回答本来就带着 partial（创建时就标了），completeTurns
+        // 会把它连同提问一起挡在落盘与 history 之外，界面上仍显示给用户看。
+        // 这里只处理「一个字都没收到」：把空气泡**连同它的提问**一起从界面移除——
+        // 只删空气泡会在界面和存储里留下一个孤立的提问，下一轮就是连续两条 user。
+        setMsgs((m) => {
+          const last = m[m.length - 1];
+          if (!last || last.role !== "assistant" || last.content) return m;
+          const dropUser = m[m.length - 2]?.role === "user";
+          return m.slice(0, dropUser ? -2 : -1);
+        });
         if (!ac.signal.aborted) setErr(e instanceof ApiError ? e.message : "对话失败");
       }
     } finally {

@@ -103,3 +103,12 @@ test("an interrupted turn drops the question too, not just the half answer", () 
   assert.match(source, /function completeTurns/);
   assert.match(source, /if \(out\.length && out\[out\.length - 1\]\.role === "user"\) out\.pop\(\);/);
 });
+
+test("a request that fails before any content removes its question too", () => {
+  // 对称情况：一个字都没收到时删空气泡，若不连提问一起删，
+  // 界面和存储里都会留下孤立的 user turn，下一轮就是连续两条 user。
+  const block = source.match(/\} catch \(e\) \{[\s\S]*?\} finally \{/);
+  assert.ok(block, "未找到 catch 块");
+  assert.match(block[0], /const dropUser = m\[m\.length - 2\]\?\.role === "user";/);
+  assert.match(block[0], /m\.slice\(0, dropUser \? -2 : -1\)/);
+});
