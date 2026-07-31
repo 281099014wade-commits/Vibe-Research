@@ -43,3 +43,27 @@ test("there is a way to clear a stored conversation", () => {
 test("emptying the conversation removes the key rather than storing an empty shell", () => {
   assert.match(source, /if \(!msgs\.length\)\s*\{\s*\n?\s*storageRemove\(key\)/);
 });
+
+test("saving is gated on the key the current messages belong to", () => {
+  // key 变化那一帧两个 effect 都会跑，而 msgs 还是上一个 key 的内容
+  // （setMsgs 下一帧才生效）。不校验就会把来源页对话写进目标 key，
+  // 覆盖掉目标页已存的对话 —— 静默数据丢失。
+  assert.match(source, /loadedKeyRef/);
+  assert.match(source, /if \(loadedKeyRef\.current !== chatKey\) return;/);
+  // 载入时必须先更新 ref，再 setMsgs
+  assert.match(source, /loadedKeyRef\.current = chatKey;\s*\n\s*setMsgs\(loadChat\(chatKey\)\)/);
+});
+
+test("callers can scope a conversation below the route level", () => {
+  // 个股页不换路由就能换标的：只按 pathname 分 key 会让 A 股票的历史
+  // 作为 history 发给正在问 B 股票的模型。
+  assert.match(source, /scopeKey\?: string/);
+  assert.match(source, /CHAT_KEY_PREFIX \+ pathname \+ \(scopeKey \? `#\$\{scopeKey\}` : ""\)/);
+});
+
+test("the stock page actually passes a per-symbol scope", async () => {
+  const page = await readFile(
+    new URL("../src/pages/StockData.tsx", import.meta.url), "utf8",
+  );
+  assert.match(page, /<AskAiButton[\s\S]*?scopeKey=/);
+});

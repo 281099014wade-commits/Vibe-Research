@@ -52,6 +52,11 @@ interface Props {
   context: string;
   suggestions?: string[];
   label?: string;
+  // 同一路由下切换不同标的时用来区分对话（如个股页的股票代码）。
+  // 不传则只按路由区分——对「一个路由只对应一个对象」的页面足够。
+  // ⚠️ 个股页这类「不换路由就能换标的」的页面必须传，否则 A 股票的历史会
+  // 作为 history 发给正在问 B 股票的模型，答案串台且被合并存下来。
+  scopeKey?: string;
 }
 
 const TOOL_LABEL: Record<string, string> = {
@@ -72,9 +77,9 @@ interface ToolUse { name: string; arg: string }
 
 // 「问 AI」入口 —— 把当前分栏内容作为上下文，调用户自己配置的模型；
 // AI 可自行调 A股数据工具作答。结论由用户模型给出，本产品不校准、不负责。
-export function AskAiButton({ context, suggestions = [], label = "问 AI" }: Props) {
+export function AskAiButton({ context, suggestions = [], label = "问 AI", scopeKey }: Props) {
   const { pathname } = useLocation();
-  const chatKey = CHAT_KEY_PREFIX + pathname;
+  const chatKey = CHAT_KEY_PREFIX + pathname + (scopeKey ? `#${scopeKey}` : "");
 
   const [open, setOpen] = useState(false);
   const [configured, setConfigured] = useState(false);
@@ -86,19 +91,25 @@ export function AskAiButton({ context, suggestions = [], label = "问 AI" }: Pro
   const scrollRef = useRef<HTMLDivElement>(null);
   // 在跑的流式请求：关面板/换问题时中止，省用户的订阅/API 额度，也防迟到 chunk 写进新气泡
   const abortRef = useRef<AbortController | null>(null);
+  // 当前 msgs 属于哪个 chatKey —— 防止 key 切换那一帧把旧对话写进新 key。
+  const loadedKeyRef = useRef(chatKey);
 
   useEffect(() => {
     if (open) setConfigured(hasLlm());
   }, [open]);
 
-  // 换页面 = 换一份对话（key 变了），把当前这页已存的读进来。
+  // 换页面/换标的 = 换一份对话（key 变了），把目标 key 已存的读进来。
   useEffect(() => {
+    loadedKeyRef.current = chatKey;
     setMsgs(loadChat(chatKey));
   }, [chatKey]);
 
-  // 每次消息变动落盘。流式回答期间会频繁触发，但写的是同一个 key、
-  // 数据量小，且 storageSet 已对配额异常兜底，代价可接受。
+  // 每次消息变动落盘。
+  // ⚠️ 必须校验 msgs 是否真的属于当前 chatKey：key 变化那一帧，两个 effect 都会跑，
+  // 而此时 msgs 还是**上一个 key 的内容**（setMsgs 要下一帧才生效）。不校验就会把
+  // 来源页的对话写进目标 key，**覆盖掉目标页已存的对话**——静默的数据丢失。
   useEffect(() => {
+    if (loadedKeyRef.current !== chatKey) return;
     saveChat(chatKey, msgs);
   }, [chatKey, msgs]);
 

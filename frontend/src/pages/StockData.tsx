@@ -203,6 +203,8 @@ export function StockData() {
         actions={(val || gstock) && (
           <AskAiButton
             context={gstock ? gAiContext : aiContext}
+            // 本页不换路由就能换标的，必须按代码分开存对话，否则会串台
+            scopeKey={gstock ? `g:${gstock.code || code}` : code}
             label="让 AI 读这些数据"
             suggestions={gstock
               ? ["这家公司基本面怎么样", "盈利能力如何", "有什么风险"]
