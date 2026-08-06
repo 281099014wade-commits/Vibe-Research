@@ -28,7 +28,29 @@ import market
 import myreports as mr
 import reflection as reflect_layer
 
-app = FastAPI(title="Vibe-Research API", version="0.2.2")
+
+def _read_version() -> str:
+    """版本号只有一个来源：frontend/package.json（发版时本来就要改它）。
+
+    以前这里和 /api/health、前端 Layout 各写死一份，发 v0.3.0 时三处都忘了改、
+    继续显示 v0.2.2（#20）。读同一个文件就不会再漂。读不到就说"读不到"，
+    不要退回一个写死的旧版本号——那正是当初的坑。
+    """
+    path = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+        "frontend", "package.json",
+    )
+    try:
+        with open(path, encoding="utf-8") as f:
+            return json.load(f)["version"]
+    except (OSError, ValueError, KeyError) as e:
+        print(f"[warn] 读不到版本号（{path}）：{e}")
+        return "unknown"
+
+
+__version__ = _read_version()
+
+app = FastAPI(title="Vibe-Research API", version=__version__)
 
 # 每半小时后台刷新持仓数据
 pf.start_scheduler(1800)
@@ -72,7 +94,7 @@ def _validate(code: str) -> str:
 
 @app.get("/api/health")
 def health():
-    return {"ok": True, "service": "vibe-research-api", "version": "0.2.2"}
+    return {"ok": True, "service": "vibe-research-api", "version": __version__}
 
 
 class LLMConfig(BaseModel):
