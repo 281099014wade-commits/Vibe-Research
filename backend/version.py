@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 
 _PACKAGE_JSON = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
@@ -29,5 +30,8 @@ def read_version() -> str:
         with open(_PACKAGE_JSON, encoding="utf-8") as f:
             return json.load(f)["version"]
     except (OSError, ValueError, KeyError) as e:
-        print(f"[warn] 读不到版本号（{_PACKAGE_JSON}）：{e}")
+        # 🔴 必须走 stderr。本模块会被 mcp_server 导入，而 MCP 的 **stdout 专供
+        # JSON-RPC**——往 stdout 打一行警告就会插在初始化响应之前，客户端可能直接
+        # 拒收整条流。仅后端部署（没有 frontend/ 目录）时正好会走到这个分支。
+        print(f"[warn] 读不到版本号（{_PACKAGE_JSON}）：{e}", file=sys.stderr)
         return "unknown"
