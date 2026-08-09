@@ -122,11 +122,28 @@ def _search(q: str) -> dict | None:
     for url in _SEARCH_ENDPOINTS:
         try:
             r = astock.em_get(url, params=params, headers=_UA_H, timeout=10)
+            status = getattr(r, "status_code", 200)
+            if status >= 400:
+                # em_get 不会 raise_for_status，HTTP 错误页照样能 .json() 成功
+                raise RuntimeError(f"HTTP {status}")
             payload = r.json()
-        except Exception as e:  # noqa: BLE001 — 网络/JSON 解析都可能，统一记下再换下一个
+        except Exception as e:  # noqa: BLE001 — 网络/HTTP/JSON 解析都可能
             last_error = f"{url} → {type(e).__name__}: {str(e)[:80]}"
             continue
-        rows = (payload.get("QuotationCodeTable") or {}).get("Data") or []
+
+        # 🔴 必须校验响应结构再决定收手。少了这一步，主端点返回「合法 JSON 但没有
+        # QuotationCodeTable」（错误响应 / 接口改版 / 风控页）时会被当成"查得到但
+        # 没有匹配"，直接 break —— 备用端点根本轮不上，调用方拿到的还是"未找到"。
+        # 而这恰恰就是 #26 报告者描述的情形，不校验的话这次修复对他完全无效。
+        table = payload.get("QuotationCodeTable")
+        if not isinstance(table, dict) or "Data" not in table:
+            last_error = (
+                f"{url} → 响应缺少 QuotationCodeTable.Data"
+                f"（可能是接口改版或被风控页拦截）"
+            )
+            continue
+
+        rows = table.get("Data") or []   # 结构正常但为空 = 真的没匹配到
         break
 
     if rows is None:

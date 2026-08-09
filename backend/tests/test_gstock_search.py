@@ -72,3 +72,69 @@ def test_malformed_payload_is_not_treated_as_not_found(monkeypatch):
 
     with pytest.raises(gstock.SearchUnavailable):
         gstock._search("AAPL")
+
+
+# ---------------------------------------------------------------------------
+# codex 复审补：主端点"返回了合法 JSON 但结构不对"必须继续试备用端点
+# ---------------------------------------------------------------------------
+
+
+class FakeErrResp:
+    """HTTP 错误但 body 仍是合法 JSON —— em_get 不做 raise_for_status，会走到 .json()。"""
+
+    status_code = 403
+
+    def json(self):
+        return {"message": "forbidden"}
+
+
+def test_missing_table_falls_through_to_backup(monkeypatch):
+    """主端点返回合法 JSON 却没有 QuotationCodeTable → 必须换备用端点。
+
+    不校验结构的话会被当成"查得到但没匹配"直接收手，备用端点轮不上，调用方拿到
+    "未找到"——而这正是 #26 报告者描述的情形，那样这次修复对他完全无效。
+    """
+    tried = []
+
+    def fake_get(url, params=None, headers=None, timeout=10):
+        tried.append(url)
+        if url == gstock._SEARCH_ENDPOINTS[0]:
+            return FakeResp({"result": {"passportWeb": []}})   # 没有 QuotationCodeTable
+        return FakeResp({"QuotationCodeTable": {"Data": [AAPL_ROW]}})
+
+    monkeypatch.setattr(gstock.astock, "em_get", fake_get)
+
+    assert gstock._search("AAPL")["code"] == "AAPL"
+    assert len(tried) == 2, "结构不对时应继续试备用端点"
+
+
+def test_all_endpoints_return_bad_shape_raises(monkeypatch):
+    """两个端点都结构不对 → 抛 SearchUnavailable，而不是谎报"查无此票"。"""
+    def fake_get(url, params=None, headers=None, timeout=10):
+        return FakeResp({"result": {"passportWeb": []}})
+
+    monkeypatch.setattr(gstock.astock, "em_get", fake_get)
+
+    with pytest.raises(gstock.SearchUnavailable, match="QuotationCodeTable"):
+        gstock._search("AAPL")
+
+
+def test_http_error_with_json_body_is_not_a_match(monkeypatch):
+    """em_get 不做 raise_for_status：403 的 JSON 错误页不能被当成搜索结果。"""
+    def fake_get(url, params=None, headers=None, timeout=10):
+        return FakeErrResp()
+
+    monkeypatch.setattr(gstock.astock, "em_get", fake_get)
+
+    with pytest.raises(gstock.SearchUnavailable, match="HTTP 403"):
+        gstock._search("AAPL")
+
+
+def test_empty_data_with_valid_shape_is_still_not_found(monkeypatch):
+    """结构正常但 Data 为空 = 真的没匹配到，这条边界不能被上面的改动搞混。"""
+    def fake_get(url, params=None, headers=None, timeout=10):
+        return FakeResp({"QuotationCodeTable": {"Data": []}})
+
+    monkeypatch.setattr(gstock.astock, "em_get", fake_get)
+
+    assert gstock._search("ZZZZ") is None
