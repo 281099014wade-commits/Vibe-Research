@@ -29,26 +29,9 @@ import myreports as mr
 import reflection as reflect_layer
 
 
-def _read_version() -> str:
-    """版本号只有一个来源：frontend/package.json（发版时本来就要改它）。
+from version import read_version
 
-    以前这里和 /api/health、前端 Layout 各写死一份，发 v0.3.0 时三处都忘了改、
-    继续显示 v0.2.2（#20）。读同一个文件就不会再漂。读不到就说"读不到"，
-    不要退回一个写死的旧版本号——那正是当初的坑。
-    """
-    path = os.path.join(
-        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-        "frontend", "package.json",
-    )
-    try:
-        with open(path, encoding="utf-8") as f:
-            return json.load(f)["version"]
-    except (OSError, ValueError, KeyError) as e:
-        print(f"[warn] 读不到版本号（{path}）：{e}")
-        return "unknown"
-
-
-__version__ = _read_version()
+__version__ = read_version()
 
 app = FastAPI(title="Vibe-Research API", version=__version__)
 
