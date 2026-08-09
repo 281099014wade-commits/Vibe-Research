@@ -135,15 +135,19 @@ def _search(q: str) -> dict | None:
         # QuotationCodeTable」（错误响应 / 接口改版 / 风控页）时会被当成"查得到但
         # 没有匹配"，直接 break —— 备用端点根本轮不上，调用方拿到的还是"未找到"。
         # 而这恰恰就是 #26 报告者描述的情形，不校验的话这次修复对他完全无效。
-        table = payload.get("QuotationCodeTable")
-        if not isinstance(table, dict) or "Data" not in table:
+        # payload 本身也可能不是对象（`null` / 数组），直接 .get() 会抛 AttributeError
+        # 而不是切到备用端点；Data 也可能不是列表，那样会在下面遍历时才炸。
+        # 校验要一路做到能安全使用为止，否则"换下一个端点"这条路等于没铺。
+        table = payload.get("QuotationCodeTable") if isinstance(payload, dict) else None
+        data = table.get("Data") if isinstance(table, dict) else None
+        if not isinstance(data, list):
             last_error = (
-                f"{url} → 响应缺少 QuotationCodeTable.Data"
-                f"（可能是接口改版或被风控页拦截）"
+                f"{url} → 响应结构异常（缺少 QuotationCodeTable.Data 或类型不对）"
+                f"，可能是接口改版或被风控页拦截"
             )
             continue
 
-        rows = table.get("Data") or []   # 结构正常但为空 = 真的没匹配到
+        rows = data   # 结构正常但为空 = 真的没匹配到
         break
 
     if rows is None:

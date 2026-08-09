@@ -318,7 +318,7 @@ def _market(args: dict):
         return {
             "stocks": _pick(
                 d.get("stocks", []),
-                ("name", "code", "price", "pct", "amount", "mcap", "industry"),
+                ("name", "code", "price", "pct", "amount", "mcap", "float_cap", "industry"),
                 20,
             ),
             "updated": d.get("updated"),

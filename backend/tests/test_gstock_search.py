@@ -138,3 +138,30 @@ def test_empty_data_with_valid_shape_is_still_not_found(monkeypatch):
     monkeypatch.setattr(gstock.astock, "em_get", fake_get)
 
     assert gstock._search("ZZZZ") is None
+
+
+@pytest.mark.parametrize("payload", [None, [], "text", {"QuotationCodeTable": []},
+                                     {"QuotationCodeTable": {"Data": "oops"}}])
+def test_malformed_payload_falls_through_instead_of_crashing(payload, monkeypatch):
+    """响应不是预期结构时要切备用端点 / 抛 SearchUnavailable，不能抛 AttributeError。
+
+    校验必须一路做到"能安全使用"为止：payload 可能不是对象（null / 数组），
+    Data 也可能不是列表——否则"换下一个端点"这条路等于没铺（codex 第四轮指出）。
+    """
+    def fake_get(url, params=None, headers=None, timeout=10):
+        return FakeResp(payload)
+
+    monkeypatch.setattr(gstock.astock, "em_get", fake_get)
+
+    with pytest.raises(gstock.SearchUnavailable):
+        gstock._search("AAPL")
+
+
+def test_malformed_primary_still_uses_backup(monkeypatch):
+    def fake_get(url, params=None, headers=None, timeout=10):
+        if url == gstock._SEARCH_ENDPOINTS[0]:
+            return FakeResp(None)          # 主端点返回 null
+        return FakeResp({"QuotationCodeTable": {"Data": [AAPL_ROW]}})
+
+    monkeypatch.setattr(gstock.astock, "em_get", fake_get)
+    assert gstock._search("AAPL")["code"] == "AAPL"

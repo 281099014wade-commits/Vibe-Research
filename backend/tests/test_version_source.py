@@ -32,3 +32,16 @@ def test_warning_never_goes_to_stdout(monkeypatch):
 def test_mcp_server_reports_the_same_version():
     import mcp_server
     assert mcp_server.SERVER_INFO["version"] == version.read_version()
+
+
+def test_turnover_projection_keeps_every_documented_field():
+    """注释里列了 float_cap 却没放进取值清单——自相矛盾（codex 第四轮指出）。"""
+    import inspect
+
+    import tools
+
+    src = inspect.getsource(tools._market)
+    idx = src.find('scope == "turnover"')
+    block = src[idx:idx + 600]
+    for field in ("price", "pct", "amount", "mcap", "float_cap", "industry"):
+        assert f'"{field}"' in block, f"turnover 投影漏了 {field}"
