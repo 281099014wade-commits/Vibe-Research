@@ -93,6 +93,21 @@ def global_indices() -> list[dict]:
     return out
 
 
+class SearchUnavailable(RuntimeError):
+    """证券搜索接口不可用（网络 / 风控 / 返回体变形）。
+
+    ⚠️ 与「查无此代码」严格区分：前者是基础设施问题、重试可能就好，后者是用户输错了。
+    压成同一个 None 会让用户对着"未找到对应美股/港股/韩股代码"完全无从下手（#26）。
+    """
+
+
+# 主端点 + 备用端点。单一端点被风控/变更就让整块功能瘫痪，代价太大。
+_SEARCH_ENDPOINTS = (
+    "https://searchapi.eastmoney.com/api/suggest/get",
+    "https://searchadapter.eastmoney.com/api/suggest/get",
+)
+
+
 def _search(q: str) -> dict | None:
     """东财搜索一次：市场过滤 + **精确代码匹配优先**，退而取第一条。
 
@@ -100,14 +115,28 @@ def _search(q: str) -> dict | None:
     搜 BABA 混入 05593(窝轮)，且 SecurityType 分不开(正股与 ETF 同为 Type7、正股港股与窝轮同为 Type6)。
     正股的 Code 恰好等于查询词，故精确匹配 Code==q 最稳；无精确匹配(名称查询)才退回第一条。
     """
-    url = "https://searchapi.eastmoney.com/api/suggest/get"
     params = {"input": q, "type": 14,
               "token": "D43BF722C8E33BDC906FB84D85E326E8", "count": 10}
-    try:
-        r = astock.em_get(url, params=params, headers=_UA_H, timeout=10)
-        rows = (r.json().get("QuotationCodeTable") or {}).get("Data") or []
-    except Exception:
-        return None
+
+    rows, last_error = None, None
+    for url in _SEARCH_ENDPOINTS:
+        try:
+            r = astock.em_get(url, params=params, headers=_UA_H, timeout=10)
+            payload = r.json()
+        except Exception as e:  # noqa: BLE001 — 网络/JSON 解析都可能，统一记下再换下一个
+            last_error = f"{url} → {type(e).__name__}: {str(e)[:80]}"
+            continue
+        rows = (payload.get("QuotationCodeTable") or {}).get("Data") or []
+        break
+
+    if rows is None:
+        # 🔴 全部端点都请求失败 ≠ 查无此票。以前这里 `except: return None`，
+        # 两种情况被压成同一个"未找到"，用户只能自己逆向排查到底哪一步坏了（#26）。
+        raise SearchUnavailable(
+            f"证券搜索接口暂时不可用（已尝试 {len(_SEARCH_ENDPOINTS)} 个端点）。"
+            f"最后一个错误：{last_error}。"
+            f"这与「查无此代码」是两回事——请检查网络 / 代理，或稍后重试。"
+        )
     matches = []
     for s in rows:
         try:
