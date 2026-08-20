@@ -50,6 +50,22 @@ It does not make decisions for you. It pulls together quotes, analyst reports, v
 
 </td>
 </tr>
+<tr>
+<td width="50%">
+
+**Industry Signals · GPU rent** — one-year price history, spot and forward expectations from zero-auth public data
+
+![Industry Signals GPU rent](docs/screenshots/signals-gpu-rent.png)
+
+</td>
+<td width="50%">
+
+**Bring Your Own AI** — subscription CLI (no key) or any OpenAI-compatible endpoint, keys stay local
+
+![Bring Your Own AI](docs/screenshots/settings.png)
+
+</td>
+</tr>
 </table>
 
 ---
@@ -235,7 +251,7 @@ All from the same open-source stack ([`simonlin1212`](https://github.com/simonli
 | [**a-stock-data**](https://github.com/simonlin1212/a-stock-data) | A-share full-stack data toolkit (10 layers · 44 endpoints · 15 sources) — this project's A-share engine |
 | [**global-stock-data**](https://github.com/simonlin1212/global-stock-data) | US / HK full-stack data toolkit (13 layers · 30+ endpoints · 11 sources) |
 | [**investment-news**](https://github.com/simonlin1212/investment-news) | Global industry news dashboard (12 tracks mapped to A-share sectors) |
-| [**Agent-Staff**](https://github.com/simonlin1212/Agent-Staff) | Agentify a company: one AI agent per department plus a chief-of-staff |
+| [**TradingAgents-astock**](https://github.com/simonlin1212/TradingAgents-astock) | A-share multi-agent research framework (7 AI analysts, bull/bear debate, adapted from TradingAgents) |
 
 ## Contact
 

@@ -52,6 +52,22 @@ Vibe-Research 是一个开源的「个人 AI 投研看板」，**主推 A 股、
 
 </td>
 </tr>
+<tr>
+<td width="50%">
+
+**产业信号 · GPU 租金** — 近一年走势 + 现货 + 远期预期，零鉴权公开数据
+
+![产业信号 GPU租金](docs/screenshots/signals-gpu-rent.png)
+
+</td>
+<td width="50%">
+
+**接入 AI** — 订阅 CLI 免 key，或任意 OpenAI 兼容端点，key 只存本地
+
+![接入 AI](docs/screenshots/settings.png)
+
+</td>
+</tr>
 </table>
 
 ---
@@ -248,7 +264,7 @@ Vibe-Research 用到的数据 / 工具，来自同一套自研开源体系（都
 | [**a-stock-data**](https://github.com/simonlin1212/a-stock-data) | A 股全栈数据工具包（10 层 · 44 端点 · 15 数据源）—— 本项目的 A 股数据引擎 |
 | [**global-stock-data**](https://github.com/simonlin1212/global-stock-data) | 美股 / 港股全栈数据工具包（13 层 · 30+ 端点 · 11 数据源） |
 | [**investment-news**](https://github.com/simonlin1212/investment-news) | 全球产业链资讯看板（12 赛道一一对应 A 股板块）—— 本项目的资讯源 |
-| [**Agent-Staff**](https://github.com/simonlin1212/Agent-Staff) | 把公司 Agent 化：每部门一个 AI agent + CEO 参谋长，常驻飞书 |
+| [**TradingAgents-astock**](https://github.com/simonlin1212/TradingAgents-astock) | A 股多 Agent 投研框架（7 位分析师 · 多空辩论 · 基于 TradingAgents 深度改造适配大 A） |
 
 ## 联系作者
 
