@@ -60,6 +60,7 @@ It does not make decisions for you. It pulls together quotes, analyst reports, v
 |---|---|
 | 📊&nbsp;**Daily&nbsp;Review** | Index quotes · **Global markets** (Dow / S&P / Nasdaq overnight + Hang Seng / HS Tech) · Watchlist quotes · **Short-term sentiment** (consecutive limit-up ladder, seal rate, break rate, promotion rate) · **Market-wide turnover top 20** · Market breadth · Sector fund-flow trends · Sector rotation · One-click AI review |
 | 📡&nbsp;**News&nbsp;Radar** | 108 public RSS feeds across 12 tracks · AI-distilled "today's takeaways" · A-share filings and public news linked to your watchlist |
+| 🌡️&nbsp;**Industry&nbsp;Signals** | One-line industry signals from zero-auth public endpoints, one sub-module added per release. **GPU rent**: **one-year daily price history** for B200 / H100 / A100 (500.farm market-wide median stats) · spot card = the latest point of the curve (same source, same math — the two numbers always agree; plus listed/total GPU counts and utilisation) · forward expectations (Kalshi public event contracts settled on the Ornn cross-platform index monthly average — **all listed settlement months covered**: a term-structure curve shows at a glance where the market expects rent to go, plus per-month **probability distribution, implied median and most-likely range**; settled months shown against actual outcomes) · the reading caveats are printed right on the page (spot "right now" vs. forward "monthly average" are different yardsticks — never subtract one from the other) · **a data snapshot ships with the repo**, so a fresh clone opens with full history and one refresh brings it up to date · price facts only, no "glut / shortage" verdicts |
 | 🔍&nbsp;**Stock&nbsp;Data** | **A-share**: quotes · valuation matrix (forward PE / PEG) · **earnings snapshot** · valuation percentile vs. own 5-year history · key financials · analyst reports · filings · news · **fund flows** (margin trading, shareholder count, main-force flow, dividends, block trades) · top-list (Dragon-Tiger) · lockup expiry · sector membership · trending concepts · investor Q&A.<br>**US / HK / KR** (enter `AAPL` / `00700` / `005930.KS`): quotes · market cap · key financials (KR is quotes only) |
 | ⚔️&nbsp;**Bull&nbsp;vs&nbsp;Bear** | **Multi-agent**: the backend first pulls a 13-item factual dossier, then a **bull researcher** and a **bear researcher** argue from that same data (optional rebuttal round), and a **neutral moderator** summarizes "what both sides agree on / where they actually disagree / what to verify / what data is missing". **Deliberately produces no buy or sell conclusion.**<br>⏱ Heavier than a chat: ~100s and 3 model calls per round — see [cost](#-what-one-debate-costs-read-before-you-run-it) first |
 | ⭐&nbsp;**Watchlist** | **Paste a whole batch of tickers at once** (commas, spaces or newlines) · one-screen table (price, change, PE, PB, turnover) · **live quotes toggle** (top right, off by default; refreshes every 3s during trading hours, auto-pauses outside them and when the tab is hidden) · hand the whole list to your AI. Stored locally |
@@ -111,9 +112,10 @@ Vibe-Research/
 │   ├── astock.py        A-share data
 │   ├── gstock.py        US / HK data
 │   ├── newsradar.py     News radar
+│   ├── signals.py       Industry signals (GPU rent: Vast spot + 500.farm history + Kalshi forward)
 │   ├── market.py        Market breadth + sector fund flows + global indices
 │   ├── portfolio.py     Portfolio (stored in your local user directory)
-│   ├── tools.py         AI tool layer (23 data tools, shared by chat / MCP / debate)
+│   ├── tools.py         AI tool layer (25 data tools, shared by chat / MCP / debate)
 │   ├── chat.py          In-app AI (OpenAI-compatible function calling)
 │   ├── debate.py        Bull-vs-bear orchestration (dossier → bull / bear / moderator)
 │   ├── reflection.py    Reflection audit (audits reasoning in existing analysis)

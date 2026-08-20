@@ -17,6 +17,7 @@ import astock
 import gstock
 import market
 import newsradar
+import signals
 
 # ——— schema 简写：让 20+ 个工具定义保持一屏可读 ———
 
@@ -100,6 +101,14 @@ TOOLS: list[dict] = [
        "查资讯雷达：12 条赛道的行业资讯聚合（非个股新闻，看产业面动态用）。可传 track 只看某条赛道（如「半导体」「AI」）。",
        {"track": {"type": "string", "description": "赛道名关键词，留空看全部"},
         "per_track": {"type": "integer", "description": "每条赛道取最新几条，默认 5"}}),
+
+    # —— 产业信号 ——
+    _t("query_gpu_rent",
+       "查 GPU 租金信号：B200/H100/A100 现货中位租金（Vast.ai，美元/卡·时）、近一年逐日"
+       "中位价历史序列（500.farm），及 Kalshi 公开事件合约对 B200 月均租金的预期（按 Ornn "
+       "跨平台指数整月平均结算，按结算月分组：概率分布 / 隐含预期中位价 / 最可能区间 / "
+       "已结算月实际落点；与 Vast 现货是两个市场两种时间口径，数值不能直接对减）。"
+       "算力供需冷热的价格侧证据；读缓存，数据为空时提示用户到「产业信号」页刷新。"),
 
     # —— 海外 ——
     _t("query_global_stock",
@@ -375,6 +384,7 @@ _HANDLERS = {
         ("title", "publishDate", "orgSName", "industryName"), 20),
     "query_market": _market,
     "query_news_radar": _radar,
+    "query_gpu_rent": lambda a: signals.get_gpu_rent(force=False),
     "query_global_stock": lambda a: gstock.us_hk_stock(str(a.get("symbol", ""))) or {"error": "未找到该美股/港股/韩股代码"},
     "query_hk_cashflow": lambda a: gstock.hk_cashflow(str(a.get("symbol", ""))) or {"error": "未找到该港股现金流（仅港股支持）"},
 }
