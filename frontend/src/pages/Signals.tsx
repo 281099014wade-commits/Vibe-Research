@@ -75,7 +75,10 @@ function SpotCard({ g }: { g: GpuSpot }) {
         <span className="text-xs text-muted-foreground">/卡·时（中位）</span>
       </div>
       <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-[11px] text-muted-foreground">
-        <span>= 上方曲线最新点</span>
+        <span>
+          = 上方曲线最新点
+          {g.asof_ts != null && `（${new Date(g.asof_ts * 1000).toLocaleString("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" })} 观测）`}
+        </span>
         {g.available_gpus != null && g.total_gpus != null && g.total_gpus > 0 && (
           <span>
             可租 {g.available_gpus} / 共 {g.total_gpus} 张（{Math.round((1 - g.available_gpus / g.total_gpus) * 100)}% 在租）
@@ -206,12 +209,11 @@ function GpuRentPanel() {
   // 两段都是 Ornn 指数「月均」口径——同一把尺子，连成一条时间线是合法的
   // （与 Vast 日中位历史曲线不同口径，所以这张图独立放在远期区、不与上方主图混）。
   const curveOption = useMemo(() => {
+    // 只画有完整区间的结算月：单边结果（全 yes / 全 no）只是「高于/低于某档」的
+    // 开放区间，画成精确点就是把边界当实际值——那些月留在下方文字行里表述
     const actual = (fw?.settled || [])
-      .filter((s) => s.lo != null || s.hi != null)
-      .map((s) => ({
-        month: s.month,
-        mid: s.lo != null && s.hi != null ? (s.lo + s.hi) / 2 : (s.lo ?? s.hi)!,
-      }));
+      .filter((s) => s.lo != null && s.hi != null)
+      .map((s) => ({ month: s.month, mid: (s.lo! + s.hi!) / 2 }));
     const expected = months
       .filter((m) => m.implied_median?.bound === "exact")
       .map((m) => ({ month: m.month, mid: m.implied_median!.value }));
@@ -307,7 +309,7 @@ function GpuRentPanel() {
 
           {/* ② 现货 */}
           <div className="mb-1.5 mt-6 flex items-center gap-1.5 text-sm font-semibold">
-            <Gauge className="h-4 w-4 text-primary" /> 现货租金 · 此刻的市场价
+            <Gauge className="h-4 w-4 text-primary" /> 现货租金 · 最新观测值
           </div>
           <p className="mb-3 text-[11px] text-muted-foreground/70">{data!.spot_source}</p>
           <div className="grid gap-3 sm:grid-cols-3">
@@ -321,7 +323,8 @@ function GpuRentPanel() {
           </div>
           <p className="mb-3 text-[11px] text-muted-foreground/70">
             {data!.forward_source}
-            {fw?.n_contracts != null && ` · 在市合约 ${fw.n_contracts} 张，覆盖全部 ${fw.n_months} 个结算月`}
+            {fw?.n_contracts != null && ` · 在市合约 ${fw.n_contracts} 张 · 有报价结算月 ${months.length} 个${
+              fw.n_months != null && fw.n_months > months.length ? `（另 ${fw.n_months - months.length} 个月暂无报价）` : ""}`}
           </p>
           {fw?.err ? (
             <p className="flex items-start gap-1.5 text-xs text-destructive">

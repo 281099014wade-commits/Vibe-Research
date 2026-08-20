@@ -31,8 +31,10 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import tempfile
+import threading
 import time
 import urllib.parse
 import urllib.request
@@ -47,7 +49,7 @@ SEED_FILE = os.path.join(HERE, "data", "signals_gpu_seed.json")
 SCHEMA = 4  # 缓存结构版本：结构变更时 +1，旧缓存/旧快照自动作废重抓
 
 HOW_TO_READ = [
-    "现货卡显示的就是走势曲线的最新一点——同一数据源、同一算法，两处数字必然一致；口径为 Vast 全市场可租挂单的中位价（含平台费）。",
+    "现货卡显示的就是走势曲线的最新一点——同一数据源、同一算法，两处数字必然一致；口径为 Vast 可租挂单按机型档位分组统计后聚合的中位价（含平台费，非逐张挂单的精确中位）。统计站数据有小时级延迟，卡上标注了观测时点。",
     "远期合约按 Ornn 跨平台指数的「整月平均」结算——与「此刻」的现货价是两个市场、两种时间口径，数字不能直接对减。",
     "撮合市场报价分散、盘中波动大，看中位数不看单一挂单；某型号暂无统计序列是市场状态，不是数据故障。",
     "前沿卡紧与旧卡松可以同时为真（B200 与 H100 价差长期数倍），只看一根线别下全市场结论。",
@@ -63,13 +65,14 @@ SPOT_SOURCE = ("现货 = 走势曲线的最新采样点（与曲线同源同算�
 # github.com/500farm/prometheus-vastai）。查询表达式与其官方面板同源。
 HIST_BASE = ("https://500.farm/vastai/grafana.v2/api/datasources/proxy/uid/"
              "EdgV2xcnz/api/v1")
-# rented="no" = 当前可租的挂单（与现货 bundles rentable=true 同口径）；
-# quantile(0.5, …) 跨机型切片（datacenter / 卡数段 / verified）取全市场中位。
+# rented="no" = 当前可租的挂单；quantile(0.5, …) 跨机型切片（datacenter / 卡数段 /
+# verified）聚合。⚠️ 切片等权——这是「切片中位的中位」，不是逐张挂单的精确中位，
+# 文案上一律称「分组统计后聚合的中位」，别写成「全市场挂单中位价」。
 HIST_QUERY = ('quantile(0.5, vastai_v2_ondemand_price_median_dollars'
               '{gpu_name="%s", rented="no"})')
 HIST_DAYS = 365
-HIST_SOURCE = ("500.farm 对 Vast.ai 全市场可租挂单的逐日中位统计（含平台费，与现货卡同源；"
-               "曲线为每日定时采样，与「此刻」的现货卡不必逐点相等）")
+HIST_SOURCE = ("500.farm 对 Vast.ai 可租挂单的逐日中位统计（按机型档位分组统计后聚合，"
+               "含平台费；曲线为每日定时采样，现货卡即其最新一点）")
 
 KALSHI_BASE = "https://api.elections.kalshi.com/trade-api/v2"
 KALSHI_SERIES = "KXB200MS"
@@ -106,9 +109,14 @@ def _farm_history(gpu: str) -> dict:
     points = []
     for ts, val in result[0].get("values") or []:
         try:
-            points.append([int(ts), round(float(val), 2)])
+            price = float(val)
         except (TypeError, ValueError):
             continue
+        # Prometheus 在切片空窗时会给 "NaN"/"Inf"——非有限值一旦进缓存，
+        # FastAPI 的 JSON 序列化会整个拒绝，refresh 和后续 GET 全部报错
+        if not math.isfinite(price):
+            continue
+        points.append([int(ts), round(price, 2)])
     if not points:
         raise ValueError("返回了序列但无一个点可解析（上游契约可能已变）")
     return {"gpu": gpu, "n_points": len(points), "points": points,
@@ -165,27 +173,55 @@ def _month_label(tag: str) -> str:
 
 
 def _last_candle(ticker: str) -> tuple[float, float, float | None] | None:
-    """取合约最近一根日 K 的 (yes_bid 收盘, yes_ask 收盘, 持仓量)；无 K 线返回 None。"""
+    """取合约最近一根日 K 的 (yes_bid 收盘, yes_ask 收盘, 持仓量)；无 K 线返回 None。
+
+    窗口只放 2 天（容错周末/时差）：实测每张在市合约每天都会生成带 bid/ask 的日 K，
+    超过 2 天没有 K 说明连做市报价都停了——那样的旧价不能当「当前预期」用，
+    如实落进「无报价」分支。
+    """
     now = int(time.time())
     url = (f"{KALSHI_BASE}/series/{KALSHI_SERIES}/markets/{ticker}/candlesticks"
-           f"?start_ts={now - 86400 * 7}&end_ts={now}&period_interval=1440")
+           f"?start_ts={now - 86400 * 2}&end_ts={now}&period_interval=1440")
     candles = _get_json(url, headers=_KALSHI_UA).get("candlesticks") or []
     if not candles:
         return None
     c = candles[-1]
 
     def _f(section: str) -> float:
-        try:
-            return float((c.get(section) or {}).get("close_dollars") or 0)
-        except (TypeError, ValueError):
-            return 0.0
+        # 三态分清：字段缺席=该侧无报价（0）；有值但解析不出/非有限=数据异常，
+        # 让异常冒泡计入拉取失败——静默转成 0 会把「垃圾数值」伪装成「无报价」，
+        # 绕过混合失败保护、让空结果覆盖好缓存
+        raw = (c.get(section) or {}).get("close_dollars")
+        if raw is None:      # Kalshi 缺席字段给 null；空串不是它的正常输出——
+            return 0.0       # "" 交给 float 抛错按故障处理，别当成「无报价」
+        v = float(raw)
+        if not math.isfinite(v):
+            raise ValueError(f"{section} 返回非有限值 {raw!r}")
+        return v
 
     oi = None
     try:
-        oi = round(float(c.get("open_interest_fp")), 1)
+        oi_v = float(c.get("open_interest_fp"))
+        if math.isfinite(oi_v):
+            oi = round(oi_v, 1)
     except (TypeError, ValueError):
-        pass
+        pass  # 持仓量是装饰性读数，缺席即可见
     return _f("yes_bid"), _f("yes_ask"), oi
+
+
+def _monotonize(rungs: list[dict]) -> list[dict]:
+    """把阶梯概率强制为单调不增（running-min）。
+
+    「月均 ≥ $X」的概率理论上随 X 单调递减；相邻档报价的点差/噪声会造成局部上翘，
+    直接差分会出负概率、clamp 掉又会让分布总和超过 1（如 p_above=[0.4,0.9,0.2]
+    差分 clamp 后总和 150%）。单调化后再派生分布与隐含中位，总和恒为 1。
+    """
+    out, prev = [], 1.0
+    for r in rungs:
+        p = min(r["p_above"], prev)
+        out.append({**r, "p_above": round(p, 3)})
+        prev = p
+    return out
 
 
 def _implied_median(rungs: list[dict]) -> dict | None:
@@ -226,10 +262,30 @@ def _distribution(rungs: list[dict]) -> list[dict]:
     return bins
 
 
+def _kalshi_markets(status: str) -> list[dict]:
+    """拉某状态的全部合约，跟随 cursor 翻页。
+
+    单页上限 200；该系列每月挂 9-15 张新合约，在市数迟早超过一页——
+    不翻页会静默丢掉整月（页边界还可能把一个月的阶梯劈成两半）。
+    """
+    out: list[dict] = []
+    cursor = ""
+    for _ in range(10):  # 防御上限 10 页 = 2000 张，远超该系列可能规模
+        params = {"series_ticker": KALSHI_SERIES, "status": status, "limit": 200}
+        if cursor:
+            params["cursor"] = cursor  # 不透明 token 可能含保留字符，必须 urlencode
+        d = _get_json(f"{KALSHI_BASE}/markets?{urllib.parse.urlencode(params)}",
+                      headers=_KALSHI_UA)
+        out.extend(d.get("markets") or [])
+        cursor = str(d.get("cursor") or "")
+        if not cursor:
+            break
+    return out
+
+
 def _kalshi_settled() -> list[dict]:
     """已结算月份的月均实际落点区间：最大 yes 档 = 下界，最小 no 档 = 上界。"""
-    ms = _get_json(f"{KALSHI_BASE}/markets?series_ticker={KALSHI_SERIES}"
-                   "&status=settled&limit=200", headers=_KALSHI_UA).get("markets") or []
+    ms = _kalshi_markets("settled")
     bymonth: dict[str, list[tuple[float, str]]] = {}
     for m in ms:
         parts = str(m.get("ticker", "")).split("-")
@@ -260,8 +316,7 @@ def _kalshi_forward() -> dict:
     是 **candlesticks**（日 K 自带 yes_bid / yes_ask 收盘价与持仓量），走它。
     ⚠️ ticker 价位段小数位不统一（`-3.00` 与 `-4.000` 并存），解析一律用 float。
     """
-    ms = _get_json(f"{KALSHI_BASE}/markets?series_ticker={KALSHI_SERIES}&status=open&limit=200",
-                   headers=_KALSHI_UA).get("markets") or []
+    ms = _kalshi_markets("open")
     bymonth: dict[tuple[str, str], list[tuple[float, str]]] = {}
     for m in ms:
         parts = str(m.get("ticker", "")).split("-")
@@ -285,14 +340,14 @@ def _kalshi_forward() -> dict:
     tickers = [t for rungs in bymonth.values() for _s, t in rungs]
 
     def _safe_candle(ticker: str):
-        # 并发下偶发抖动/限流（实测 123 张约 8% 失败率）→ 退避后重试一次再放弃
-        for attempt in (0, 1):
+        # 并发下偶发抖动/限流（实测 123 张约 8% 失败率）→ 退避后最多重试两次再放弃
+        for attempt in (0, 1, 2):
             try:
                 return _last_candle(ticker), None
             except Exception as e:  # noqa: BLE001
-                if attempt == 1:
+                if attempt == 2:
                     return None, f"{type(e).__name__}: {e}"
-                time.sleep(0.8)
+                time.sleep(0.8 * (attempt + 1))
 
     with ThreadPoolExecutor(max_workers=FORWARD_WORKERS) as ex:
         fetched = dict(zip(tickers, ex.map(_safe_candle, tickers)))
@@ -314,6 +369,7 @@ def _kalshi_forward() -> dict:
             rungs.append({"strike": strike, "p_above": round(p_above, 3), "open_interest": oi})
         if not rungs:
             continue
+        rungs = _monotonize(rungs)  # 报价噪声上翘会让分布总和超 1，先单调化
         bins = _distribution(rungs)
         months_out.append({
             "month": _month_label(mon_tag), "close_date": close_date, "rungs": rungs,
@@ -332,6 +388,11 @@ def _kalshi_forward() -> dict:
         settled, settled_err = [], str(e)
 
     if not months_out:
+        # 「一个有效档位都没有」时必须分清成因：只要有拉取失败混在里面，就不能
+        # 断言「市场无报价」——按故障抛出，让上层走 stale 回填而不是用空结果覆盖好缓存
+        if fail_errors:
+            raise ValueError(f"{len(fail_errors)}/{len(tickers)} 档日 K 拉取失败、"
+                             f"其余无报价，无法判定市场状态（如：{fail_errors[0]}）")
         return {"unavailable": True, "n_contracts": len(ms),
                 "note": "合约在市但各价位档均无报价（市场状态，非故障）",
                 "settled": settled, "settled_error": settled_err}
@@ -367,14 +428,24 @@ def _merge_section(fresh_fn, key_name: str, previous_row: dict | None,
         return {key_name: label, "err": str(e)}, False
 
 
+# 刷新约 40 秒：并发触发时各自快照旧缓存再落盘，慢的那个会用旧数据覆盖新结果
+# （原子写只防交错损坏、防不了丢更新）——整个刷新串行化。
+_FETCH_LOCK = threading.Lock()
+
+
 def fetch_gpu_rent() -> dict:
-    """抓 现货(Vast) + 历史(500.farm) + 远期(Kalshi)，合并落盘。
+    """抓 历史+现货(500.farm) + 远期(Kalshi)，合并落盘。
 
     失败纪律（fail-loud）：
     - 某一块新抓失败 → 该块回填上一次的好数据并标 `stale: true` + 失败原因；
     - 部分失败在顶层 `errors` 出声，不静默；
     - 全部失败 → 不落盘（绝不用坏数据覆盖好缓存），把带错误标记的结果直接返回。
     """
+    with _FETCH_LOCK:
+        return _fetch_gpu_rent_locked()
+
+
+def _fetch_gpu_rent_locked() -> dict:
     previous = load_cache() or {}
     prev_generated = previous.get("generated_at")
     errors: list[str] = []
@@ -457,8 +528,13 @@ def _load_json_checked(path: str) -> dict | None:
 
 
 def load_cache() -> dict | None:
-    """取数顺序：用户自己刷新的缓存 → 仓库自带的发布快照 → None（前端提示刷新）。"""
-    return _load_json_checked(CACHE_FILE) or _load_json_checked(SEED_FILE)
+    """取数顺序：用户自己刷新的缓存 → 仓库自带的发布快照 → None（前端提示刷新）。
+
+    口径/来源文案用代码里的 `_base_payload()` 覆盖：快照与旧缓存里存的是生成时的
+    旧文案，措辞修正后若原样返回，UI 与 AI 工具会展示与当前实现矛盾的口径描述。
+    """
+    data = _load_json_checked(CACHE_FILE) or _load_json_checked(SEED_FILE)
+    return {**data, **_base_payload()} if data else None
 
 
 def skeleton() -> dict:

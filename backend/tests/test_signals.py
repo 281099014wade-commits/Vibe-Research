@@ -122,6 +122,48 @@ def test_farm_history_no_series_is_state(monkeypatch):
     assert signals._farm_history("B200")["unavailable"] is True
 
 
+def test_farm_history_drops_non_finite_samples(monkeypatch):
+    # Prometheus 切片空窗会给 "NaN"/"Inf"——进缓存会让 FastAPI JSON 序列化整体失败
+    series = [[100, "NaN"], [200, "7.5"], [300, "+Inf"]]
+    monkeypatch.setattr(signals, "_get_json", _fake_get_json(hist={"B200": series}))
+    r = signals._farm_history("B200")
+    assert r["points"] == [[200, 7.5]]
+
+
+def test_last_candle_non_finite_quote_is_failure(monkeypatch):
+    # 报价字段出现 NaN/Inf 是数据异常，必须按拉取失败冒泡（计入 candle_failures，
+    # 触发混合失败保护）——静默转 0 会伪装成「无报价」，让空结果覆盖好缓存
+    candles = {"KXB200MS-26SEP-3.00": [{
+        "yes_bid": {"close_dollars": "NaN"},
+        "yes_ask": {"close_dollars": "0.9"},
+        "open_interest_fp": "Inf",
+    }]}
+    monkeypatch.setattr(signals, "_get_json", _fake_get_json(candles=candles))
+    with pytest.raises(ValueError, match="非有限值"):
+        signals._last_candle("KXB200MS-26SEP-3.00")
+
+
+def test_last_candle_empty_string_quote_is_failure(monkeypatch):
+    # Kalshi 缺席字段给 null，空串不是它的正常输出——必须按故障冒泡而不是当「无报价」
+    candles = {"KXB200MS-26SEP-3.00": [{
+        "yes_bid": {"close_dollars": ""},
+        "yes_ask": {"close_dollars": "0.9"},
+    }]}
+    monkeypatch.setattr(signals, "_get_json", _fake_get_json(candles=candles))
+    with pytest.raises(ValueError):
+        signals._last_candle("KXB200MS-26SEP-3.00")
+
+
+def test_last_candle_missing_side_is_zero(monkeypatch):
+    # 字段缺席=该侧无报价（合法状态），持仓量非法只置 None 不拦主值
+    candles = {"KXB200MS-26SEP-3.00": [{
+        "yes_ask": {"close_dollars": "0.9"},
+        "open_interest_fp": "Inf",
+    }]}
+    monkeypatch.setattr(signals, "_get_json", _fake_get_json(candles=candles))
+    assert signals._last_candle("KXB200MS-26SEP-3.00") == (0.0, 0.9, None)
+
+
 def test_farm_history_unparseable_points_raise(monkeypatch):
     monkeypatch.setattr(signals, "_get_json",
                         _fake_get_json(hist={"B200": [["x", None]]}))
@@ -153,6 +195,29 @@ def test_implied_median_bounds():
     assert signals._implied_median([]) is None
 
 
+def test_monotonize_forces_non_increasing():
+    # 报价噪声上翘（0.4→0.9）会让差分分布总和超 1 —— 单调化后分布恒归一
+    rungs = [{"strike": 3.0, "p_above": 0.4}, {"strike": 3.5, "p_above": 0.9},
+             {"strike": 4.0, "p_above": 0.2}]
+    mono = signals._monotonize(rungs)
+    assert [r["p_above"] for r in mono] == [0.4, 0.4, 0.2]
+    bins = signals._distribution(mono)
+    assert abs(sum(b["p"] for b in bins) - 1.0) < 1e-9
+
+
+def test_forward_rungs_are_monotonized(monkeypatch):
+    # forward 输出的 rungs / 分布 / 中位都基于单调化后的概率
+    markets = [_market("26SEP", "3.00", "2026-10-01"),
+               _market("26SEP", "3.50", "2026-10-01")]
+    candles = {"KXB200MS-26SEP-3.00": [_candle(0.40, 0.40)],
+               "KXB200MS-26SEP-3.50": [_candle(0.90, 0.90)]}  # 上翘噪声
+    monkeypatch.setattr(signals, "_get_json",
+                        _fake_get_json(kalshi_markets=markets, candles=candles))
+    m = signals._kalshi_forward()["months"][0]
+    assert [r["p_above"] for r in m["rungs"]] == [0.4, 0.4]
+    assert abs(sum(b["p"] for b in m["distribution"]) - 1.0) < 1e-9
+
+
 def test_distribution_bins_and_clamp():
     rungs = [{"strike": 3.0, "p_above": 0.98}, {"strike": 3.5, "p_above": 0.99},  # 噪声上翘
              {"strike": 4.0, "p_above": 0.30}]
@@ -162,6 +227,23 @@ def test_distribution_bins_and_clamp():
     assert bins[2] == {"label": "$3.5~4", "lo": 3.5, "hi": 4.0, "p": 0.69}
     assert bins[3] == {"label": "≥$4", "lo": 4.0, "hi": None, "p": 0.30}
     assert abs(sum(b["p"] for b in bins) - 1.01) < 1e-9  # 噪声钳 0 后允许略过 1
+
+
+def test_kalshi_markets_follows_pagination(monkeypatch):
+    """在市合约超单页 200 上限后必须跟 cursor 翻页——否则整月静默丢失。"""
+    page1 = [_market("26SEP", "3.00", "2026-10-01")]
+    page2 = [_market("26OCT", "3.00", "2026-11-01")]
+
+    def paged(url, headers=None, timeout=30):
+        if "cursor=NEXT" in url:
+            return {"markets": page2, "cursor": ""}
+        if "/markets?" in url:
+            return {"markets": page1, "cursor": "NEXT"}
+        raise AssertionError(url)
+
+    monkeypatch.setattr(signals, "_get_json", paged)
+    ms = signals._kalshi_markets("open")
+    assert [m["ticker"] for m in ms] == ["KXB200MS-26SEP-3.00", "KXB200MS-26OCT-3.00"]
 
 
 def test_kalshi_settled_ranges(monkeypatch):
@@ -253,6 +335,23 @@ def test_kalshi_forward_partial_candle_failure_skips_and_counts(monkeypatch):
     r = signals._kalshi_forward()
     assert r["candle_failures"] == 1
     assert [x["strike"] for x in r["months"][0]["rungs"]] == [3.0]
+
+
+def test_kalshi_forward_mixed_failure_with_no_rungs_raises(monkeypatch):
+    # 部分档抛错 + 其余空 K 线 ⇒ 无法断言「市场无报价」，必须按故障抛出走 stale 回填，
+    # 否则空结果会以「无报价」姿态覆盖有效的旧缓存
+    markets = [_market("26SEP", "3.00", "2026-10-01"),
+               _market("26SEP", "3.50", "2026-10-01")]
+    inner = _fake_get_json(kalshi_markets=markets, candles={})  # 3.00 空 K 线
+
+    def flaky(url, headers=None, timeout=30):
+        if "3.50/candlesticks" in url:
+            raise OSError("one candle down")
+        return inner(url, headers, timeout)
+
+    monkeypatch.setattr(signals, "_get_json", flaky)
+    with pytest.raises(ValueError, match="无法判定市场状态"):
+        signals._kalshi_forward()
 
 
 def test_kalshi_forward_all_candles_failing_raises(monkeypatch):
@@ -366,6 +465,18 @@ def test_load_cache_rejects_old_schema(tmp_path, monkeypatch):
     assert signals.load_cache() is None
 
 
+def test_load_cache_overlays_current_wording():
+    # 快照/旧缓存里存的是生成时的口径文案——加载时必须以代码里的当前文案为准，
+    # 否则措辞修正后新装用户看到的仍是与实现矛盾的旧口径描述
+    stale_wording = {**signals.skeleton(), "generated_at": "2026-08-20 10:00",
+                     "how_to_read": ["旧文案"], "spot_source": "旧口径"}
+    signals._save_cache(stale_wording)
+    loaded = signals.load_cache()
+    assert loaded["how_to_read"] == signals.HOW_TO_READ
+    assert loaded["spot_source"] == signals.SPOT_SOURCE
+    assert loaded["generated_at"] == "2026-08-20 10:00"  # 数据字段保持原样
+
+
 def test_load_cache_falls_back_to_seed():
     # 无用户缓存时读仓库自带的发布快照（clone 即有数据）；用户刷新后以缓存优先
     seed = {**signals.skeleton(), "generated_at": "2026-08-20 10:00", "marker": "seed"}
@@ -420,3 +531,47 @@ def test_tools_query_gpu_rent(monkeypatch):
     import tools
     out = tools.exec_tool("query_gpu_rent", {})
     assert len(out["how_to_read"]) == 4
+
+
+def test_tools_query_gpu_rent_fits_chat_cap(monkeypatch):
+    """工具输出必须裁剪：chat 层单次工具结果上限 6000 字符，全量缓存（40KB 历史点）
+    直接返回会被截成非法 JSON。裁剪版不含逐点序列且留有余量。"""
+    import chat
+    import tools
+    monkeypatch.setattr(signals, "_get_json", _ok_get_json())
+    signals.fetch_gpu_rent()
+
+    out = tools.exec_tool("query_gpu_rent", {})
+    blob = json.dumps(out, ensure_ascii=False)
+    assert len(blob) < chat._TOOL_RESULT_CAP * 0.8   # 留 20% 余量防真实数据略胖
+    assert '"points"' not in blob                     # 逐点序列不进工具输出
+    assert out["history_summary"][0]["latest"]["usd_per_gpu_hr"] == 6.0
+    assert out["forward"]["months"][0]["implied_median"] is not None
+    assert out["spot"]["gpus"][0]["median"] == 6.0    # 现货原样保留
+
+
+def test_newsradar_dedup_recurring_title_refreshes_baseline():
+    """同名栏目窗口外合法复现后，标题基准必须跟着最近保留的那条走：
+    倒序遍历 20h/70h/100h 前的三条同名——70h 那条是另一期（保留），
+    100h 那条与 70h 只差 30h（窗内转载，应删）；若基准停在 20h 就会漏删。"""
+    import newsradar
+    H = 3600
+    items = [
+        {"title": "每周综述", "url": "https://a.com/1", "ts": 1000 * H - 20 * H},
+        {"title": "每周综述", "url": "https://b.com/2", "ts": 1000 * H - 70 * H},
+        {"title": "每周综述", "url": "https://c.com/3", "ts": 1000 * H - 100 * H},
+    ]
+    out = newsradar._dedup(items)
+    assert [it["url"] for it in out] == ["https://a.com/1", "https://b.com/2"]
+
+
+def test_newsradar_normalize_url_reencodes_query():
+    """query 值里的转义分隔符必须重新转义：否则 ?id=a%26b%3Dc 与 ?id=a&b=c
+    归一化成同一个 key，两篇不同文章被误合并（去重误删）。"""
+    import newsradar
+    a = newsradar._normalize_url("https://x.com/p?id=a%26b%3Dc")
+    b = newsradar._normalize_url("https://x.com/p?id=a&b=c")
+    assert a != b
+    # 跟踪参数照剥、真实参数保留
+    c = newsradar._normalize_url("https://x.com/p?utm_source=rss&id=1")
+    assert c == "https://x.com/p?id=1"

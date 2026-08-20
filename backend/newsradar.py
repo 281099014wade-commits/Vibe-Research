@@ -17,7 +17,7 @@ import xml.etree.ElementTree as ET
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone, timedelta
 from email.utils import parsedate_to_datetime
-from urllib.parse import parse_qsl, urlsplit, urlunsplit
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 SOURCES_FILE = os.path.join(HERE, "news_sources.json")
@@ -54,11 +54,13 @@ def _normalize_url(url: str) -> str:
         return url.lower()
     kept = [(k, v) for k, v in parse_qsl(parts.query, keep_blank_values=True)
             if k.lower() not in _TRACKING_PARAMS]
-    # scheme/host 大小写不敏感，path 保持原样（部分服务器 path 区分大小写）
+    # scheme/host 大小写不敏感，path 保持原样（部分服务器 path 区分大小写）。
+    # query 必须用 urlencode 重新转义：parse_qsl 已解码，手工拼接会让
+    # `?id=a%26b%3Dc` 与 `?id=a&b=c` 归一化成同一个 key、误合并两篇不同文章。
     return urlunsplit((
         parts.scheme.lower(), parts.netloc.lower(),
         parts.path.rstrip("/") or "/",
-        "&".join(f"{k}={v}" for k, v in kept), ""))
+        urlencode(kept), ""))
 
 
 def _normalize_title(title: str) -> str:
@@ -90,11 +92,16 @@ def _dedup(items: list[dict]) -> list[dict]:
         # (标题A, url1) → (标题A, url2) → (标题B, url2) 三条同一新闻会漏成两张卡。
         if url_key:
             seen_urls.add(url_key)
-        if title_key and ts:
-            seen_titles.setdefault(title_key, ts)
 
         if dup_by_url or dup_by_title:
+            if title_key and ts:
+                seen_titles.setdefault(title_key, ts)
             continue
+        # 保留的条目要**刷新**标题基准时间（不能 setdefault）：倒序遍历下，
+        # 同名栏目在窗口外合法复现后，若基准仍停在最新那期，更旧的转载会因
+        # 与最新期时间差超窗而逃过去重——基准必须跟着「最近保留的那条」走。
+        if title_key and ts:
+            seen_titles[title_key] = ts
         out.append(it)
     return out
 

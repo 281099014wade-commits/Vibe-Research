@@ -23,10 +23,12 @@ export function EChart({ option, height = 300 }: Props) {
   useEffect(() => {
     if (!ref.current) return;
     inst.current = echarts.init(ref.current);
-    const onResize = () => inst.current?.resize();
-    window.addEventListener("resize", onResize);
+    // ResizeObserver 而非 window.resize：侧栏收起/展开改变容器宽度时
+    // 并不触发窗口 resize 事件，只监听 window 会让图表保持旧尺寸被裁切
+    const ro = new ResizeObserver(() => inst.current?.resize());
+    ro.observe(ref.current);
     return () => {
-      window.removeEventListener("resize", onResize);
+      ro.disconnect();
       inst.current?.dispose();
       inst.current = null;
     };

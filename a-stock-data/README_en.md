@@ -37,7 +37,7 @@ A self-contained Skill file that consolidates raw A-share data from 19 sources i
 ## Architecture
 
 ```
-China A-Share Full-Stack Data · 11-Layer Architecture · V3.7.0
+China A-Share Full-Stack Data · 11-Layer Architecture · V3.7.1
 │  (Priority: prefer mootdx/Tencent — never IP-banned; Eastmoney only for exclusive data, with built-in throttling)
 ├── Market Data    mootdx + Tencent + Baidu + Sina    Candlesticks (w/ MA5/10/20) + Order Book + PE/PB + Index/ETF
 │                                                     + adjust factors qfq/hfq  ★V3.7
