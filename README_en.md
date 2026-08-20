@@ -44,7 +44,7 @@ It does not make decisions for you. It pulls together quotes, analyst reports, v
 </td>
 <td width="50%">
 
-**News Radar** — 108 public feeds across 12 industry tracks, distilled on demand
+**News Radar** — 106 public feeds across 12 industry tracks, distilled on demand
 
 ![News Radar](docs/screenshots/intel.png)
 
@@ -59,7 +59,7 @@ It does not make decisions for you. It pulls together quotes, analyst reports, v
 | Page | What's in it |
 |---|---|
 | 📊&nbsp;**Daily&nbsp;Review** | Index quotes · **Global markets** (Dow / S&P / Nasdaq overnight + Hang Seng / HS Tech) · Watchlist quotes · **Short-term sentiment** (consecutive limit-up ladder, seal rate, break rate, promotion rate) · **Market-wide turnover top 20** · Market breadth · Sector fund-flow trends · Sector rotation · One-click AI review |
-| 📡&nbsp;**News&nbsp;Radar** | 108 public RSS feeds across 12 tracks · AI-distilled "today's takeaways" · A-share filings and public news linked to your watchlist |
+| 📡&nbsp;**News&nbsp;Radar** | 106 public RSS feeds across 12 tracks · AI-distilled "today's takeaways" · A-share filings and public news linked to your watchlist |
 | 🌡️&nbsp;**Industry&nbsp;Signals** | One-line industry signals from zero-auth public endpoints, one sub-module added per release. **GPU rent**: **one-year daily price history** for B200 / H100 / A100 (500.farm market-wide median stats) · spot card = the latest point of the curve (same source, same math — the two numbers always agree; plus listed/total GPU counts and utilisation) · forward expectations (Kalshi public event contracts settled on the Ornn cross-platform index monthly average — **all listed settlement months covered**: a term-structure curve shows at a glance where the market expects rent to go, plus per-month **probability distribution, implied median and most-likely range**; settled months shown against actual outcomes) · the reading caveats are printed right on the page (spot "right now" vs. forward "monthly average" are different yardsticks — never subtract one from the other) · **a data snapshot ships with the repo**, so a fresh clone opens with full history and one refresh brings it up to date · price facts only, no "glut / shortage" verdicts |
 | 🔍&nbsp;**Stock&nbsp;Data** | **A-share**: quotes · valuation matrix (forward PE / PEG) · **earnings snapshot** · valuation percentile vs. own 5-year history · key financials · analyst reports · filings · news · **fund flows** (margin trading, shareholder count, main-force flow, dividends, block trades) · top-list (Dragon-Tiger) · lockup expiry · sector membership · trending concepts · investor Q&A.<br>**US / HK / KR** (enter `AAPL` / `00700` / `005930.KS`): quotes · market cap · key financials (KR is quotes only) |
 | ⚔️&nbsp;**Bull&nbsp;vs&nbsp;Bear** | **Multi-agent**: the backend first pulls a 13-item factual dossier, then a **bull researcher** and a **bear researcher** argue from that same data (optional rebuttal round), and a **neutral moderator** summarizes "what both sides agree on / where they actually disagree / what to verify / what data is missing". **Deliberately produces no buy or sell conclusion.**<br>⏱ Heavier than a chat: ~100s and 3 model calls per round — see [cost](#-what-one-debate-costs-read-before-you-run-it) first |
@@ -80,7 +80,7 @@ Three public data toolkits are **vendored directly into this repo** — `git clo
 
 ### A-share full-stack data · AStockData
 
-- Lives in [`a-stock-data/`](a-stock-data/) (v3.6.0). Ten data layers, 47 endpoints, 15 sources, with fallback sources when a primary one gets blocked. [`a-stock-data/SKILL.md`](a-stock-data/SKILL.md) **embeds every call as runnable code** — self-contained, with built-in rate limiting for Eastmoney endpoints.
+- Lives in [`a-stock-data/`](a-stock-data/) (v3.7.0). Eleven data layers, 54 endpoints, 19 sources, with fallback sources when a primary one gets blocked. [`a-stock-data/SKILL.md`](a-stock-data/SKILL.md) **embeds every call as runnable code** — self-contained, with built-in rate limiting for Eastmoney endpoints.
 - **Covers**: quotes / candles / analyst reports / consensus estimates / valuation / historical percentiles / financial statements / filings / Dragon-Tiger list / margin trading / block trades / shareholder counts / dividends / fund flows / lockup expiry / concept sectors / limit-up sentiment / ETF options / investor Q&A / market-wide industry rankings.
 - **For agents**: running this repo with Claude Code or similar? Point them at `SKILL.md` — every endpoint has copy-paste ready code. The backend data layer (`backend/astock.py`) is ported from it.
 - **Runtime deps**: `pip install mootdx requests pandas stockstats`
@@ -95,7 +95,7 @@ Three public data toolkits are **vendored directly into this repo** — `git clo
 
 ### Global news · investment-news
 
-- 108 public RSS feeds across 12 industry tracks, merged into `backend/newsradar.py`. Standard library only, no API keys.
+- 106 public RSS feeds across 12 industry tracks, merged into `backend/newsradar.py`. Standard library only, no API keys.
 - **Upstream**: <https://github.com/simonlin1212/investment-news>
 
 > All data comes from public sources. Vibe-Research only performs objective data aggregation and presents public rankings as-is — **it does not recommend stocks, predict price moves, time trades, or assign subjective scores**. What you do with the data is up to you and your AI.
@@ -106,7 +106,7 @@ One data layer, three AI outlets:
 
 ```
 Vibe-Research/
-├── a-stock-data/      A-share data toolkit (vendored v3.6.0, ready to use)
+├── a-stock-data/      A-share data toolkit (vendored v3.7.0, ready to use)
 ├── global-stock-data/ US / HK data toolkit (vendored v2.0.3, ready to use)
 ├── backend/           FastAPI :8900
 │   ├── astock.py        A-share data
