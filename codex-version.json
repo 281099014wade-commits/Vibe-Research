@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "codex_cli": {
+    "min_tested": "0.149.0",
+    "max_tested": "0.149.0",
+    "install_method": "npm install -g @openai/codex",
+    "reference_source_commit": "536f86e5cc9ec1ff38457d099bf320b9d08eeeba",
+    "reference_source_note": "openai/codex main,仅作源码参考,不参与运行"
+  },
+  "sdk": {
+    "typescript": "@openai/codex-sdk@0.149.0"
+  },
+  "verified_on": [
+    {
+      "date": "2026-08-21",
+      "platform": "darwin-arm64 (macOS 26.5.1)",
+      "checks": ["codex --version", "codex exec 冒烟(订阅登录)", "AGENTS.md 加载验证"],
+      "note": "JSON 本身不是兼容性证明;doctor / CI 落地后由脚本实际检查版本区间"
+    }
+  ]
+}

@@ -1,0 +1,31 @@
+{
+  "id": "qwen",
+  "name": "通义千问 DashScope(OpenAI 兼容模式)",
+  "wire_api": "chat",
+  "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+  "env_key": "DASHSCOPE_API_KEY",
+  "auth_modes": [
+    "api_key"
+  ],
+  "requires_openai_auth": false,
+  "default_model": "qwen-plus",
+  "responses_support": "none",
+  "stream_format": "chat-completions-sse",
+  "tool_calls": true,
+  "reasoning": "model-dependent(qwen3 思考模式需 enable_thinking)",
+  "context_limit_tokens": 131072,
+  "retryable_errors": [
+    "429",
+    "5xx",
+    "stream-idle"
+  ],
+  "known_incompatibilities": [
+    "previous_response_id 不支持",
+    "部分模型并行工具调用需显式开启 parallel_tool_calls"
+  ],
+  "matrix": {
+    "status": "untested",
+    "note": "需 DASHSCOPE_API_KEY;用 provider_matrix.ts 跑 10 项后回填"
+  },
+  "verified_at": null
+}

@@ -1,0 +1,25 @@
+# 用户私有层:配置 / 运行产物 / 知识层私有档案,永不入库
+.local/
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Node
+node_modules/
+dist/
+
+# 环境与密钥
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+
+# 系统与日志
+.DS_Store
+*.log

@@ -1,0 +1,3 @@
+#!/usr/bin/env sh
+# 体检:引擎 / 登录态 / 宪法 / skills / Python 依赖 / calc / 注册表 / 写权限 / .gitignore / 密钥扫描 / [--net] 数据源连通。实现见 orchestrator/src/doctor.ts
+exec node "$(cd "$(dirname "$0")/.." && pwd)/orchestrator/src/doctor.ts" "$@"

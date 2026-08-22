@@ -1,0 +1,3 @@
+#!/usr/bin/env sh
+# 幂等初始化:只生成产品自己的 .local/ 私有层(目录 / 配置骨架 / .gitignore),不碰 ~/.codex。实现见 orchestrator/src/init.ts
+exec node "$(cd "$(dirname "$0")/.." && pwd)/orchestrator/src/init.ts" "$@"

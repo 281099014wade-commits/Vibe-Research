@@ -1,0 +1,30 @@
+{
+  "id": "glm",
+  "name": "智谱 GLM(OpenAI 兼容 Chat Completions)",
+  "wire_api": "chat",
+  "base_url": "https://open.bigmodel.cn/api/paas/v4",
+  "env_key": "ZHIPU_API_KEY",
+  "auth_modes": [
+    "api_key"
+  ],
+  "requires_openai_auth": false,
+  "default_model": "glm-4.5",
+  "responses_support": "none",
+  "stream_format": "chat-completions-sse",
+  "tool_calls": true,
+  "reasoning": "model-dependent",
+  "context_limit_tokens": 128000,
+  "retryable_errors": [
+    "429",
+    "5xx",
+    "stream-idle"
+  ],
+  "known_incompatibilities": [
+    "previous_response_id 不支持"
+  ],
+  "matrix": {
+    "status": "untested",
+    "note": "需 ZHIPU_API_KEY;用 provider_matrix.ts 跑 10 项后回填"
+  },
+  "verified_at": null
+}
