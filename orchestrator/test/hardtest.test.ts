@@ -159,6 +159,7 @@ test("claimTokens:calc 0.3.2 display 写法(带小数点)必进数字绑定;纯�
   assert.deepEqual(toks("近 5 年历史分位;未来 2 年 CAGR"), []);  // 纯整数的年数叙述跳过(不误红)
   assert.deepEqual(toks("quarterize 得 11 期;连续 3 期改善"), ["11期", "3期"]);  // 期 进白名单:期数 display 是整数,必须绑定
   assert.deepEqual(toks("1. 若下一期收窄;2. 若区间扩大"), []);  // 列表编号 "1." 不是小数
+  assert.deepEqual(toks("来源 https://finance.sina.com.cn/jjxw/2026-08-21/doc-inipavkf6448576.shtml 讨论 1.6T"), []);  // URL 里的数字不是数字主张;1.6T 的 T 不是单位
   assert.deepEqual(toks("第 3 次复跑,5 条反证"), []);
 });
 

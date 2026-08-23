@@ -118,7 +118,7 @@ export const EXTRA_TOPICS: Record<Stage, string[]> = {
   financials: ["三表交叉", "资产负债要点", "现金流要点", "其他交叉核对"],
   estimates: ["逐篇预测", "评级分布", "其他线索"],
   valuation: ["估值历史", "分红", "其他交叉核对"],
-  risk: ["资金行为", "解禁", "股东结构", "公告线索", "互动易", "新闻线索", "其他线索"],
+  risk: ["资金行为", "解禁", "股东结构", "公告线索", "互动易", "新闻线索", "市场声音", "其他线索"],
   report: ["汇总"],
 };
 
@@ -213,6 +213,7 @@ export const manifestSchema = {
     quote_decision: { type: ["string", "null"] },
     endpoint_scope: { type: "string", enum: ["core", "full"] }, registry_version: { type: ["string", "null"] },
     knowledge_recalled: { type: ["object", "null"], additionalProperties: false, required: ["path", "as_of", "status", "truncated"], properties: { path: { type: "string" }, as_of: { type: "string" }, status: { type: "string" }, truncated: { type: "boolean" } } },
+    test_scenario: { type: "boolean" },
     knowledge_archived: { type: ["object", "null"], additionalProperties: false, required: ["latest", "run_file", "gate_removed"], properties: { latest: { type: "string" }, run_file: { type: "string" }, gate_removed: { type: "integer" } } },
     viewer: { type: ["object", "null"], additionalProperties: false, required: ["html", "appendix"], properties: { html: { type: "string" }, appendix: { type: "string" } } },
     final_errors: { type: "array", items: { type: "string" } },

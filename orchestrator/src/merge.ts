@@ -158,6 +158,8 @@ export interface Manifest {
   /** M2:召回的知识档案(null = 无 / 关闭)与归档 / 查看器产物路径 */
   knowledge_recalled?: { path: string; as_of: string; status: string; truncated: boolean } | null;
   knowledge_archived?: { latest: string; run_file: string; gate_removed: number } | null;
+  /** 带 scenario(硬测试旋钮)的运行:产物含合成数据,不进知识层归档 */
+  test_scenario?: boolean;
   viewer?: { html: string; appendix: string } | null;
   evidence_count: number;
   calculation_count: number;

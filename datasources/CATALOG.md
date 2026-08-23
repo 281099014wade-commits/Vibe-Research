@@ -1,4 +1,4 @@
-# 数据源端点目录(registry v1.0.0,共 104 个)
+# 数据源端点目录(registry v1.0.0,共 106 个)
 
 由 `datasources/gen_catalog.py` 从 `registry.json` 生成,勿手改。调用方式:`.venv/bin/python .agents/skills/data-access/scripts/fetch_endpoint.py --endpoint <id> --symbol <代码> [--args '<JSON>'] --out-dir <运行目录>`;legacy 端点为 Phase 0 的独立脚本。合规级:cn-public = 国内公开网页接口;S = 官方政府数据;B = 非官方 / 个人研究;C = 仅个人研究(CBOE 条款);rss-public = 公开 RSS。
 symbol_kind:cn6 = A 股 6 位码;us = 美股 ticker;hk = 港股 5 位;global = 美股 / 港股自动判别;raw = 原样透传(指数 / 关键词 / 期权标的);none = 不需要标的。
@@ -221,3 +221,10 @@ symbol_kind:cn6 = A 股 6 位码;us = 美股 ticker;hk = 港股 5 位;global = �
 | `em_stock_search` | 东财全球股票搜索(代码 / 市场 / 中文名) | US/HK | eastmoney | cn-public | raw | - |  |
 | `em_market_list` | 东财全市场列表(NASDAQ / NYSE / 美股 ETF / 港股 排名) | US/HK | eastmoney | cn-public | none | - |  |
 | `yahoo_news` | Yahoo Finance 新闻搜索 | US/HK | yahoo | B | raw | - |  |
+
+## 12 市场声音(2)
+
+| id | 标题 | 市场 | 源 | 合规 | symbol_kind | 阶段 | 鉴权 / 备注 |
+|---|---|---|---|---|---|---|---|
+| `exa_market_voice` | 市场声音 · 全网语义搜索(Exa 免 key MCP):新闻 / 深度文 / KOL 帖,按主题分组,前 N 条读摘录 | CN | exa-mcp | web-search-free(mcp.exa.ai,无 key;结果为公开网页索引,只作线索) | cn6 | risk:optional | 查询词由模块按公司名确定性生成(业绩进展 / 风险 / 行业竞争 / 英文分析师);标题与摘录经 textsafe 脱敏(动作词替换、控制字符剥离、截断),原文在 raw;数字不可作事实引用 |
+| `exa_forum_voice` | 市场声音 · 雪球 / 股吧讨论(经 Exa 索引,只取标题 / 作者 / 日期 / 链接;正文受 WAF 限制不可读) | CN | exa-mcp | web-search-free(mcp.exa.ai,无 key;雪球 / 股吧页面本身受 WAF,只用索引元数据) | cn6 | risk:optional | 雪球 / 股吧匿名直连被阿里云 WAF 拦截(2026-08-23 实测),Jina 读帖子正文也被 IP 频繁墙挡;本端点只提供讨论的存在性与热度线索 |

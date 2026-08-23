@@ -1,6 +1,8 @@
 """映射层(第二文件):腾讯 / 百度 / 新浪 / 财联社 / 巨潮 / 申万 / 宏观 / 交易所备源 / 问财 / baostock / 通达信 端点的 mapper。约定同 mappers.py。"""
 from __future__ import annotations
 
+import hashlib
+
 import json
 import os
 import sys
@@ -9,6 +11,7 @@ from typing import Any, Optional
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from common import to_float, today_str  # noqa: E402
 from sources.mappers import dict_fields, empty, ev, extracted, out, rows_fields, series_summary, text_items  # noqa: E402
+from sources.textsafe import safe_url  # noqa: E402
 
 
 def _num(v) -> Optional[float]:
@@ -365,3 +368,80 @@ def bs_kline_map(result: list, ctx: dict) -> dict:
     halt = sum(1 for r in rows if str(r.get("tradestatus")) == "0")
     evs.append(ev(ctx, "kline_halt_days", halt, "天", f"{rows[0]['date']}..{rows[-1]['date']}", currency="n/a"))
     return out(evs, extra={"rows": len(rows), "calc_hint": {"history_json": {"rows_path": "rows", "columns": {"date": "date", "open": "open", "high": "high", "low": "low", "close": "close", "turn": "turn"}, "where": {"tradestatus": "1"}}}})
+
+
+# ---------- 12 市场声音(Exa 免 key MCP;不可信文本,只作线索) ----------
+def _url_key(prefix: str, url) -> str:
+    """record_key 用完整 URL 的 sha256(展示链接与身份键分离;尾部截断会让长 URL 同尾撞 id)。"""
+    return prefix + hashlib.sha256(str(url or "").encode("utf-8")).hexdigest()[:24]
+
+
+def _voice_item_evs(ctx: dict, items: list, field: str, limit: int, day: str) -> list:
+    """每条一证据。period:有发布日期用发布日期(period_basis=published);未注明 / 未来日期的条目 period=取数日(period_basis=fetched,
+    note 里 published=N/A)——这类条目**不能被写成"最近"**,提示词与 SOP 都据 note 判断。raw_ref 逐条指向产生它的那次搜索响应。"""
+    evs = []
+    for it in items[:limit]:
+        pub = str(it.get("published") or "")[:10]
+        d = pub or day
+        note = (f"topic={it.get('topic')};kind={it.get('kind')};domain={it.get('domain')};author={it.get('author') or 'N/A'};"
+                f"published={pub or 'N/A'};period_basis={'published' if pub else 'fetched'};recent={it.get('recent')};link={safe_url(it.get('url'))}"
+                + (f";highlights={it['highlights'][:200]}" if it.get("highlights") else "") + ";untrusted_text=sanitized")
+        evs.append(ev(ctx, field, str(it.get("title") or "")[:200] or "(无标题)", "text", d, currency="n/a", as_of=d,
+                      record_key=_url_key("u:", it.get("url")), note=note, raw_ref=it.get("raw_ref")))
+    return evs
+
+
+def _voice_status(items: list, counts: dict, recent_days, excerpt_expect: int = 0, excerpt_ok: int = 0, what: str = "结果"):
+    """状态规则:无条目 → partial;有条目但近 recent_days 日零条带日期的新条目 → partial(全是旧帖 / 未注明日期,不能当"最近声音");
+    需要摘录而一条都没读到 → partial。部分摘录失败只出 warning。返回 (status, degraded, warnings)。"""
+    warnings = []
+    if not items:
+        return "partial", f"Exa 无{what}(查询词未命中或网络)", warnings
+    if not counts.get("recent"):
+        return "partial", f"近 {recent_days} 日无带日期的新条目(旧帖 {counts.get('stale', 0)} / 未注明日期 {counts.get('undated', 0)}),不能当作当前市场声音", warnings
+    if excerpt_expect and not excerpt_ok:
+        return "partial", f"摘录全部失败({excerpt_expect} 条候选 0 条读到)", warnings
+    if excerpt_expect and excerpt_ok < excerpt_expect:
+        warnings.append(f"摘录部分失败:{excerpt_ok}/{excerpt_expect}")
+    return "ok", None, warnings
+
+
+def exa_market_voice_map(result: dict, ctx: dict) -> dict:
+    """全网语义搜索结果 → 每条一证据(value = 净化后标题,note 带主题 / 域名 / 作者 / 日期 / 链接 / 摘要);摘录另成 web_excerpt 证据。
+    这些证据是**线索**:数字不得作为事实引用(SOP catalyst-risk §2.11 / 提示词 / 硬测试三处约束)。"""
+    result = result or {}
+    items = result.get("items") or []
+    day = today_str()
+    c = result.get("counts") or {}
+    limit = int(result.get("limit") or 40)
+    evs = [ev(ctx, "web_result_count", len(items), "条", day, currency="n/a",
+              note=f"name={result.get('name')};queries={len(result.get('queries') or [])};recent={c.get('recent')};stale={c.get('stale')};undated={c.get('undated')};forum={c.get('forum')}")]
+    evs += _voice_item_evs(ctx, items, "web_result", limit, day)
+    excerpts = result.get("excerpts") or []
+    for ex in excerpts:
+        if not ex.get("chars"):
+            continue
+        pub = str(ex.get("published") or "")[:10]
+        d = pub or day
+        evs.append(ev(ctx, "web_excerpt", ex["excerpt"], "text", d, currency="n/a", as_of=d, record_key=_url_key("excerpt:", ex.get("url")),
+                      note=f"link={safe_url(ex.get('url'))};published={pub or 'N/A'};chars={ex.get('chars')};untrusted_text=sanitized", raw_ref=ex.get("raw_ref")))
+    st, degraded, warnings = _voice_status(items, c, result.get("recent_days"), int(c.get("excerpt_candidates") or 0), int(c.get("excerpts") or 0), "结果")
+    fetch_errors = [e.get("error") for e in excerpts if e.get("error")]
+    return out(evs, extra={"name": result.get("name"), "queries": result.get("queries"), "counts": c, "recent_days": result.get("recent_days"), "limit": limit,
+                           "untrusted_text": True, "sanitized": "textsafe(动作词替换 / 控制与不可见字符剥离 / 截断)", "fetch_errors": fetch_errors, "warnings": warnings},
+               status=st, degraded=degraded)
+
+
+def exa_forum_voice_map(result: dict, ctx: dict) -> dict:
+    """雪球 / 股吧讨论(经 Exa 索引):只有标题 / 作者 / 日期 / 链接;正文受 WAF 不可读。同样只作线索。"""
+    result = result or {}
+    items = result.get("items") or []
+    day = today_str()
+    c = result.get("counts") or {}
+    limit = int(result.get("limit") or 40)
+    evs = [ev(ctx, "forum_post_count", len(items), "条", day, currency="n/a",
+              note=f"name={result.get('name')};recent={c.get('recent')};stale={c.get('stale')};undated={c.get('undated')};by_domain={c.get('by_domain')};正文不可读(WAF),只有索引元数据")]
+    evs += _voice_item_evs(ctx, items, "forum_post", limit, day)
+    st, degraded, warnings = _voice_status(items, c, result.get("recent_days"), what="论坛讨论")
+    return out(evs, extra={"name": result.get("name"), "queries": result.get("queries"), "counts": c, "recent_days": result.get("recent_days"), "limit": limit,
+                           "untrusted_text": True, "body_readable": False, "warnings": warnings}, status=st, degraded=degraded)

@@ -534,8 +534,21 @@ export function checkAgentTrace(trace: AgentTrace, cfg: Pick<RunConfig, "forbidd
   const errors: string[] = [];
   const prefixes = cfg.allowedPathPrefixes.filter(Boolean).map((p) => p.replace(/\/+$/, ""));
   const inAllowed = (p: string) => prefixes.some((pre) => p === pre || p.startsWith(pre + "/"));
+  // 读禁区(线程沙箱是 workspace-write、全盘可读,只能在这里拦):raw/ 是未净化的互联网原文(不可信文本可能诱导 agent 去读),
+  // 产品凭据 / 配置 / 密钥与主目录路径一律不许在命令里出现。agent 只读 fetch/ 的净化值、calcs/、stages/。
+  const READ_DENY: [RegExp, string][] = [
+    [/(^|[\s/"'=(`])raw\/(?!extracted_)|\/raw\/(?!extracted_)/, "读取 raw/ 原文(不可信原文只能经 fetch/ 的净化值读;raw/extracted_*.csv 是提取出的数值表,放行)"],
+    [/auth\.json|api\.token|codex-home|\.local\/config\.json|(^|[\s/"'=(`])\.env(?![\w.])|id_rsa|\.ssh\/|\.npmrc|\.netrc/, "触及产品凭据 / 配置 / 密钥文件"],
+    [/(^|[\s"'=(`])~\/|\$HOME(?![\w])|\$\{HOME\}/, "使用主目录路径(~ / $HOME)"],
+  ];
   for (const cmd of trace.commands) {
     for (const p of cfg.forbiddenPathPatterns) if (cmd.includes(p)) errors.push(`命令越界:含「${p}」→ ${cmd.slice(0, 160)}`);
+    // calc/cli.py 的 --args JSON 里合法地带 raw_ref(history_csv 指向 raw/extracted_*.csv,是提取出的数值表不是不可信文本;ht5/ht6 真踩误伤)→ 判读禁区时剥掉
+    const forDeny = /calc\/cli\.py/.test(cmd) ? cmd.replace(/--args\s+'[^']*'/g, "--args Q").replace(/--args\s+"(?:[^"\\]|\\.)*"/g, "--args Q") : cmd;
+    for (const [re, why] of READ_DENY) if (re.test(forDeny)) errors.push(`命令${why}→ ${cmd.slice(0, 160)}`);
+    // 形态规则只对真实脚本跑(钩子路径拿到的就是脚本本体)。事件流里的命令是 Codex 的展示拼接 `/bin/zsh -lc '…'`,内层引号被渲染成
+    // `'"'` 这类无法可靠还原的形态,对它做形态分析会把合法的 `x=$(jq …)` 判成"替换当路径段"(语料回归 47 条误伤)→ 展示形态只跑上面的字面规则。
+    if (!isDisplayWrapped(cmd)) for (const why of commandSafetyErrors(cmd, cfg.runDir, cfg.allowedPathPrefixes)) errors.push(`${why}→ ${cmd.slice(0, 160)}`);
     if (cmd.includes(cfg.scriptsRel) || /fetch_[a-z_]+\.py/.test(cmd)) errors.push(`agent 自行运行了取数脚本(取数只能由编排器执行)→ ${cmd.slice(0, 160)}`);
     for (const tok of cmd.match(/(?<![\w@:$}){\]])\/[^\s'"`;|&()<>]+/g) ?? []) {
       const clean = tok.replace(/[.,:]+$/, "");
@@ -564,6 +577,93 @@ export function checkAgentTrace(trace: AgentTrace, cfg: Pick<RunConfig, "forbidd
       errors.push(`命令疑似改写受保护产物(fetch/ raw/ 账本 / 冲突集 / manifest / events):${cmd.slice(0, 160)}`);
   }
   return ok(errors);
+}
+
+/**
+ * 命令安全(Codex 审查 voice-r2 / r3b;规则用 1,142 条真实运行命令做过语料回归):正则黑名单不是安全边界——
+ * `r?w/*.txt`、`.local/codex-*\/a*.json`、`$(echo raw)` 都绕得过字面量匹配。这里补的是**形态规则**,目标是拦住明显的 raw/ 与凭据读取形态、且不误伤 agent 的合法命令:
+ * ① 路径通配(含 "/" 的 `*?[` 记号)的字面前缀必须落在 fetch/ calcs/ stages/ 段下(`calcs/*.json`、`"$RUN"/calcs/*.json`、`.local/runs/x/calcs/0[1-9]_*.json` 都合法;`*\/*`、`r?w/x`、`$X/*` 不行);
+ *    不含斜杠的通配只能匹配运行目录顶层,那里没有不可信原文;jq / test 语法里的 `[]`、`$f[0].evidence[]` 也都没有斜杠;
+ * ② 命令替换 `$(…)` / 反引号 / 进程替换 `<(…)` 放行(agent 常用 `ids=$(jq …)`、`--argjson x "$(jq …)"`、`--slurpfile c <(jq -s …)`),但内部递归按同一套规则查,
+ *    替换结果不得直接当路径段(`$(…)/x`、`/$(…)`),替换内部不得引用 raw(raw_ref / raw_files → 结果就是 raw 路径;调 calc/cli.py 的命令除外,history_csv 就靠它);
+ * ③ 禁 eval;禁枚举与改权限类命令(find / xargs / chmod / chown / chflags / ln / xattr / sudo / doas / env -i / locate / mdfind);禁字符串构造器(printf 转义 / base64 -d / xxd);
+ * ④ python 文本里禁目录枚举(glob / os.listdir / os.walk / os.scandir / iterdir / rglob)与子进程 / 改权限;⑤ 禁裸词 raw / codex-home 当路径段(raw/extracted_*.csv 是提取出的数值表,放行)。
+ * 事件流里的命令是 Codex 的展示拼接 `/bin/zsh -lc "<脚本>"`(内层引号有时转义有时不转义)→ 先剥外壳、还原 `\"`;引号段一趟从左到右剥(单双交错分两趟会剥错);heredoc 正文不做 shell 形态检查但做 python 规则。
+ * ⚠️ 真正的物理隔离(raw 加密落盘、线程只见密文)仍是待办;本函数是纵深防御的一层。
+ */
+const DISPLAY_WRAP_RE = /^\s*(?:\/bin\/|\/usr\/bin\/)?(?:zsh|bash|sh)\s+-l?c\s+(["'])([\s\S]*)\1\s*$/;
+/** Codex 事件流里的展示拼接形态 `/bin/zsh -lc "…"` / `'…'` */
+export function isDisplayWrapped(cmd: string): boolean {
+  return DISPLAY_WRAP_RE.test(cmd);
+}
+
+/** 找第一个 `$(` / `<(` / `>(` / 反引号 替换,括号按深度配对(忽略引号内的括号不做,jq 程序括号总体平衡即可);返回 {start,end,inner} */
+export function findSubstitution(text: string): { start: number; end: number; inner: string } | null {
+  const bt = /`([^`]*)`/.exec(text);
+  const m = /[$<>]\(/.exec(text);
+  if (!m && !bt) return null;
+  if (!m || (bt && bt.index < m.index)) return bt ? { start: bt.index, end: bt.index + bt[0].length, inner: bt[1] } : null;
+  let depth = 0;
+  for (let i = m.index + 1; i < text.length; i++) {
+    const ch = text[i];
+    if (ch === "(") depth++;
+    else if (ch === ")") { depth--; if (depth === 0) return { start: m.index, end: i + 1, inner: text.slice(m.index + 2, i) }; }
+  }
+  return { start: m.index, end: text.length, inner: text.slice(m.index + 2) };  // 未闭合:当作到末尾
+}
+
+export function commandSafetyErrors(cmdRaw: string, runDir: string, allowedPrefixes: string[] = []): string[] {
+  const errors: string[] = [];
+  const wrap = DISPLAY_WRAP_RE.exec(cmdRaw);
+  const cmd = wrap ? wrap[2].replace(/\\"/g, '"') : cmdRaw;
+  const callsCalc = /calc\/cli\.py|--args\s/.test(cmd);  // 变量调用("$CLI" … --args)也算
+  const hd = /<<-?\s*['"]?(\w+)['"]?[^\n]*\n([\s\S]*?)\n\1\s*$/m.exec(cmd);
+  let shell = hd ? cmd.slice(0, hd.index) + cmd.slice(hd.index + hd[0].length) : cmd;
+  // 替换 / 进程替换:按括号深度配对取出(jq 程序里常有括号),由外向内递归检查,换成占位 §SUB§(占位与相邻字符贴合,便于判"当路径段")
+  for (let guard = 0; guard < 50; guard++) {
+    const sub = findSubstitution(shell);
+    if (!sub) break;
+    const inner = sub.inner.trim();
+    if (inner) {
+      for (const e of commandSafetyErrors(inner, runDir, allowedPrefixes)) errors.push(`替换内部:${e}`);
+      if (/raw/i.test(inner) && !callsCalc) errors.push("命令替换内部引用 raw(raw_ref / raw_files,其结果可能是 raw 路径)");
+    }
+    shell = shell.slice(0, sub.start) + "§SUB§" + shell.slice(sub.end);
+  }
+  // 紧贴才算路径段(`$(…)/x`、`/$(…)`);隔着换行的下一行以 / 开头不算(`x=$(jq …)\n/usr/bin/python …` 是两条语句)
+  if (/§SUB§\/|\/§SUB§/.test(shell)) errors.push("命令替换的结果被当作路径段(禁止)");
+  if (/(^|[\s;&|])eval\s/.test(shell)) errors.push("命令含 eval(禁止)");
+  if (/printf[^\n;|]*\\[xu0-7]|base64\s+(-d|--decode)|(^|[\s;&|])xxd(?=\s|$)/.test(shell)) errors.push("命令含字符串构造器(printf 转义 / base64 -d / xxd)");
+  const unquoted = shell.replace(/'[^']*'|"(?:[^"\\]|\\.)*"/g, " Q ");
+  if (/(^|[\s;&|(])(chmod|chown|chflags|ln|xattr|sudo|doas|env\s+-i|locate|mdfind)(?=\s|$)/.test(unquoted)) errors.push("命令含改权限 / 全盘检索类程序(chmod / chown / ln / xattr / sudo / locate / mdfind)");
+  // find:路径参数须落在 fetch/ calcs/ stages/(agent 真用 `find calcs -maxdepth 1 -type f`,ht9);禁 -exec / -execdir / -ok / -delete;xargs 本身不危险,它喂的命令同受本规则
+  for (const m of unquoted.matchAll(/(^|[\s;&|(])find\s+([^\n;|&]*)/g)) {
+    const args = m[2].trim().split(/\s+/);
+    const paths = []; for (const a of args) { if (a.startsWith("-") || a === "Q") break; paths.push(a); }
+    if (/-(exec|execdir|ok|okdir|delete)(?=\s|$)/.test(m[2])) errors.push("find 带 -exec / -delete(禁止)");
+    if (!paths.length || !paths.every((p) => /^(\.\/)?(fetch|calcs|stages)(\/|$)/.test(p) && !p.includes(".."))) errors.push(`find 的路径只允许 fetch/ calcs/ stages/:${m[0].trim().slice(0, 60)}`);
+  }
+  if (/(^|[\s=:/(])(raw(?!\/extracted_)|codex-home)(?=$|[\s/;:)'"])/.test(unquoted)) errors.push("命令含裸路径段 raw / codex-home");
+  // python 枚举:字面参数落在 fetch/ calcs/ stages/ 下放行(`glob.glob("fetch/*.json")`,Codex r3d);其它一律拦;子进程 / 改权限不看参数
+  if (/\b(subprocess|os\s*\.\s*system|pty\.|os\s*\.\s*chmod)/.test(cmd)) errors.push("命令含子进程 / 改权限的 Python 调用");
+  for (const m of cmd.matchAll(/\b(?:glob\s*\.\s*(?:glob|iglob)|os\s*\.\s*(?:listdir|walk|scandir)|\.(?:iterdir|rglob|glob))\s*\(\s*(?:r?["']([^"']*)["'])?/g)) {
+    const lit = m[1];
+    if (lit !== undefined && /^(\.\/)?(fetch|calcs|stages)(\/|$)/.test(lit) && !/\.\./.test(lit)) continue;
+    errors.push(`命令含目录枚举的 Python 调用(只允许字面路径在 fetch/ calcs/ stages/ 下):${m[0].slice(0, 50)}`);
+  }
+  // 路径通配:参数展开 `${spec%%:*}` 的 * 是子串操作符 → 先换占位;只看含 "/" 的记号;剥掉 `$RUN/` 变量前缀后,字面前缀须含 fetch/ calcs/ stages/ 段且不含 raw/ .vibe/ ..
+  const globText = unquoted.replace(/\$\{[^}]*\}/g, " V ");
+  for (const tok0 of globText.split(/\s+/)) {
+    if (!/[*?[]/.test(tok0) || !tok0.includes("/") || /^\d*[<>]/.test(tok0)) continue;
+    const tok = tok0.replace(/^\$\{?[A-Za-z_]\w*\}?\//, "").replace(/^Q\//, "");
+    const prefix = tok.slice(0, tok.search(/[*?[]/));
+    const unsafe = /raw\/|\.vibe\/|\.\.|codex-home/.test(prefix);
+    // 仓库源码 / skills 目录下的通配也放行(agent 偶尔 `rg … orchestrator/src/*.ts` 看代码),但 .local/ 下只认 fetch/ calcs/ stages/ 段
+    const underAllowed = path.isAbsolute(prefix) && allowedPrefixes.some((p) => p && prefix.startsWith(p.replace(/\/+$/, "") + "/")) && !/\/\.local\//.test(prefix);
+    const ok = !unsafe && (/(^|\/)(fetch|calcs|stages)\//.test(prefix) || underAllowed);
+    if (!ok) errors.push(`通配符只允许在 fetch/ calcs/ stages/ 下:${tok0.slice(0, 60)}`);
+  }
+  return errors;
 }
 
 /** 收尾后对最终文件再次做 schema 校验 */

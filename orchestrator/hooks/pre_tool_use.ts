@@ -64,11 +64,11 @@ async function main(): Promise<void> {
   }
   if (reasons.length) {
     const reason = `【PreToolUse 钩子】该调用违反研究纪律,已拦截:\n- ${reasons.join("\n- ")}`.slice(0, 1500);
-    appendHookLog(runDir, { ts: new Date().toISOString(), hook: "pre_tool_use", stage: ctx.stage, attempt: ctx.attempt, decision: "block", tool: input.tool_name, command: command.slice(0, 300), reason });
+    appendHookLog(runDir, { ts: new Date().toISOString(), hook: "pre_tool_use", stage: ctx.stage, attempt: ctx.attempt, decision: "block", tool: input.tool_name, command: command.slice(0, 4000), reason });
     process.stdout.write(JSON.stringify({ decision: "block", reason }));
     return;
   }
-  appendHookLog(runDir, { ts: new Date().toISOString(), hook: "pre_tool_use", stage: ctx.stage, attempt: ctx.attempt, decision: "allow", tool: input.tool_name, command: command.slice(0, 300) });
+  appendHookLog(runDir, { ts: new Date().toISOString(), hook: "pre_tool_use", stage: ctx.stage, attempt: ctx.attempt, decision: "allow", tool: input.tool_name, command: command.slice(0, 4000) });
 }
 
 main().catch((e) => { process.stderr.write(`[vibe pre_tool_use hook] 顶层异常,放行:${e instanceof Error ? e.message : String(e)}\n`); }).finally(() => process.exit(0));

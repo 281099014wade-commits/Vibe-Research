@@ -322,14 +322,17 @@ async function runResearchInner(cfg: RunConfig, deps: Deps, onlyStages?: Stage[]
   // M2:查看器 / 附录(运行目录内,非受保护文件)+ 知识层归档(.local/knowledge);都在最终状态定下之后,失败只记事件不改状态
   manifest.viewer = null;
   manifest.knowledge_archived = null;
+  // 任何 scenario(硬测试旋钮:注入冲突 / 证据 / 帖子、超时、钩子故障…)都意味着产物含合成数据 → 绝不归档进知识层(否则伪造证据会被下次召回)
+  const isTestScenario = !!cfg.scenario && Object.values(cfg.scenario).some((v) => v !== undefined && v !== null && v !== false && !(Array.isArray(v) && v.length === 0));
+  manifest.test_scenario = isTestScenario;
   if (cfg.knowledgeArchive) {
     const viewRun = loadRun(cfg.runDir, ledger, planOf);
     try { const v = writeViewer(cfg, viewRun, manifest); manifest.viewer = { html: v.htmlPath, appendix: v.appendixPath }; runner.log("orchestrator", "viewer.written", { html: v.htmlPath, appendix: v.appendixPath }); }
     catch (e) { runner.log("orchestrator", "viewer.failed", { error: e instanceof Error ? e.message : String(e) }); }
-    if (stagesToRun.includes("report") && status !== "failed") {
+    if (stagesToRun.includes("report") && status !== "failed" && !isTestScenario) {
       try { const a = archiveRun(cfg, viewRun, manifest); manifest.knowledge_archived = { latest: a.latestFile, run_file: a.runFile, gate_removed: a.gateRemoved.length }; runner.log("orchestrator", "knowledge.archived", { latest: a.latestFile, gate_removed: a.gateRemoved.length }); }
       catch (e) { runner.log("orchestrator", "knowledge.archive_failed", { error: e instanceof Error ? e.message : String(e) }); }
-    } else runner.log("orchestrator", "knowledge.archive_skipped", { reason: status === "failed" ? "运行 failed 不归档" : "未含 report 阶段" });
+    } else runner.log("orchestrator", "knowledge.archive_skipped", { reason: isTestScenario ? "测试场景运行(scenario)含合成数据,不归档" : status === "failed" ? "运行 failed 不归档" : "未含 report 阶段" });
   }
   persistManifest();
   if (fs.existsSync(reportPath)) runner.log("orchestrator", "report.ready", { status, report: reportPath, manifest: path.join(cfg.runDir, "manifest.json"), evidence: path.join(cfg.runDir, "evidence.json"), calculations: path.join(cfg.runDir, "calculations.json") });

@@ -69,12 +69,20 @@ export function renderAppendix(d: ViewerData): string {
   for (const s of d.stages) for (const g of s.gaps as { operation: string; reason_code: string; detail: string }[]) { anyGap = true; L.push(`- [${s.stage}] ${g.operation}:${g.reason_code} — ${cell(g.detail, 200)}`); }
   if (!anyGap) L.push("(无)");
   if (d.final_errors.length) { L.push("", "## F. 最终校验错误", ""); for (const e of d.final_errors) L.push(`- ${cell(e, 300)}`); }
-  L.push("", "## G. 证据索引(按端点 / 字段排序)", "", "| id | 端点脚本 | 字段 | 值 | 单位 | 币种 | 期间 | 来源 | raw |", "|---|---|---|---|---|---|---|---|---|");
-  const byScript = new Map<string, string>();
-  for (const [script, env] of Object.entries(d.evidence.length ? {} : {})) byScript.set(script, String(env));
+  // 链接列:市场声音 / 新闻类证据的原文链接写在 note 的 link=…(报告正文不贴 URL,靠这里"点回原帖")
+  L.push("", "## G. 证据索引(按端点 / 字段排序)", "", "| id | 端点脚本 | 字段 | 值 | 单位 | 币种 | 期间 | 来源 | 链接 | raw |", "|---|---|---|---|---|---|---|---|---|---|");
   const evs = [...d.evidence].sort((a, b) => String(a.endpoint).localeCompare(String(b.endpoint)) || String(a.field).localeCompare(String(b.field)) || String(a.period).localeCompare(String(b.period)));
-  for (const e of evs) L.push(`| ${e.id} | ${cell(e.endpoint, 40)} | ${cell(e.field, 40)} | ${cell(e.value, 60)} | ${cell(e.unit, 12)} | ${cell(e.currency, 6)} | ${cell(e.period, 24)} | ${cell(e.source, 20)} | ${cell(e.raw_ref, 70)} |`);
+  for (const e of evs) L.push(`| ${e.id} | ${cell(e.endpoint, 40)} | ${cell(e.field, 40)} | ${cell(e.value, 60)} | ${cell(e.unit, 12)} | ${cell(e.currency, 6)} | ${cell(e.period, 24)} | ${cell(e.source, 20)} | ${linkOf((e as { note?: unknown }).note)} | ${cell(e.raw_ref, 70)} |`);
   return L.join("\n") + "\n";
+}
+
+/** note 里的 link=<url>(mapper 约定;到下一个分号为止)→ markdown 链接;没有则空 */
+export function linkOf(note: unknown): string {
+  const m = /(?:^|;)\s*link=(https?:\/\/[^;\s|]+)/.exec(String(note ?? ""));
+  if (!m) return "";
+  // Markdown 元字符再编码一次:URL 里的 ) ! [ ] < > 否则能从 [原文](…) 里"逃出来"拼出第二个链接 / 远程图片(Codex 审查 voice-r2)
+  const url = m[1].replace(/[()<>\[\]!'"`]/g, (c) => "%" + c.charCodeAt(0).toString(16).toUpperCase().padStart(2, "0"));
+  return `[原文](<${url}>)`;
 }
 
 const CSS = `body{font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;margin:0;background:#f6f7f9;color:#1f2328}header{background:#1f2d3d;color:#fff;padding:14px 20px}header h1{margin:0;font-size:18px}header .meta{opacity:.85;font-size:13px;margin-top:4px}nav{display:flex;gap:6px;padding:10px 20px;background:#fff;border-bottom:1px solid #ddd;position:sticky;top:0}nav button{border:1px solid #cbd5e1;background:#fff;padding:6px 12px;border-radius:6px;cursor:pointer}nav button.on{background:#1f2d3d;color:#fff;border-color:#1f2d3d}main{padding:16px 20px}section{display:none}section.on{display:block}table{border-collapse:collapse;width:100%;background:#fff;font-size:13px}th,td{border:1px solid #e2e8f0;padding:5px 8px;text-align:left;vertical-align:top;word-break:break-all}th{background:#eef2f7;position:sticky;top:46px}input.f{width:100%;max-width:520px;padding:7px 10px;margin:8px 0;border:1px solid #cbd5e1;border-radius:6px}pre{background:#fff;border:1px solid #e2e8f0;padding:12px;white-space:pre-wrap;font-size:13px}.tag{display:inline-block;padding:1px 6px;border-radius:4px;font-size:12px;background:#e2e8f0}.ok{background:#d1fae5}.failed{background:#fee2e2}.partial{background:#fef3c7}.muted{color:#64748b;font-size:12px}`;

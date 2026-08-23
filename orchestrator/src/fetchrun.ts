@@ -8,7 +8,7 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 
-import { fetchEnv, type RunConfig, type Scenario } from "./config.ts";
+import { GATE_PATTERNS, fetchEnv, type RunConfig, type Scenario } from "./config.ts";
 import { fetchArgv } from "./registry.ts";
 import { listFiles, nowIso, readJsonIfExists, sha256File, writeJson } from "./fsutil.ts";
 
@@ -24,7 +24,10 @@ export interface LedgerEntry {
   raw_files: Record<string, string>;
   started_at: string;
   finished_at: string;
+  /** 整个信封由 scenario 伪造(timeout_scripts 等)→ validator 跳过退出码 ↔ status 不变量 */
   injected?: string;
+  /** 真实信封上叠加了合成证据(inject_voice):信封与账本仍是真实的,不变量照常生效 */
+  synthetic_overlay?: string;
   stage: string;
 }
 
@@ -62,6 +65,44 @@ function newRawFiles(before: Map<string, string>, after: Map<string, string>): R
   return out;
 }
 
+
+/** 与 sources/textsafe.py 同样的动作词脱敏(硬测试注入用:注入文本要长得像 mapper 产出) */
+export function neutralizeActions(text: string): string {
+  let t = text;
+  for (const w of [...GATE_PATTERNS].sort((a, b) => b.length - a.length)) t = t.split(w).join("〔动作词〕");
+  return t.replace(/\s+/g, " ").trim();
+}
+
+/**
+ * 市场声音注入(硬测试第 7 组):把 scenario.inject_voice 里属于本脚本的伪造条目追加进真实信封的 evidence(在账本计算 sha256 之前,文件与账本一致)。
+ * 条目形状与 mapper 一致(field web_result / forum_post,unit text,currency n/a,note 带 link / injected 标记);source=injected(与 inject_evidence 同口径,validator 的 raw_ref 豁免键)、raw_ref=null:
+ * 合成证据不冒充真实来源、不借用与内容无关的 raw 文件(Codex 审查 voice-r1)。只在 scenario.inject_voice 非空时生效;凡带 scenario 的运行不进知识层归档。
+ * 返回追加的 id 列表(空 = 本脚本没有注入项或信封读不到)。
+ */
+export function applyVoiceInjection(cfg: Pick<RunConfig, "symbol" | "market">, scenario: Scenario, script: string, file: string): string[] {
+  const items = (scenario.inject_voice ?? []).filter((x) => (x.script ?? "exa_market_voice") === script);
+  if (!items.length || !fs.existsSync(file)) return [];
+  const env = readJsonIfExists<{ evidence?: Record<string, unknown>[]; extra?: Record<string, unknown> }>(file);
+  if (!env || !Array.isArray(env.evidence)) return [];
+  const day = nowIso().slice(0, 10);
+  const field = script === "exa_forum_voice" ? "forum_post" : "web_result";
+  const ids: string[] = [];
+  for (const it of items) {
+    const title = neutralizeActions(it.title).slice(0, 200);
+    const hl = it.highlights ? neutralizeActions(it.highlights).slice(0, 240) : "";
+    const url = it.url ?? `https://injected.invalid/${ids.length + 1}`;
+    const d = it.published ?? day;
+    const id = `ev-${crypto.createHash("sha256").update(`inject_voice|${script}|${url}|${title}`).digest("hex").slice(0, 12)}`;
+    env.evidence.push({ id, symbol: cfg.symbol, market: cfg.market || "", field, value: title, unit: "text", currency: "n/a", period: d, as_of: d,
+      source: "injected", endpoint: "hardtest.inject_voice", fetched_at: nowIso(), adjustment: "not_applicable", raw_ref: null, record_key: "u:" + crypto.createHash("sha256").update(url).digest("hex").slice(0, 24),
+      note: `topic=注入;kind=${field === "forum_post" ? "forum" : "web"};domain=${url.replace(/^https?:\/\/([^/]+).*/, "$1")};author=N/A;published=${d};recent=true;link=${url}${hl ? ";highlights=" + hl : ""};untrusted_text=sanitized;injected=hardtest.inject_voice` });
+    ids.push(id);
+  }
+  env.extra = { ...(env.extra ?? {}), injected: "inject_voice", injected_ids: ids };
+  writeJson(file, env);
+  return ids;
+}
+
 /** 顺序执行脚本(内存账本里已执行过的不重复);返回(并就地更新)账本。 */
 export const runFetchScripts: FetchExecutor = (cfg, stage, scripts, log, ledger) => {
   const scenario: Scenario = cfg.scenario ?? {};
@@ -92,8 +133,10 @@ export const runFetchScripts: FetchExecutor = (cfg, stage, scripts, log, ledger)
         entry = { script, argv, exit_code: null, duration_ms: dur, status: "error", file: `fetch/${script}.json`, sha256: sha256File(file), raw_files: {}, started_at: started, finished_at: nowIso(), stage };
       } else {
         if (!fs.existsSync(file)) writeJson(file, failedEnvelope(cfg, script, `脚本退出码 ${p.status} 且未落盘:${(p.stderr || "").slice(-300)}`));
+        const injectedVoice = applyVoiceInjection(cfg, scenario, script, file);  // 硬测试第 7 组:在账本算 sha256 之前追加,文件与账本一致
         const st = p.status === 0 ? "ok" : p.status === 2 ? "partial" : "failed";
-        entry = { script, argv, exit_code: p.status, duration_ms: dur, status: st, file: `fetch/${script}.json`, sha256: sha256File(file), raw_files: {}, started_at: started, finished_at: nowIso(), stage };
+        entry = { script, argv, exit_code: p.status, duration_ms: dur, status: st, file: `fetch/${script}.json`, sha256: sha256File(file), raw_files: {}, started_at: started, finished_at: nowIso(), stage, ...(injectedVoice.length ? { synthetic_overlay: "inject_voice" } : {}) };
+        if (injectedVoice.length) log("fetch.injected", { kind: "inject_voice", script, injected_ids: injectedVoice });
       }
     }
     entry.raw_files = newRawFiles(before, rawSnapshot(cfg.runDir));
