@@ -2348,6 +2348,63 @@
         "limit": 40
       },
       "notes": "雪球 / 股吧匿名直连被阿里云 WAF 拦截(2026-08-23 实测),Jina 读帖子正文也被 IP 频繁墙挡;本端点只提供讨论的存在性与热度线索"
+    },
+    {
+      "id": "tw_monthly_revenue",
+      "title": "产业温度计 · 台系供应链月营收(FinMind 零鉴权):台光 / 台燿 / 金像电 / 联亚,环比 · 同比 · 累计同比 · 台光×金像电差分",
+      "layer": "13 产业温度计",
+      "market": [
+        "CN"
+      ],
+      "source": "finmind",
+      "compliance": "public-api-free(api.finmindtrade.com,无 key;台股法定月营收)",
+      "module": "industry",
+      "function": "tw_monthly_revenue",
+      "mapper": "tw_monthly_revenue_map",
+      "mapper_module": "mappers_industry",
+      "endpoint_label": "api.finmindtrade.com/api/v4/data TaiwanStockMonthRevenue",
+      "symbol_kind": "none",
+      "symbol_param": "code",
+      "stages": {
+        "risk": "optional"
+      },
+      "industry_tags": [
+        "ai_compute"
+      ],
+      "enabled": true,
+      "args": {
+        "tickers": "2383,6274,2368,3081",
+        "years": 2
+      },
+      "notes": "每月 10 日前披露、滞后 ~10 天;402 = 配额 / 限流必须出声;资料期 > 2 个月标 partial;证据 market=TW / symbol=台股代码,币种 TWD。读法护栏在 note 与 extra.guard"
+    },
+    {
+      "id": "gpu_rent_thermometer",
+      "title": "产业温度计 · GPU 租金(Vast 现货中位 + Kalshi 远期概率):算力缺不缺的一根线",
+      "layer": "13 产业温度计",
+      "market": [
+        "CN"
+      ],
+      "source": "vast+kalshi",
+      "compliance": "public-api-free(console.vast.ai bundles + api.elections.kalshi.com trade-api v2,无 key)",
+      "module": "industry",
+      "function": "gpu_rent_thermometer",
+      "mapper": "gpu_rent_thermometer_map",
+      "mapper_module": "mappers_industry",
+      "endpoint_label": "console.vast.ai/api/v0/bundles + kalshi markets KXB200MS",
+      "symbol_kind": "none",
+      "symbol_param": "code",
+      "stages": {
+        "risk": "optional"
+      },
+      "industry_tags": [
+        "ai_compute"
+      ],
+      "enabled": true,
+      "args": {
+        "gpus": "B200,H100"
+      },
+      "notes": "Vast 带浏览器 UA 会 403(显式传 Python-urllib UA);H100 无在租报价是市场状态;Kalshi 三分判定(格式变 / 未开盘 / 有报价);$3 是折旧参考线不是保本线;证据 market=US / symbol=GPU 型号"
     }
   ]
 }

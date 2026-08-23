@@ -99,7 +99,7 @@ export function validateFetchIntegrity(run: RunView): ValidationResult {
   // fetch/ 目录逐文件(不只是能解析的)
   for (const f of listFiles(path.join(run.runDir, "fetch"), ".json")) {
     const base = path.basename(f);
-    if (base === "_ledger.json" || base === "_plan.json") continue;
+    if (base === "_ledger.json" || base === "_plan.json" || base === "_industry.json" || base === "_chokepoints.json") continue;
     if (!fs.lstatSync(f).isFile()) { errors.push(`fetch/${base} 不是普通文件(目录 / 符号链接 / 设备),取数产物只能是普通文件`); continue; }
     const script = base.replace(/\.json$/, "");
     const entry = run.ledger[script];
@@ -204,7 +204,8 @@ export function validateStage(stage: Stage, run: RunView): ValidationResult {
     if (env.status === "failed") failedRequired.push(s);
     if (env.status === "partial") warnings.push(`fetch/${s}.json status=partial:${String((env.extra as Record<string, unknown>)?.degraded ?? "")}`);
   }
-  for (const s of scripts.optional) if (!run.fetch[s]) warnings.push(`可选取数 ${s} 无产物`);
+  const gateSkipped = new Set(readJsonIfExists<{ skipped?: string[] }>(path.join(run.runDir, "fetch", "_industry.json"))?.skipped ?? []);
+  for (const s of scripts.optional) if (!run.fetch[s] && !gateSkipped.has(s)) warnings.push(`可选取数 ${s} 无产物`);
 
   // 2. 阶段 JSON
   const so = run.stage(stage);
@@ -544,7 +545,14 @@ export function checkAgentTrace(trace: AgentTrace, cfg: Pick<RunConfig, "forbidd
   for (const cmd of trace.commands) {
     for (const p of cfg.forbiddenPathPatterns) if (cmd.includes(p)) errors.push(`命令越界:含「${p}」→ ${cmd.slice(0, 160)}`);
     // calc/cli.py 的 --args JSON 里合法地带 raw_ref(history_csv 指向 raw/extracted_*.csv,是提取出的数值表不是不可信文本;ht5/ht6 真踩误伤)→ 判读禁区时剥掉
-    const forDeny = /calc\/cli\.py/.test(cmd) ? cmd.replace(/--args\s+'[^']*'/g, "--args Q").replace(/--args\s+"(?:[^"\\]|\\.)*"/g, "--args Q") : cmd;
+    // ① raw_ref 键后面的 raw 路径是 calc 的输入引用(history_csv / history_json),不是读取;② 调 calc 时 --args 到下一个 --evidence / --calc / --run-dir 之间整段剥掉
+    //    (展示拼接形态的引号翻译成 '"'{\"…}'"' 时,按引号剥会漏 —— ht12 真踩:K 线计算的 raw_ref 被当读取 raw,risk / report 各失败 3 次)
+    //    ③ 先按 && / || / ; / 换行切成命令段,只在**调 calc 的那一段**剥 --args,后续段的 `cat raw/x` 照拦(Codex choke-r3)
+    const forDeny = cmd.split(/&&|\|\||;|\n/).map((seg) => {
+      let t = seg.replace(/raw_ref\\?["']?\s*[:=]\s*\\?["']?raw\/[^\s"'\\]+/g, " RAWREF ");
+      if (/calc\/cli\.py/.test(t)) t = t.replace(/--args\s[\s\S]*?(?=\s--(?:evidence|calc|run-dir)\b|$)/g, "--args Q");
+      return t;
+    }).join(" ; ");
     for (const [re, why] of READ_DENY) if (re.test(forDeny)) errors.push(`命令${why}→ ${cmd.slice(0, 160)}`);
     // 形态规则只对真实脚本跑(钩子路径拿到的就是脚本本体)。事件流里的命令是 Codex 的展示拼接 `/bin/zsh -lc '…'`,内层引号被渲染成
     // `'"'` 这类无法可靠还原的形态,对它做形态分析会把合法的 `x=$(jq …)` 判成"替换当路径段"(语料回归 47 条误伤)→ 展示形态只跑上面的字面规则。

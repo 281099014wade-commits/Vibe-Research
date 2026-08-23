@@ -160,6 +160,10 @@ export interface Manifest {
   knowledge_archived?: { latest: string; run_file: string; gate_removed: number } | null;
   /** 带 scenario(硬测试旋钮)的运行:产物含合成数据,不进知识层归档 */
   test_scenario?: boolean;
+  /** 产业温度计门控结果(第 13 层):命中的产业标签、依据、被跳过的端点 */
+  industry_tags?: { tags: string[]; matched: Record<string, string[]>; skipped: string[]; signals: number };
+  /** 卡口事件分类结果(确定性筛子):扫描条数 / 命中数 / 各类别计数 */
+  chokepoints?: { scanned: number; hits: number; by_category: Record<string, number> };
   viewer?: { html: string; appendix: string } | null;
   evidence_count: number;
   calculation_count: number;

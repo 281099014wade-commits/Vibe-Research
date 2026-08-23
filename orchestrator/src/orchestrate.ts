@@ -12,6 +12,8 @@ import { STAGES, STATUS_PRIORITY, type RunConfig, type RunStatus, type Stage } f
 import { ledgerSummary, type FetchExecutor, type Ledger } from "./fetchrun.ts";
 import { PLAN_REL, planFileOf } from "./registry.ts";
 import { archiveRun, recallKnowledge, shouldRecall } from "./knowledge.ts";
+import { INDUSTRY_FILE_REL, applyIndustryGate, detectIndustryTags, loadIndustryTags, writeIndustryFile } from "./industry.ts";
+import { CHOKE_FILE_REL, loadChokeTable, scanChokepoints, writeChokeFile } from "./chokepoint.ts";
 import { writeViewer } from "./viewer.ts";
 import { atomicWrite, ensureDirs, nowIso, sha256File, sha256Text, writeJson } from "./fsutil.ts";
 import { complianceGate, normalizeReportStatus } from "./gate.ts";
@@ -182,7 +184,27 @@ async function runResearchInner(cfg: RunConfig, deps: Deps, onlyStages?: Stage[]
 
   for (const stage of stagesToRun) {
     const scripts = cfg.stagePlan[stage];
-    deps.fetchRunner(cfg, stage, [...scripts.required, ...scripts.optional], (t, p) => runner.log(stage, t, p), ledger);
+    let toFetch = [...scripts.required, ...scripts.optional];
+    // 产业温度计门控(第 13 层):带 industry_tags 的端点只在标的命中对应产业标签时才取;判定用 profile 阶段已落盘的行业 / 概念信封
+    if (toFetch.some((id) => (cfg.endpoints[id]?.industry_tags ?? []).length)) {
+      const table = loadIndustryTags(cfg.repoRoot);  // 缺失 / 损坏直接抛 → 运行失败出声,不当"零标签"
+      const det = detectIndustryTags(cfg.runDir, table);
+      const gate = applyIndustryGate(toFetch, cfg.endpoints, det.tags);
+      toFetch = gate.included;
+      const f = writeIndustryFile(cfg.runDir, table, det, gate);
+      protectedFiles[INDUSTRY_FILE_REL] = sha256File(path.join(cfg.runDir, INDUSTRY_FILE_REL));
+      manifest.industry_tags = { tags: f.tags, matched: f.matched, skipped: f.skipped, signals: f.signals };
+      runner.log(stage, "industry.gate", { tags: f.tags, matched: f.matched, skipped: f.skipped, signals: f.signals });
+    }
+    deps.fetchRunner(cfg, stage, toFetch, (t, p) => runner.log(stage, t, p), ledger);
+    // 卡口事件分类(确定性,不拉新数据):risk 阶段取数后扫公司自己的公告 / 新闻信封 → fetch/_chokepoints.json(受保护)
+    if (stage === "risk" || stage === "report") {
+      const cp = scanChokepoints(cfg.runDir, loadChokeTable(cfg.repoRoot));
+      writeChokeFile(cfg.runDir, cp);
+      protectedFiles[CHOKE_FILE_REL] = sha256File(path.join(cfg.runDir, CHOKE_FILE_REL));
+      manifest.chokepoints = { scanned: cp.scanned, hits: cp.hits.length, by_category: cp.by_category };
+      runner.log(stage, "chokepoint.scan", { scanned: cp.scanned, hits: cp.hits.length, by_category: cp.by_category, scripts: cp.scripts });
+    }
     // 取数后即刷新权威冲突集(risk / report 阶段的 agent 读 conflicts.json;validator 核对 risk.source_conflicts 覆盖)
     const conf = writeConflicts(cfg);
     protectedFiles["conflicts.json"] = sha256File(path.join(cfg.runDir, "conflicts.json"));

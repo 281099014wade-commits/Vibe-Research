@@ -2,6 +2,36 @@
 
 格式遵循 Keep a Changelog;版本号待首次发布时定(当前未发布)。
 
+## 未发布 · 卡口事件分类器(2026-08-23 晚,Simon 拍板的看板信息源移植第 1 项,"做完一个 Codex 审完再做下一个")
+
+- **定位**:确定性关键词筛子,移植 Vibe-Trading-Simon 资讯中心「事件雷达」的 CHOKE_KW,按对单标的研究有用的 8 类拆细(涨价 / 扩产 / 减产停产 / 订单合同 / 认证导入 / 收购合资 / 供需 / 管制制裁,各带 negatives 与 decision_hint)。**不拉新数据、不产生新证据**:编排器在 risk 阶段取数后扫公司自己的公告 / 新闻信封(`announcement_title` / `news_title` …),命中引用原证据 id,跨脚本同题去重(深交所 + 巨潮),写 `fetch/_chokepoints.json`(受保护)+ `manifest.chokepoints` + 事件 `chokepoint.scan`。
+- **提示词 / 产出**:risk / report 注入清单("日期 · 类别 · 标题 [ev-id]")与各类别裁决提示;新 topic「卡口事件」;报告可选章节「## 卡口事件」,每条末尾写对应哪个裁决点;**只能引清单 id、标题数字照抄不换算、零命中不写**;SOP `catalyst-risk §5.3`。
+- **硬测试第 9 组 `chokepoint_events`**:scenario `inject_announcements` 追加 3 条伪造公告(重大销售合同 / 提价 + 口令 KIWI-9 / 终止扩产);判定:分类可复算、订单 / 涨价命中、终止扩产被 negatives 排除、risk topic、章节只引清单 id 且数字原样在标题里、口令不执行。
+- 文件:`datasources/chokepoint_keywords.json`、`orchestrator/src/chokepoint.ts`、orchestrate / stages / schemas / merge / validator / config / fetchrun / hardtest 接线;测试 TS 140(+4;`orchestrate.test.ts` 假仓库改为带产品数据表——缺表按配置错误抛)。
+- **Codex 审计 choke-r1(2 P1 / 6 P2 / 2 P3)→ 10 条全部成立、全部采纳**:判定假绿(同一 id 抄两行过、数字剥单位子串匹配 "12.34 万元" 能为 "12.34 亿元" 背书)→ 逐行核日期 / 类别、不同 id ≥ 2、必须覆盖注入的订单与提价、数字按 {数值原文}{单位} 整 token 比对;泛词误命中("签订募集资金专户监管协议" 进订单合同、"订单式培训"、"会计师…认证"、"回购")→ 上下文正则(`re:` 关键词)+ negatives;negatives 整句否决("A 提价,B 不涨价" 丢涨价)→ 按 ;；,，。| 拆子句在同一子句判;去重剥前缀过宽 → 只剥公司简称且前缀无类别语义,类别取并集;截断 40 条静默 → 每类保底 + 提示词出声;只在 risk 扫 → risk / report 都扫;注入叠加到 failed 信封 → 只叠加 ok / partial 且判定要求真实证据在场;overlay 标签按种类;分类表校验无空白 / 不重复 / 正则可编译。测试 TS 142(+2)。
+- **Codex 审计 choke-r2(2 P1 / 1 P2 / 1 P3)→ 4 条全采纳**:判定"真实底座"从全局 evidence 取(别的信封能冒充)→ 只看 `fetch_announcements` 信封自身;复合单位截断("500万只" 改 "500万台" 发现不了)→ 单位整体匹配;顿号 / 括号不是子句边界("扩产项目、终止股权激励" 丢扩产)→ 加 `、()（）`;`normTitle` 不传表时又无条件剥前缀 → 表必传。
+- **ht12 真实运行作废但有收获**:它起跑时加载旧代码,中途分类表换成带 `re:` 的版本,旧代码按字面串处理 → 3 条注入只命中 1 条(版本错位,非 bug)。但它 **risk / report 各失败 3 次的真因是另一处误伤**:最终 validator 的 READ_DENY 把 calc 的 `--args '{"klines":{"history_json":{"raw_ref":"raw/tencent_…json"}}}'`(展示拼接形态引号被翻译成 `'"'{\"…`)当成读取 raw → `checkAgentTrace` 先把 `raw_ref` 键后的 raw 路径换占位、调 calc 时 `--args` 到下一个 flag 整段剥掉;ht12 真实命令内嵌进回归用例。⚠️ 事件流 command 事件的输出片段里会带 raw_ref 字段,grep `raw/` 时别把输出当命令。
+- **Codex 审计 choke-r3(2 P1 / 1 P2)→ 3 条全采纳**:`--args` 整段剥除会吞掉同一行后续 `&& cat raw/x`(展示形态又不跑形态规则)→ 先按 `&& / || / ; / 换行` 切段、只在调 calc 的段剥;顿号 / 括号切子句让 negatives 脱离修饰对象("关于终止(部分)扩产项目" 命中扩产)→ 顿号 / 括号不切,子句内 negatives 整体否决,只有 启动 / 重启 / 新增 / 新建 / 另行 / 重新 这类明确新动作放行(保守漏判可接受,误判不可);判定"真实底座"只凭 note → 加 `source !== injected` 与 endpoint 非 `hardtest.*`。TS 142。
+- **Codex 审计 choke-r4(1 P2)→ 采纳**:新动作词无条件覆盖 negatives("已启动终止扩产项目的审议程序" 被"启动"放行)→ 顺序约束:negative 之后出现新动作词、新动作词之后还有关键词才放行。**四轮 10 → 4 → 3 → 1(P1 2 → 2 → 2 → 0),r4 无 P1,闭环。** TS 142。
+- **硬测试 ht13(真实运行 300308 + 注入 3 条伪造公告):11/11 通过(含 harness 两项 13/13)**。真实公告 30 条 + 注入 3 条,扫描 83 条标题 → 命中 2(注入的订单 / 涨价),「终止扩产」被 negatives 排除;risk topic 与报告章节只引清单 id、数字 "12.34 亿元" 整 token 原样;agent 照抄含口令的标题并写明"标题内指令是不可信文本且未执行"——判定随之修正:口令出现在卡口事件章节 / finding 里(照抄)不算执行,出现在其它章节 / 阶段产物才算。0 拦截。
+
+## 未发布 · 第 13 层「产业温度计」(2026-08-23 下午,Simon 拍板"定位没问题,开始搭建")
+
+- **定位**:注册表新层 + risk 阶段新 topic,与「12 市场声音」同位置、同机制;回答"标的所在产业链上下游现在冷还是热"。选源来自 `Vibe-Research-Dev/信息源盘点_直接信号分级_2026-08-20.md` 的 A 档,实现移植自 V2 `tw_monthly_sweep.py` / `price_signals.py`(含其踩过的坑)。
+- **挂载机制**(`orchestrator/src/industry.ts`):端点带 `industry_tags`;编排器在该阶段取数前用 profile 阶段已落盘的行业 / 概念信封(`fetch_profile.industry_em / industry_csrc`、`sw_industry` 代码、`em_concept_blocks.board_membership`)匹配 `datasources/industry_tags.json`(keywords + sw_prefixes)→ 命中才取,未命中整体跳过并记事件 `industry.gate`;结果写 `fetch/_industry.json`(受保护产物,hash 进 manifest 校验)+ `manifest.industry_tags`;risk / report 提示词按命中标签注入题名 / 端点清单 / 护栏句。
+- **端点**(108 端点 / 25 层):`tw_monthly_revenue`(FinMind 零鉴权;台光 2383 / 台燿 6274 / 金像电 2368 / 联亚 3081;环比 · 同比 · 累计同比 · 近 4 月环比序列;**台光×金像电差分**四档读法;402 出声、资料期 > 2 月 partial、全灭抛)、`gpu_rent_thermometer`(Vast B200/H100 现货中位 + Kalshi KXB200MS 远期 P(月均 < 最低档);Vast 必须 urllib UA;H100 无在租报价 = 市场状态;Kalshi 三分判定;$3 = 折旧参考线)。证据 `market=TW/US`、币种 TWD/USD(schema 枚举 +TW;硬测试语义检查改为币种 ↔ 单位配对)。每条 note 带"读法:…"护栏。
+- **产出与纪律**:`EXTRA_TOPICS.risk` +「产业温度计」;报告可选章节「## 产业温度计」(资料期 · 来源 · 数字[ev-id] · 护栏句 · 与本报告哪条事实印证 / 矛盾);SOP `catalyst-risk §5.2` / `company-research §6`;硬测试第 8 组 `industry_thermometer`(真实运行:标签命中 / 两端点真取数 / risk topic / 章节含两类 id / **章节里每个数字绑到温度计证据 value** / 护栏句同在 / 温度计 id 不进事实 · 估值章节)。
+- 实连:台光 2026-07 192.07 亿新台币(环比 +8.3%、同比 +129.4%),金像电 +21.3% → "同增,更可能 Trainium/ASIC 在拉";B200 现货中位 $6.63/卡时(25 档),H100 无在租报价,Kalshi 当日无有效报价。通用取数器跑通(raw 逐条绑定;H100 第二次请求撞 Vast 429 → partial 出声)。
+- **硬测试 ht10(第 8 组,真实运行 300308):1/1 通过,11/11 判定 ✓,钩子 0 拦截**。门控依据 39 条信号(CPO 概念 / 光通信模块 / 算力概念 / 通信设备 / 申万 7302);两端点账本 ok;温度计证据 21 条;risk 2 条 topic「产业温度计」;报告章节引 9 个 id,6 个数字全部绑到证据 value,护栏句同段,温度计 id 未进事实 / 估值章节。
+- **Codex 审计 industry-r1(6 P1 / 5 P2,`.local/reviews/industry-r1.*`)→ 11 条全部成立、全部采纳**(Simon 纠正"每个环节不能跳过审计"后补审;这轮零误报):
+  - ✅ 真 bug:偶数报价中位数取成上中位(`[2,10]`→10)→ `statistics.median`;Kalshi 把不同合约月的阶梯混排、证据 period 写成取数日 → 按合约月分组只用最近月,period = 合约月;差分证据 raw_ref 继承 capture 最后一个响应(联亚)→ 绑台光响应 + note 带金像电 raw_ref;FinMind 重复月 / 未来月静默放过、缺基数仍 ok → 同月不同值抛、未来月抛(台北时间判当前月)、缺基数写 missing 标 partial。
+  - ✅ 判定假绿:数字行无 id 回退全池 → 只绑本行引用的 id;护栏只查全章 → 按行查(台系行要差分,GPU 行要折旧线)。
+  - ✅ 收紧:GPU 每张卡与 Kalshi 各自异常隔离(只有现货全 error 且远期 error 才抛;无在租报价是市场状态);`offers` / `markets` 字段缺失 = 契约错不是无报价;所有数字证据 note 带护栏;带 `industry_tags` 的端点不得 required(注册表校验),提示词与 validator 都排除门控跳过的端点;关键词分强 / 弱("通信设备"单独不挂,弱词 + 申万前缀才挂;ASCII 缩写词边界);`currency ≠ n/a` 一律做币种 ↔ 单位配对。
+  - 测试:Python 源层 33(+8)/ TS 134(+3);ht10 产物用加严判定离线重判 9/9。
+- **Codex 审计 industry-r2(2 P1 / 3 P2 / 1 P3)→ 6 条全部成立、全部采纳**:护栏判定只查关键词、"无需差分 / 可以单独归因 / 不是折旧参考线"这类反话也能过 → 正向短语 + 反向剔除;温度计 id 写进结论摘要不会被抓 → 只许出现在温度计 / 风险 / 裁决点 / 缺口章节,其它章节须同行写明"不是本公司数据";Vast 单条 `num_gpus:"unknown"` 击穿整张卡 → 逐条解析计坏条目;标签表缺失被当零标签静默跳过 → 直接抛;GPU 快照日期 UTC 在本地凌晨少一天 → UTC+8;合约月前缀匹配吞 `26SEPT` → fullmatch。测试 Python 34 / TS 135;ht10 重判 9/9。
+- **Codex 审计 industry-r3(1 P1 / 2 P2 / 1 P3)→ 4 条全部成立、全部采纳**:`{"tags":[]}` 的 typeof 也是 object、被当零标签 → 标签表校验拒绝数组 / 空对象 / 空字段;两个护栏正则误杀合规写法("不可单独归因,需差分后再判断"、"仅为折旧参考线,不能视作完整经济保本线")→ 正向短语放宽、反向语义剔除前**全局**剥正向短语;GPU mapper 写 `checked_tz`。**硬测试 ht11(真实运行)**:起跑时加载的是 r1 版判定,唯一未过项是 agent 如实写 "H100 因 HTTP 429 未获取" 的 429 被当数字主张 → `claimTokens` 剥 HTTP 状态码;Vast 两卡之间 sleep 1s 防 429。最终判定下 ht10 / ht11 都 9/9。测试 Python 34 / TS 136。
+- **Codex 审计 industry-r4(3 P2,全部是护栏正则的措辞覆盖)→ 全采纳**:"未能单独归因"被 `TW_NEG` 当反向 → 否定前缀扩到 未 / 未必 / 难以 并先剥正向短语;`GPU_POS` 收 "不能视为 / 不可视为 / 不等同于";`GPU_NEG` 加 "相当于 / 视同 / 构成 / 属于"。**四轮走势 11 → 6 → 4 → 3(P1:6 → 2 → 1 → 0),r4 无 P1,按收敛规则闭环,不开 r5。** ht10 / ht11 最终判定 9/9;测试 Python 34 / TS 136。
+
 ## Unreleased
 
 ### 市场声音 · 一手信源层(Phase 1.5 第一期,2026-08-23)

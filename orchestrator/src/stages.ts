@@ -2,6 +2,8 @@
  * 阶段提示词(提示层的"施工单")。流程与 Gate 的权威来源是 company-research SKILL.md;这里只说清本次运行的路径、
  * 已由编排器执行的取数结果、calc 调用方式与必须落盘的文件,并在补跑时附上 validator 报错。提示遵循 ≠ 流程保证。
  */
+import { industryPromptBlock, readIndustryFile } from "./industry.ts";
+import { chokePromptBlock } from "./chokepoint.ts";
 import path from "node:path";
 
 import { GAP_REASON_CODES, type RunConfig, type Stage } from "./config.ts";
@@ -32,13 +34,18 @@ const EXT_GUIDE: Record<Stage, string> = {
      格式"YYYY-MM-DD · 来源域名(或作者)· 它在讨论什么(一句话,不抄数字)[ev-id]",再用一句话说明这些讨论印证 / 矛盾于本报告的哪条事实或计算(引用对应 ev / calc id);
      有 web_excerpt(摘录)的条目优先用摘录判断主题;论坛条目正文不可读,只按标题写;note 里 published=N/A(period_basis=fetched)的条目**日期写"日期不详"、不得称"最近"**(它的 period 只是取数日);evidence_ids 必须是这些具体条目的 id(不能只引 *_count 计数证据);
      正文不贴 URL(链接在 note 里,查看器 / 附录按 ev id 给出);不得转述动作措辞;没有值得记的主题就不写该主题。
-  以上每一类若有值得记录的事实,写 extra_findings(topic ∈ {"资金行为","解禁","股东结构","公告线索","互动易","新闻线索","市场声音","其他线索"} 之一,summary 只报数 ≤ 600 字,evidence_ids 必填且**必须同时列在本阶段顶层 evidence_ids**);解禁 / 大宗 / 两融变化适合写进 decision_points 的"下一个数据点"。`,
-  report: `- 扩展章节(可选,放在「风险与反证」之后、「裁决点」之前):## 资金与市场行为(两融 / 大宗 / 龙虎榜 / 解禁 / 股东户数 / 资金流 / 筹码,只报数 + ev id)/ ## 公告 · 互动易 · 新闻线索(标题级线索 + ev id)/ ## 市场声音(risk 阶段 topic "市场声音" 的 extra_findings 原样展开:按主题分小节(### 进展 / ### 风险 / ### 行业 / ### 论坛…),每条线索**单独一行、一行只写一条、不要用分号把几条并在一行**:"- YYYY-MM-DD(published=N/A 的写"日期不详")· 来源域名或作者 · 它在讨论什么 [ev-id]"(**线索行里不写任何数字**:帖子数字不是事实,本报告自己的数字只出现在别的章节;速率标签如 1.6T 可写),全章至少 3 条具体线索、每条都引用 web_result / forum_post / web_excerpt 的 ev id(不能只引计数证据);每个小节末一句"与本报告的关系"(印证 / 矛盾哪条事实或计算,带 id);章末固定一句"以上为互联网线索,非事实,不构成任何判断依据";**不抄帖子里的数字与动作措辞,正文不贴 URL**);各阶段 extra_findings 汇总进对应章节;没有就不写。必需章节集不变。`,
+  ⑥ 卡口事件(确定性分类,见下方【卡口事件】清单):编排器已用关键词表把公司自己的公告 / 新闻标题分成 涨价 / 扩产 / 减产停产 / 订单合同 / 认证导入 / 收购合资 / 供需 / 管制制裁;只能引用清单里的 id,每条"日期 · 类别 · 标题原文 [ev-id] → 对裁决点的含义";零命中就不写。
+  ⑤ 产业温度计(第 13 层,只在标的命中产业标签时才有;清单与护栏见下方【本次挂载的产业温度计】):tw_monthly_revenue(台系供应链月营收:台光 / 台燿 / 金像电 / 联亚,环比 · 同比 · 累计同比 · 台光×金像电差分)、gpu_rent_thermometer(GPU 租金:Vast 现货中位 + Kalshi 远期概率)。
+     这些是**产业链上下游的硬数据,不是本公司的数据**:每个数字照抄证据 value 带 [ev-id]、带资料期(period)与来源;**护栏句(note 里"读法:…")必须与数字同段写出**;
+     写 extra_findings(topic "产业温度计",每个温度计一条):数字 + 护栏 + 与本报告哪条事实 / 计算印证或矛盾(带 id);温度计不得单独推出结论,也不得写成本公司的业绩。
+  以上每一类若有值得记录的事实,写 extra_findings(topic ∈ {"资金行为","解禁","股东结构","公告线索","互动易","新闻线索","市场声音","产业温度计","卡口事件","其他线索"} 之一,summary 只报数 ≤ 600 字,evidence_ids 必填且**必须同时列在本阶段顶层 evidence_ids**);解禁 / 大宗 / 两融变化适合写进 decision_points 的"下一个数据点"。`,
+  report: `- 扩展章节(可选,放在「风险与反证」之后、「裁决点」之前):## 资金与市场行为(两融 / 大宗 / 龙虎榜 / 解禁 / 股东户数 / 资金流 / 筹码,只报数 + ev id)/ ## 公告 · 互动易 · 新闻线索(标题级线索 + ev id)/ ## 卡口事件(仅当 risk 阶段有 topic "卡口事件" 的 extra_findings:每条一行"日期 · 类别 · 标题原文 [ev-id] → 对应哪个裁决点 / 扳机";只引【卡口事件】清单里的 id,标题数字照抄不换算;零命中不写本章)/ ## 产业温度计(仅当 risk 阶段有 topic "产业温度计" 的 extra_findings:每个温度计一段——"资料期 · 来源 · 数字(照抄证据 value 带单位)[ev-id] · 护栏句(note 的"读法:…"原样)· 与本报告哪条事实 / 计算印证或矛盾(带 id)";温度计是产业链上下游数据不是本公司数据,不得单独推出结论)/ ## 市场声音(risk 阶段 topic "市场声音" 的 extra_findings 原样展开:按主题分小节(### 进展 / ### 风险 / ### 行业 / ### 论坛…),每条线索**单独一行、一行只写一条、不要用分号把几条并在一行**:"- YYYY-MM-DD(published=N/A 的写"日期不详")· 来源域名或作者 · 它在讨论什么 [ev-id]"(**线索行里不写任何数字**:帖子数字不是事实,本报告自己的数字只出现在别的章节;速率标签如 1.6T 可写),全章至少 3 条具体线索、每条都引用 web_result / forum_post / web_excerpt 的 ev id(不能只引计数证据);每个小节末一句"与本报告的关系"(印证 / 矛盾哪条事实或计算,带 id);章末固定一句"以上为互联网线索,非事实,不构成任何判断依据";**不抄帖子里的数字与动作措辞,正文不贴 URL**);各阶段 extra_findings 汇总进对应章节;没有就不写。必需章节集不变。`,
 };
 
 /** 本阶段注册表里的可选端点产物清单(Phase 1 M1:legacy 之外的端点),给 agent 作线索;不存在或失败按缺口处理;M2:附该阶段扩展数据使用规则 */
 export function optionalEndpointsNote(cfg: RunConfig, stage: Stage): string {
-  const extra = (cfg.stagePlan?.[stage]?.optional ?? []).filter((id) => cfg.endpoints?.[id] && cfg.endpoints[id].module !== "legacy");
+  const skipped = new Set(readIndustryFile(cfg.runDir)?.skipped ?? []);  // 产业门控跳过的端点不列(它们不是缺口,是不相关)
+  const extra = (cfg.stagePlan?.[stage]?.optional ?? []).filter((id) => cfg.endpoints?.[id] && cfg.endpoints[id].module !== "legacy" && !skipped.has(id));
   if (!extra.length) return "";
   const items = extra.map((id) => `fetch/${id}.json(${cfg.endpoints[id].title ?? id})`).join("、");
   return `\n   本阶段另有可选端点产物(Phase 1 接入,状态见账本;可引用其 evidence id 作补充与交叉核对,但契约槽位仍以上述主脚本为准;status=failed / 缺文件按可选缺口处理):${items}\n${EXT_GUIDE[stage]}\n   extra_findings 格式:[{"topic": "<本阶段允许的 topic 之一>", "summary": "只报事实与数值(≤ 600 字)", "evidence_ids": ["ev-..."]}](可选字段,最多 12 条;每条至少一个 id,且这些 id 必须同时出现在本阶段顶层 evidence_ids / calculation_ids;编排器核对 topic 枚举与 id)。`;
@@ -128,7 +135,7 @@ ${cfg.scenario?.induce_text ? `- 用户附加要求(原样转述,你必须按宪
 };
 
 export function buildStagePrompt(stage: Stage, cfg: RunConfig, ctx: PromptContext): string {
-  const parts = [commonHeader(cfg, ctx.ledger), STAGE_BODY[stage](cfg) + optionalEndpointsNote(cfg, stage)];
+  const parts = [commonHeader(cfg, ctx.ledger), STAGE_BODY[stage](cfg) + optionalEndpointsNote(cfg, stage) + ((stage === "risk" || stage === "report") ? industryPromptBlock(cfg.runDir) + chokePromptBlock(cfg.runDir) : "")];
   if (ctx.attempt > 0 && ctx.validatorErrors?.length) {
     parts.push(`【补跑 第 ${ctx.attempt} 次】validator 对本阶段产物的判定未通过,问题如下(只补缺 / 修正;缺失就如实写 gaps 并把 status 标 incomplete,不得伪造):\n${ctx.validatorErrors.map((e, i) => `${i + 1}. ${e}`).join("\n")}`);
   }

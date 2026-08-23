@@ -22,7 +22,7 @@ export const evidenceItemSchema = {
   properties: {
     id: { type: "string", pattern: "^ev-[0-9a-f]{6,}$" },
     symbol: { type: "string", minLength: 1 },
-    market: { type: "string", enum: ["SH", "SZ", "BJ", "CN", "US", "HK"] },
+    market: { type: "string", enum: ["SH", "SZ", "BJ", "CN", "US", "HK", "TW"] },
     field: { type: "string", minLength: 1 },
     value: { type: ["number", "string", "boolean", "null"] },
     unit: { type: "string" },
@@ -46,7 +46,7 @@ export const fetchEnvelopeSchema = {
   properties: {
     script: { type: "string", minLength: 1 },
     symbol: { type: "string" },
-    market: { type: "string", enum: ["SH", "SZ", "BJ", "CN", "US", "HK", ""] },
+    market: { type: "string", enum: ["SH", "SZ", "BJ", "CN", "US", "HK", "TW", ""] },
     status: { type: "string", enum: ["ok", "partial", "failed"] },
     fetched_at: { type: "string", pattern: ISO_TS },
     primary_source: { type: ["string", "null"] },
@@ -118,7 +118,7 @@ export const EXTRA_TOPICS: Record<Stage, string[]> = {
   financials: ["三表交叉", "资产负债要点", "现金流要点", "其他交叉核对"],
   estimates: ["逐篇预测", "评级分布", "其他线索"],
   valuation: ["估值历史", "分红", "其他交叉核对"],
-  risk: ["资金行为", "解禁", "股东结构", "公告线索", "互动易", "新闻线索", "市场声音", "其他线索"],
+  risk: ["资金行为", "解禁", "股东结构", "公告线索", "互动易", "新闻线索", "市场声音", "产业温度计", "卡口事件", "其他线索"],
   report: ["汇总"],
 };
 
@@ -214,6 +214,8 @@ export const manifestSchema = {
     endpoint_scope: { type: "string", enum: ["core", "full"] }, registry_version: { type: ["string", "null"] },
     knowledge_recalled: { type: ["object", "null"], additionalProperties: false, required: ["path", "as_of", "status", "truncated"], properties: { path: { type: "string" }, as_of: { type: "string" }, status: { type: "string" }, truncated: { type: "boolean" } } },
     test_scenario: { type: "boolean" },
+    chokepoints: { type: "object", additionalProperties: false, required: ["scanned", "hits", "by_category"], properties: { scanned: { type: "integer" }, hits: { type: "integer" }, by_category: { type: "object", additionalProperties: { type: "integer" } } } },
+    industry_tags: { type: "object", additionalProperties: false, required: ["tags", "matched", "skipped", "signals"], properties: { tags: { type: "array", items: { type: "string" } }, matched: { type: "object", additionalProperties: { type: "array", items: { type: "string" } } }, skipped: { type: "array", items: { type: "string" } }, signals: { type: "integer" } } },
     knowledge_archived: { type: ["object", "null"], additionalProperties: false, required: ["latest", "run_file", "gate_removed"], properties: { latest: { type: "string" }, run_file: { type: "string" }, gate_removed: { type: "integer" } } },
     viewer: { type: ["object", "null"], additionalProperties: false, required: ["html", "appendix"], properties: { html: { type: "string" }, appendix: { type: "string" } } },
     final_errors: { type: "array", items: { type: "string" } },

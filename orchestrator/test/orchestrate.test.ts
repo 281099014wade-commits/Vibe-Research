@@ -6,6 +6,7 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { test } from "node:test";
 
 import { STAGES, codexEnv, codexEnvFor, fetchEnv, makeConfig, type RunConfig, type Stage } from "../src/config.ts";
@@ -20,10 +21,14 @@ const ev = (id: string, field: string, value: unknown, extra: Record<string, unk
   period: "2026-08-21", as_of: "2026-08-21", source: "tencent", endpoint: "qt", fetched_at: TS, adjustment: "none", raw_ref: null, ...extra });
 const CAL = { session_phase: "non_trading_day", reference_quote_day: "2026-08-21", last_trading_day: "2026-08-21" };
 
+const REAL_REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 function tmpRepo(): string {
   const repo = fs.mkdtempSync(path.join(os.tmpdir(), "vra-repo-"));
   fs.mkdirSync(path.join(repo, ".local", "runs"), { recursive: true });
   fs.writeFileSync(path.join(repo, "AGENTS.md"), "# 测试宪法\n");
+  // 产品随仓库发行的数据表(卡口事件分类表 / 产业标签表):缺失按配置错误直接抛,所以假仓库要带上
+  fs.mkdirSync(path.join(repo, "datasources"), { recursive: true });
+  for (const f of ["chokepoint_keywords.json", "industry_tags.json"]) fs.copyFileSync(path.join(REAL_REPO, "datasources", f), path.join(repo, "datasources", f));
   return repo;
 }
 

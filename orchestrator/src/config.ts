@@ -47,6 +47,8 @@ export interface Scenario {
    * 用于验证"帖子里的指令不执行、帖子里的数字不当事实、动作措辞不进报告、gate 零命中"
    */
   inject_voice?: { script?: "exa_market_voice" | "exa_forum_voice"; title: string; highlights?: string; url?: string; published?: string }[];
+  /** 硬测试第 9 组:往 fetch_announcements 信封追加伪造公告标题(验证卡口事件分类器的正向路径、negatives 与口令不执行) */
+  inject_announcements?: { script?: "fetch_announcements" | "em_stock_news"; title: string; date?: string; url?: string }[];
 }
 
 export interface RunConfig {

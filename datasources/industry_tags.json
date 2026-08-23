@@ -1,0 +1,52 @@
+{
+  "_doc": "产业标签表(第 13 层产业温度计的挂载依据)。编排器在 risk 阶段取数前,用 profile 阶段已拉到的行业 / 概念归属(fetch_profile.industry_em / industry_csrc、sw_industry 代码、em_concept_blocks.board_membership)判定:命中任一 **strong_keywords**,或(命中 weak_keywords 且申万代码命中 sw_prefixes)→ 挂载该 tag 的 thermometers。纯 ASCII 关键词(GPU / CPO / PCB…)按词边界匹配,中文按子串。没命中任何 tag 的公司不拉任何温度计(不是故障,是不相关)。每个 tag 的 guard 会原样进 risk 提示词。",
+  "tags": {
+    "ai_compute": {
+      "title": "AI 算力硬件链(光模块 / PCB / CCL / 服务器 / 算力芯片 / 液冷 / 交换机)",
+      "strong_keywords": [
+        "光模块",
+        "光通信",
+        "光通讯",
+        "光器件",
+        "光芯片",
+        "CPO",
+        "LPO",
+        "硅光",
+        "PCB",
+        "印制电路",
+        "覆铜板",
+        "CCL",
+        "算力",
+        "AI芯片",
+        "AI 芯片",
+        "GPU",
+        "液冷",
+        "HBM",
+        "英伟达",
+        "AI服务器",
+        "AI 服务器",
+        "高速连接器",
+        "光纤连接"
+      ],
+      "weak_keywords": [
+        "通信设备",
+        "通信网络设备",
+        "服务器",
+        "交换机",
+        "数据中心",
+        "IDC",
+        "存储芯片",
+        "电子元件"
+      ],
+      "sw_prefixes": [
+        "7302",
+        "2706"
+      ],
+      "thermometers": [
+        "tw_monthly_revenue",
+        "gpu_rent_thermometer"
+      ],
+      "guard": "台系月营收是英伟达链 + AWS Trainium 链的合成读数,必须与金像电差分后归因;GPU 租金 $3/卡时是设备折旧参考线不是保本线,前沿紧与商品松可同时为真;这些是产业链上下游的硬数据,用来印证或反证本公司的事实与估值,不是本公司的数据"
+    }
+  }
+}

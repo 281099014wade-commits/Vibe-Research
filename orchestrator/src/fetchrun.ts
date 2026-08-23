@@ -79,11 +79,36 @@ export function neutralizeActions(text: string): string {
  * 合成证据不冒充真实来源、不借用与内容无关的 raw 文件(Codex 审查 voice-r1)。只在 scenario.inject_voice 非空时生效;凡带 scenario 的运行不进知识层归档。
  * 返回追加的 id 列表(空 = 本脚本没有注入项或信封读不到)。
  */
+/** 硬测试第 9 组:往公告 / 新闻信封追加伪造标题(field announcement_title / news_title;source=injected、raw_ref=null、note 带 injected 标记)。动作措辞同样脱敏。 */
+export function applyAnnouncementInjection(cfg: Pick<RunConfig, "symbol" | "market">, scenario: Scenario, script: string, file: string): string[] {
+  const items = (scenario.inject_announcements ?? []).filter((x) => (x.script ?? "fetch_announcements") === script);
+  if (!items.length || !fs.existsSync(file)) return [];
+  const env = readJsonIfExists<{ status?: string; evidence?: Record<string, unknown>[]; extra?: Record<string, unknown> }>(file);
+  // 只叠加到真实成功(ok / partial)的信封:真实端点失败时不能靠合成条目把硬测试撑绿(Codex choke-r1)
+  if (!env || !Array.isArray(env.evidence) || !["ok", "partial"].includes(String(env.status))) return [];
+  const day = nowIso().slice(0, 10);
+  const field = script === "em_stock_news" ? "news_title" : "announcement_title";
+  const ids: string[] = [];
+  for (const it of items) {
+    const title = neutralizeActions(it.title).slice(0, 200);
+    const url = it.url ?? `https://injected.invalid/ann-${ids.length + 1}`;
+    const d = it.date ?? day;
+    const id = `ev-${crypto.createHash("sha256").update(`inject_announcements|${script}|${url}|${title}`).digest("hex").slice(0, 12)}`;
+    env.evidence.push({ id, symbol: cfg.symbol, market: cfg.market || "", field, value: title, unit: "text", currency: "n/a", period: d, as_of: d,
+      source: "injected", endpoint: "hardtest.inject_announcements", fetched_at: nowIso(), adjustment: "not_applicable", raw_ref: null, record_key: "u:" + crypto.createHash("sha256").update(url).digest("hex").slice(0, 24),
+      note: `url=${url};injected=hardtest.inject_announcements` });
+    ids.push(id);
+  }
+  env.extra = { ...(env.extra ?? {}), injected_announcements: ids };
+  writeJson(file, env);
+  return ids;
+}
+
 export function applyVoiceInjection(cfg: Pick<RunConfig, "symbol" | "market">, scenario: Scenario, script: string, file: string): string[] {
   const items = (scenario.inject_voice ?? []).filter((x) => (x.script ?? "exa_market_voice") === script);
   if (!items.length || !fs.existsSync(file)) return [];
-  const env = readJsonIfExists<{ evidence?: Record<string, unknown>[]; extra?: Record<string, unknown> }>(file);
-  if (!env || !Array.isArray(env.evidence)) return [];
+  const env = readJsonIfExists<{ status?: string; evidence?: Record<string, unknown>[]; extra?: Record<string, unknown> }>(file);
+  if (!env || !Array.isArray(env.evidence) || !["ok", "partial"].includes(String(env.status))) return [];
   const day = nowIso().slice(0, 10);
   const field = script === "exa_forum_voice" ? "forum_post" : "web_result";
   const ids: string[] = [];
@@ -133,10 +158,13 @@ export const runFetchScripts: FetchExecutor = (cfg, stage, scripts, log, ledger)
         entry = { script, argv, exit_code: null, duration_ms: dur, status: "error", file: `fetch/${script}.json`, sha256: sha256File(file), raw_files: {}, started_at: started, finished_at: nowIso(), stage };
       } else {
         if (!fs.existsSync(file)) writeJson(file, failedEnvelope(cfg, script, `脚本退出码 ${p.status} 且未落盘:${(p.stderr || "").slice(-300)}`));
-        const injectedVoice = applyVoiceInjection(cfg, scenario, script, file);  // 硬测试第 7 组:在账本算 sha256 之前追加,文件与账本一致
+        const injV = applyVoiceInjection(cfg, scenario, script, file), injA = applyAnnouncementInjection(cfg, scenario, script, file);  // 硬测试第 7 / 9 组:在账本算 sha256 之前追加,文件与账本一致
+        const injectedVoice = [...injV, ...injA];
+        const overlayKinds = [...(injV.length ? ["inject_voice"] : []), ...(injA.length ? ["inject_announcements"] : [])];
         const st = p.status === 0 ? "ok" : p.status === 2 ? "partial" : "failed";
-        entry = { script, argv, exit_code: p.status, duration_ms: dur, status: st, file: `fetch/${script}.json`, sha256: sha256File(file), raw_files: {}, started_at: started, finished_at: nowIso(), stage, ...(injectedVoice.length ? { synthetic_overlay: "inject_voice" } : {}) };
-        if (injectedVoice.length) log("fetch.injected", { kind: "inject_voice", script, injected_ids: injectedVoice });
+        entry = { script, argv, exit_code: p.status, duration_ms: dur, status: st, file: `fetch/${script}.json`, sha256: sha256File(file), raw_files: {}, started_at: started, finished_at: nowIso(), stage, ...(overlayKinds.length ? { synthetic_overlay: overlayKinds.join("+") } : {}) };
+        if (injV.length) log("fetch.injected", { kind: "inject_voice", script, injected_ids: injV });
+        if (injA.length) log("fetch.injected", { kind: "inject_announcements", script, injected_ids: injA });
       }
     }
     entry.raw_files = newRawFiles(before, rawSnapshot(cfg.runDir));
