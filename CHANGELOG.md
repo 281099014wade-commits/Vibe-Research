@@ -2,6 +2,16 @@
 
 格式遵循 Keep a Changelog;版本号待首次发布时定(当前未发布)。
 
+## 未发布 · 第 14 层「管制与准入」(2026-08-23 晚,看板信息源移植第 2 项)
+
+- **定位**:美方名单**状态**(1260H / BIS / FCC)对单标的的判定;与供需正交,只当打折项。移植 Simon 私有 V2 `policy_access.py`,护栏原样:判定以联邦公报通知**全文检索公司英文名**为准(抽取结果会漏 → 假阴性最危险);无一手英文名只能 undetermined;没被点名 ≠ 不受影响(FCC 整类禁令不点名);"被建议列入" ≠ "已列入";中方侧沉默不能证明不受管制。
+- **端点 `policy_access`**(109 端点 / 26 层,risk optional):巨潮 `F001V` 英文名 + 去后缀别名(≥ 8 字符)→ 联邦公报 API 取最新 1260H 通知全文按别名词边界检索(on_list 带原句 / not_on_list / undetermined;全文 < 2000 字符抛)→ BIS 规则按公司名精确短语检索(0 结果时 API 不带 results 键)→ FCC Covered List 经 r.jina(分节切 / 去重 / 整类禁令与点名实体分开;0 条抛)。**中方侧默认未接入**:商务部出口管制公告列表 JS 渲染零配置抓不到(经 jina 只拿到导航链接——看板事件雷达同一抓法的产出其实也是导航项),证据 `policy_cn_side_status=not_connected` 带护栏,不塞假数据。各端口隔离失败,1260H 与 BIS 都失败才抛。
+- 实连 300308:英文名 Zhongji Innolight Co., Ltd.;**1260H 通知 2026-11571(2026-06-10)全文命中 "Zhongji Innolight Co., Ltd. (Innolight)" → on_list**;BIS 0 条;FCC 17 条(整类禁令 1)未点名;7 条证据全带 raw。
+- 产出:提示词 ⑦ + topic「管制与准入」+ 报告可选章节(护栏与状态同段,不写"无管制风险")+ SOP `catalyst-risk §5.4`;硬测试第 10 组 `policy_access`(300308 已知在名单 → on_list 原句 / risk topic / 章节通知日期与文号 / 四条护栏 / 无绝对结论 / 数字绑定 / 状态一致)。测试 Python 源层 39(+5)/ TS 142。
+- **Codex 审计 policy-r1(3 P1 / 8 P2 / 1 P3)→ 12 条全部成立、全部采纳**:🔴 **最新标题命中的可能是 Removal 通知(只列被移除那家)→ 会把在名单上的公司判成 not_on_list(假阴性)** → 基线 = 最新完整指定通知,后续 removal / addition / correction 按日期应用,重建不了 → undetermined;名称匹配未规范化(跨行 / NBSP / Co.,Ltd / Company Limited / 标签粘连)→ `norm_text` + `html_to_text`;文号 `2026-11571` 被当负数 → claimTokens 剥文号与 `1260H`;短名撞别家("Acme Innolight Holdings")→ 短名只认括号别名,其余 ambiguous → undetermined;BIS 检索结果未复核 → 拉原文本地确认(mentioned / search_hit_unconfirmed);分页与截断计数;中方侧证据 raw_ref 误绑别的端口 → extracted 快照;护栏只查关键词(反写也过)→ 方向性正则 + 绝对结论剥否定语境;"N 条" 小整数未绑定 → 单独绑 count 证据;on_list 冲突检查只看同行 → 全章扫且区分 FCC / BIS 语境;degraded 原因合并。测试 Python 40 / TS 143。**ht14(r1 前代码)章节写法合规,最终判定 10/10**(一次假红:"未被点名不等于不受**整类禁令**影响"被正则卡住,已放宽);ht15(r1 修复版)跑中。
+- **Codex 审计 policy-r2(2 P1 / 2 P2)→ 4 条全采纳**:后续通知改变状态后证据仍指向基线(removed 的证据文号 / 日期 / raw 都是基线的)→ `decision_*` 元数据,状态证据指向决定状态的那份通知;BIS undetermined / unconfirmed 仍出 "0 条"(未经确认的阴性)→ 新增 `policy_bis_status`,计数改 `policy_bis_confirmed_mentions_count` 且只在 mentioned / not_mentioned 时生成;确认条目 raw 绑检索响应 → 绑规则全文 `doc_raw_ref`;judge 只要求 1260H + 任意两条 → 四类状态证据都要引。Python 41 / TS 143。
+- **Codex 审计 policy-r3(1 P2)→ 采纳**:BIS 为 search_hit_unconfirmed 时报告写"未提及"也能过 → judge 加措辞一致性(写未提及须状态 = not_mentioned;unconfirmed 须写"未确认";undetermined 须写"判断不了")。**三轮 12 → 4 → 1(P1 3 → 2 → 0),r3 无 P1,闭环。** ht15(r1 版代码)当时判定 1/1;**ht16(最终代码)13/13 通过、0 拦截**:章节写 "1260H 状态 on_list,依据 2026-06-10 联邦公报文号 2026-11571 命中该别名;BIS not_mentioned、确认提及 0 条;FCC 截至 2026-08-21 未按名点名;中方侧 not_connected" + 四条护栏。
+
 ## 未发布 · 卡口事件分类器(2026-08-23 晚,Simon 拍板的看板信息源移植第 1 项,"做完一个 Codex 审完再做下一个")
 
 - **定位**:确定性关键词筛子,移植 Vibe-Trading-Simon 资讯中心「事件雷达」的 CHOKE_KW,按对单标的研究有用的 8 类拆细(涨价 / 扩产 / 减产停产 / 订单合同 / 认证导入 / 收购合资 / 供需 / 管制制裁,各带 negatives 与 decision_hint)。**不拉新数据、不产生新证据**:编排器在 risk 阶段取数后扫公司自己的公告 / 新闻信封(`announcement_title` / `news_title` …),命中引用原证据 id,跨脚本同题去重(深交所 + 巨潮),写 `fetch/_chokepoints.json`(受保护)+ `manifest.chokepoints` + 事件 `chokepoint.scan`。

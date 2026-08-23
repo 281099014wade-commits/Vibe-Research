@@ -2405,6 +2405,32 @@
         "gpus": "B200,H100"
       },
       "notes": "Vast 带浏览器 UA 会 403(显式传 Python-urllib UA);H100 无在租报价是市场状态;Kalshi 三分判定(格式变 / 未开盘 / 有报价);$3 是折旧参考线不是保本线;证据 market=US / symbol=GPU 型号"
+    },
+    {
+      "id": "policy_access",
+      "title": "管制与准入 · 美方名单状态(1260H 全文检索 / BIS 规则提及 / FCC Covered List)+ 中方出口管制公告事件流",
+      "layer": "14 管制与准入",
+      "market": [
+        "CN"
+      ],
+      "source": "federalregister+cninfo+fcc+mofcom",
+      "compliance": "public-api-free(federalregister.gov API / cninfo companyOverview / fcc.gov 与 mofcom 经 r.jina.ai 免 key)",
+      "module": "policy",
+      "function": "policy_access",
+      "mapper": "policy_access_map",
+      "mapper_module": "mappers_policy",
+      "endpoint_label": "federalregister.gov/api/v1/documents + cninfo getCompanyIntroduction F001V + r.jina.ai(fcc / mofcom)",
+      "symbol_kind": "cn6",
+      "symbol_param": "code",
+      "stages": {
+        "risk": "optional"
+      },
+      "enabled": true,
+      "args": {
+        "with_fcc": true,
+        "with_mofcom": false
+      },
+      "notes": "判定以联邦公报通知全文检索公司英文名为准;无英文名 = undetermined(≠ not_on_list);没被点名 ≠ 不受影响;'被建议列入' ≠ '已列入';中方侧默认不接(商务部公告列表 JS 渲染零配置抓不到,证据里给 not_connected 护栏)。移植自 V2 policy_access.py"
     }
   ]
 }

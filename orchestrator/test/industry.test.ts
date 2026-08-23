@@ -5,7 +5,7 @@ import path from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { applyIndustryGate, detectIndustryTags, industryPromptBlock, keywordHit, loadIndustryTags, writeIndustryFile } from "../src/industry.ts";
-import { judgeIndustryThermometer } from "../src/hardtest.ts";
+import { judgeIndustryThermometer, judgePolicyAccess } from "../src/hardtest.ts";
 import { loadRegistry } from "../src/registry.ts";
 import { EXTRA_TOPICS } from "../src/schemas.ts";
 import { writeJson } from "../src/fsutil.ts";
@@ -153,4 +153,46 @@ test("industry-r3:标签表为数组 / 空对象 / 字段为空都抛;合规的�
   const naturalGpu = ["3 美元/卡时仅为设备折旧参考线,不能视作完整经济保本线", "3 美元是折旧参考线,并非完整经济保本线", "折旧参考线 3 美元不代表保本线", "3 美元/卡时属于 B200 设备折旧参考线,不能视为完整经济保本线"];
   for (const tw of naturalTw) for (const gpu of naturalGpu) { fs.writeFileSync(path.join(d, "report.md"), rep(tw, gpu)); assert.ok(judgeIndustryThermometer(d).checks.find((c) => /护栏/.test(c.name))!.pass, `${tw} / ${gpu}`); }
   for (const [tw, gpu] of [["无需与金像电差分,可以单独归因", naturalGpu[0]], [naturalTw[0], "3 美元不是折旧参考线,而是完整保本线"], [naturalTw[0], "折旧参考线 3 美元即完整保本线"], [naturalTw[0], "3 美元/卡时仅为设备折旧参考线,但在当前电价下相当于完整经济保本线"]] as const) { fs.writeFileSync(path.join(d, "report.md"), rep(tw, gpu)); assert.ok(!judgeIndustryThermometer(d).checks.find((c) => /护栏/.test(c.name))!.pass, `反向:${tw} / ${gpu}`); }
+});
+
+test("policy-r1:judgePolicyAccess——护栏方向反写 / 绝对结论 / 文号 / N 条绑定 / on_list 冲突都判得出;合规写法通过", () => {
+  const d = fs.mkdtempSync(path.join(os.tmpdir(), "vra-pol-judge-"));
+  fs.mkdirSync(path.join(d, "stages")); fs.mkdirSync(path.join(d, "fetch"));
+  const ev = [
+    { id: "ev-a1a1a1a1a1a1", field: "policy_english_name", value: "Zhongji Innolight Co., Ltd.", unit: "text", currency: "n/a", period: "2026-08-23", as_of: "2026-08-23", source: "s", symbol: "300308", market: "SZ", note: "x" },
+    { id: "ev-b1b1b1b1b1b1", field: "policy_1260h_status", value: "on_list", unit: "status", currency: "n/a", period: "2026-06-10", as_of: "2026-08-23", source: "s", symbol: "300308", market: "SZ", note: "fr_doc=2026-11571;published=2026-06-10" },
+    { id: "ev-c1c1c1c1c1c1", field: "policy_1260h_context", value: "zhongji innolight co ltd innolight", unit: "text", currency: "n/a", period: "2026-06-10", as_of: "2026-08-23", source: "s", symbol: "300308", market: "SZ", note: "x" },
+    { id: "ev-d1d1d1d1d1d1", field: "policy_bis_confirmed_mentions_count", value: 0, unit: "条", currency: "n/a", period: "2026-08-23", as_of: "2026-08-23", source: "s", symbol: "300308", market: "SZ", note: "x" },
+    { id: "ev-d2d2d2d2d2d2", field: "policy_bis_status", value: "not_mentioned", unit: "status", currency: "n/a", period: "2026-08-23", as_of: "2026-08-23", source: "s", symbol: "300308", market: "SZ", note: "x" },
+    { id: "ev-e2e2e2e2e2e2", field: "policy_fcc_covered_by_name", value: "not_on_list", unit: "status", currency: "n/a", period: "2026-08-23", as_of: "2026-08-23", source: "s", symbol: "300308", market: "SZ", note: "x" },
+    { id: "ev-e1e1e1e1e1e1", field: "policy_fcc_entries_count", value: 17, unit: "条", currency: "n/a", period: "2026-08-23", as_of: "2026-08-23", source: "s", symbol: "300308", market: "SZ", note: "x" },
+    { id: "ev-f1f1f1f1f1f1", field: "policy_cn_side_status", value: "not_connected", unit: "status", currency: "n/a", period: "2026-08-23", as_of: "2026-08-23", source: "s", symbol: "300308", market: "SZ", note: "x" },
+  ];
+  writeJson(path.join(d, "evidence.json"), ev);
+  writeJson(path.join(d, "stages", "risk.json"), { extra_findings: [{ topic: "管制与准入", summary: "x", evidence_ids: ["ev-b1b1b1b1b1b1"] }] });
+  writeJson(path.join(d, "manifest.json"), { status: "complete", exit_code: 0, fetch_ledger: { policy_access: { status: "ok" } }, gate: { ok: true, hits: [] }, stages: [] });
+  const rep = (body: string) => `# 报告\n\n## 结论摘要\n\n- x\n\n## 管制与准入\n\n${body}\n\n## 裁决点\n\n- x\n`;
+  const good = "- 1260H:on_list(通知 2026-06-10 · FR Doc 2026-11571 · 命中 Zhongji Innolight Co., Ltd.)[ev-b1b1b1b1b1b1][ev-c1c1c1c1c1c1];BIS:not_mentioned(原文确认提及 0 条)[ev-d2d2d2d2d2d2][ev-d1d1d1d1d1d1];FCC 点名:not_on_list [ev-e2e2e2e2e2e2],名单共 17 条 [ev-e1e1e1e1e1e1];中方侧:not_connected [ev-f1f1f1f1f1f1]。护栏:这根轴只当打折项、不重排名次;没被点名 ≠ 不受影响;被建议列入 ≠ 已列入,只认联邦公报原文;中方侧未接入,沉默不能证明不受管制;不能据此断言不存在管制风险。";
+  fs.writeFileSync(path.join(d, "report.md"), rep(good));
+  const r = judgePolicyAccess(d);
+  assert.ok(r.checks.slice(1).every((c) => c.pass), JSON.stringify(r.checks.filter((c) => !c.pass)));
+  const fails = (body: string, re: RegExp, why: string) => { fs.writeFileSync(path.join(d, "report.md"), rep(body)); assert.ok(!judgePolicyAccess(d).checks.find((c) => re.test(c.name))!.pass, why); };
+  fails(good.replace("没被点名 ≠ 不受影响", "没被点名说明没有影响"), /护栏/, "护栏方向反写");
+  fails(good.replace("被建议列入 ≠ 已列入", "被建议列入就是已列入"), /护栏/, "建议列入反写");
+  fails(good.replace("沉默不能证明不受管制", "沉默可以证明未受限制"), /护栏/, "中方侧反写");
+  fails(good + " 综合看公司无管制风险。", /绝对结论/, "绝对结论");
+  fails(good.replace("17 条", "18 条"), /N 条/, "条数未绑定");
+  fails(good.replace("FR Doc 2026-11571", "FR Doc 2026-11572"), /文号/, "文号错");
+  fails(good + " 该公司不在 1260H 名单。", /不在名单/, "on_list 冲突");
+  fails(good.replace("[ev-d2d2d2d2d2d2]", "").replace("[ev-e2e2e2e2e2e2]", ""), /四类状态证据/, "漏引 BIS / FCC 状态证据(r2)");
+  // r3:BIS 是 search_hit_unconfirmed 时写"未提及"判失败;写"检索命中但原文未确认"通过
+  const evU = ev.map((e) => e.field === "policy_bis_status" ? { ...e, value: "search_hit_unconfirmed" } : e).filter((e) => e.field !== "policy_bis_confirmed_mentions_count");
+  writeJson(path.join(d, "evidence.json"), evU);
+  fails(good.replace("BIS:not_mentioned(原文确认提及 0 条)[ev-d2d2d2d2d2d2][ev-d1d1d1d1d1d1]", "BIS:未提及 [ev-d2d2d2d2d2d2]"), /BIS 措辞/, "unconfirmed 写成未提及");
+  fs.writeFileSync(path.join(d, "report.md"), rep(good.replace("BIS:not_mentioned(原文确认提及 0 条)[ev-d2d2d2d2d2d2][ev-d1d1d1d1d1d1]", "BIS:search_hit_unconfirmed(检索命中但原文未确认)[ev-d2d2d2d2d2d2]")));
+  assert.ok(judgePolicyAccess(d).checks.find((c) => /BIS 措辞/.test(c.name))!.pass);
+  writeJson(path.join(d, "evidence.json"), ev);
+  fs.writeFileSync(path.join(d, "report.md"), rep(good.replace("没被点名 ≠ 不受影响", "FCC 未被点名不等于不受整类禁令影响") + " 1260H 已确认 on_list,不能解释为不在名单。"));
+  assert.ok(judgePolicyAccess(d).checks.find((c) => /护栏/.test(c.name))!.pass, "ht14 真实写法:未被点名不等于不受整类禁令影响");
+  assert.ok(judgePolicyAccess(d).checks.find((c) => /不在名单/.test(c.name))!.pass, "否定语境里的'不在名单'不算冲突");
 });

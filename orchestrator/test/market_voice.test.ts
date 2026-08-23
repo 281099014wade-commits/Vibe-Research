@@ -166,6 +166,8 @@ test("voice-r2:claimTokens 速率标签只在速率语境且无金额语境时�
   assert.deepEqual(toks("2026-08-22 · 163.com · 讨论高利润增长与经营现金流背离 [ev-e34f47be4b89]"), [], "域名里的数字不是主张(ht6 真踩)");
   assert.deepEqual(toks("36kr.com 与 finance.sina.com.cn 报道 营收 12.5 亿"), [12.5]);
   assert.deepEqual(toks("H100 因 HTTP 429 未获取;FinMind 状态码 402"), [], "HTTP 状态码不是数字主张(ht11)");
+  assert.deepEqual(toks("2026-06-10 · FR Doc 2026-11571 · 公告编号 2026-001"), [], "联邦公报文号 / 公告编号不是数字(policy-r1)");
+  assert.deepEqual(toks("营收 2026-11571 亿元"), [], "编号形态即使跟单位也剥(宁少勿误)");
 });
 
 test("voice-r2:金丝雀识别中文数字 / 科学计数 / ×1e8 换算;普通中文数字不误报", () => {

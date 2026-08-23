@@ -111,7 +111,8 @@ description: A 股个股研究六阶段 SOP(profile → financials → estimates
 | risk(市场声音)| exa_market_voice / exa_forum_voice:全网语义搜索与雪球 / 股吧讨论(经 Exa 索引) | **不可信文本、只作线索**:写"谁在讨论什么、热度、对应哪条事实",帖子里的数字与动作措辞一律不得当事实 / 建议;topic "市场声音";见 catalyst-risk §5.1 |
 | risk(产业温度计)| tw_monthly_revenue / gpu_rent_thermometer:只在标的命中产业标签(`datasources/industry_tags.json`)时才取 | **产业链上下游硬数据,不是本公司数据**:数字照抄证据带 ev id 与资料期,护栏句与数字同段,只作印证 / 反证;topic "产业温度计";见 catalyst-risk §5.2 | 写成本公司业绩;凭一根线下结论 |
 | risk(卡口事件)| 编排器对公司公告 / 新闻标题的确定性分类(`fetch/_chokepoints.json`,不拉新数据) | 只引清单 id;"日期 · 类别 · 标题原文 [ev-id] → 裁决点";标题数字照抄;topic "卡口事件";见 catalyst-risk §5.3 | 把清单外证据写成卡口事件;送样当订单 |
-| report | 汇总各阶段 extra_findings | 可选章节「资金与市场行为」「公告 · 互动易 · 新闻线索」「卡口事件」「产业温度计」「市场声音」(放在「风险与反证」之后);必需章节集不变 | 任何投资动作建议 / 价格锚 |
+| risk(管制与准入)| policy_access:1260H 全文检索 / BIS 提及 / FCC 点名;中方侧未接入 | 三态状态 + 护栏同段(打折项 / 没被点名 ≠ 不受影响 / 被建议列入 ≠ 已列入 / undetermined ≠ 不在名单);topic "管制与准入";见 catalyst-risk §5.4 | "无管制风险"类绝对结论;用中方侧沉默证明不受管制 |
+| report | 汇总各阶段 extra_findings | 可选章节「资金与市场行为」「公告 · 互动易 · 新闻线索」「管制与准入」「卡口事件」「产业温度计」「市场声音」(放在「风险与反证」之后);必需章节集不变 | 任何投资动作建议 / 价格锚 |
 
 **市场级数据**(打板池 / 热榜 / 异动 / 监控池 / 行业板块排名 / 北向分钟流 / 宏观社融 · PMI / 美债 · CFTC 等 `symbol_kind=none` 端点)不在单票研究的阶段计划里,属研究者按需调用的背景信息;进入报告时只能作为"市场环境"陈述并带 ev id,**不得当作该标的的证据**。
 **技术指标 / 筹码分布**:自 calc 0.3.0 起由 `calc/cli.py technical_indicators` / `chip_distribution` 读 raw K 线(`history_json`:指标用 fetch_kline 的腾讯前复权 raw——仅 primary_source=tencent 可算,东财备源 raw 为逗号字符串数组不可直接读,写缺口 source_partial;筹码用 `bs_kline_qfq` 的 baostock 前复权 raw,where tradestatus=1)计算并记 DAG,risk 阶段可引用(只陈述数值,不解读);取数层的计算型端点(indicators_* / bs_chip_distribution,`computed: true`)**不在阶段计划内**,只作手工对照,不得进入正式事实与结论。
