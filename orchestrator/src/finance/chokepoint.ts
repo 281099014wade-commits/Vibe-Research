@@ -6,7 +6,7 @@
  */
 import fs from "node:fs";
 import path from "node:path";
-import { readJsonIfExists, writeJson } from "./fsutil.ts";
+import { readJsonIfExists, writeJson } from "../fsutil.ts";
 
 export interface ChokeCategory { keywords: string[]; negatives?: string[]; decision_hint: string }
 export interface ChokeTable { scan_fields: string[]; categories: Record<string, ChokeCategory> }

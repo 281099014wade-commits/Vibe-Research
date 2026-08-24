@@ -9,11 +9,13 @@ import type { Ledger } from "../src/fetchrun.ts";
 import { readJson, sha256File, writeJson } from "../src/fsutil.ts";
 import { endpointsById, loadRegistry } from "../src/registry.ts";
 import { validateFetchEnvelope } from "../src/schemas.ts";
+
+import "../src/finance/register.ts";   // 测试文件也是入口:垂类包要先注册
 import {
   THERMO_FILE_REL, THERMO_GUARD, THERMO_MAX_OBS, THERMO_RAW_NAME, THERMO_SCRIPT,
   appendThermoLedger, applyThermometerHistory, backfillThermoLedger, buildDeltaEvidence, extractObservations, historyFieldsOf, injectedObservations,
   isValidPeriod, mergeObservations, periodRelation, readThermoLedger, selectPrev, thermoHistoryPromptBlock, thermoLedgerPath, validateObservation, withThermoLock, type ThermoObservation,
-} from "../src/thermo_history.ts";
+} from "../src/finance/thermo_history.ts";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const endpoints = endpointsById(loadRegistry(repoRoot)!);
@@ -355,7 +357,7 @@ test("backfill:只吃已完成、非测试场景、有账本的运行;幂等", (
 
 /** 第 11 组判定:以 ht17 真实章节为正例,构造四种反例(冒充本次 / 缺护栏 / 上次值不引 prev id / 变动被改) */
 test("judgeThermoHistory:真实写法通过;冒充本次值 / 缺两点不成线 / 9.17 不引 prev id / 变动值被改 / 合成序列被归档 都判得出", async () => {
-  const { judgeThermoHistory } = await import("../src/hardtest.ts");
+  const { judgeThermoHistory } = await import("../src/finance/hardtest.ts");
   const d = tmp("vra-thermo-judge-");
   for (const sub of ["fetch", "raw", "stages"]) fs.mkdirSync(path.join(d, sub), { recursive: true });
   const E = (id: string, field: string, rk: string, value: unknown, unit: string, source: string, market = "TW", symbol = rk) => ({ id, field, record_key: rk, value, unit, source, market, symbol, currency: "n/a", period: "2026-07-01..2026-07-31", as_of: "2026-08-23", endpoint: "x", fetched_at: "2026-08-23T23:00:00+08:00", adjustment: "not_applicable", raw_ref: "raw/thermo_history.json", note: "读法:两点不成线" });
@@ -445,7 +447,7 @@ test("judgeThermoHistory:真实写法通过;冒充本次值 / 缺两点不成线
 });
 
 test("paragraphsOf:空行分段;相邻列表项各自成段;不带标记的续行并入上一段;表格分隔行丢弃", async () => {
-  const { paragraphsOf } = await import("../src/hardtest.ts");
+  const { paragraphsOf } = await import("../src/finance/hardtest.ts");
   assert.deepEqual(paragraphsOf(["第一段 a", "第一段 b", "", "- 项 1", "- 项 2", "  项 2 续行", "|---|---|", "| 表 | 行 |", "1. 编号项"]), ["第一段 a 第一段 b", "- 项 1", "- 项 2 项 2 续行", "| 表 | 行 |", "1. 编号项"]);
   // 表格行不接续行:紧跟的普通行是新段(Codex thermo-r2:最后一行表格不能借下一段的护栏 / id)
   assert.deepEqual(paragraphsOf(["| 上次 | 9.17 [ev-prev] |", "两点不成线;护栏句"]), ["| 上次 | 9.17 [ev-prev] |", "两点不成线;护栏句"]);
@@ -454,7 +456,7 @@ test("paragraphsOf:空行分段;相邻列表项各自成段;不带标记的续�
 });
 
 test("claimTokens:时间窗口标签(约 30 日涨跌 / 7 日均价)不算数字主张,真实数值仍算", async () => {
-  const { claimTokens } = await import("../src/hardtest.ts");
+  const { claimTokens } = await import("../src/finance/hardtest.ts");
   const t1 = claimTokens("约30日涨跌分别为 1.61%、2.89% [ev-a1a1a1a1a1a1]").map((x) => x.n);
   assert.deepEqual(t1, [1.61, 2.89], "窗口里的 30 不该被当主张");
   assert.deepEqual(claimTokens("7 日均价 54.10 美元").map((x) => x.n), [54.1]);

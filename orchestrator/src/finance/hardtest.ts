@@ -1,13 +1,13 @@
 /**
  * Phase 0 第 6 步:6 组硬测试(开发方案 v2 §12)+ 钩子硬验收——机器可判定(v2,按 Codex 审查收紧)。
- * 用法:node orchestrator/src/hardtest.ts --batch ht1 --python <venv>/bin/python [--only c1,conflict,...] [--lanes 2] [--judge-only]
+ * 用法:node orchestrator/src/finance/hardtest.ts --batch ht1 --python <venv>/bin/python [--only c1,conflict,...] [--lanes 2] [--judge-only]
  * 每个测试 = 一次真实运行(spawn run.ts,带 --scenario)+ 只读运行目录的纯函数 judge(不认 agent 自述;能骗过的写法都算失败);
  * 结果增量写 <data_root>/hardtests/<batch>/{results.json,summary.md}。judge-only 只重判"本批次、已完成、scenario 一致"的运行。
  */
 import { classifyText, loadChokeTable } from "./chokepoint.ts";
-import "./finance/register.ts";   // 注册金融包的词表(Core + DomainPack 边界的第一块砖)
+import "./register.ts";   // 注册金融包的词表(Core + DomainPack 边界的第一块砖)
 import { PROSE_BEFORE, checkNumberFidelity, claimNumbers, quotedHistory, claimTokens, normDisp, numberBound,
-         numbersOf, reportSections, stripSpeedLabels } from "./number_fidelity.ts";
+         numbersOf, reportSections, stripSpeedLabels } from "../number_fidelity.ts";
 export { claimNumbers, claimTokens, reportSections, stripSpeedLabels };   // 兼容:既有测试从 hardtest 导入
 import { spawn } from "node:child_process";
 import crypto from "node:crypto";
@@ -15,16 +15,16 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { type Scenario, type Stage, makeConfig } from "./config.ts";
-import { complianceGate } from "./gate.ts";
-import { readHookLog, summarizeHookLog } from "./hooks.ts";
-import { readJsonIfExists, writeJson } from "./fsutil.ts";
+import { type Scenario, type Stage, makeConfig } from "../config.ts";
+import { complianceGate } from "../gate.ts";
+import { readHookLog, summarizeHookLog } from "../hooks.ts";
+import { readJsonIfExists, writeJson } from "../fsutil.ts";
 import { twNextDisclosure } from "./industry.ts";
-import { shDate } from "./knowledge.ts";
-import type { Manifest } from "./merge.ts";
-import { loadProductConfig } from "./productConfig.ts";
-import { createFixture, verifyFixture } from "./fixture.ts";
-import { loadRun, resultProjection, validateFinalArtifacts, verifyCalcs } from "./validator.ts";
+import { shDate } from "../knowledge.ts";
+import type { Manifest } from "../merge.ts";
+import { loadProductConfig } from "../productConfig.ts";
+import { createFixture, verifyFixture } from "../fixture.ts";
+import { loadRun, resultProjection, validateFinalArtifacts, verifyCalcs } from "../validator.ts";
 
 export interface Check { name: string; pass: boolean; detail: string }
 export interface JudgeResult { pass: boolean; checks: Check[]; evidence: string[] }

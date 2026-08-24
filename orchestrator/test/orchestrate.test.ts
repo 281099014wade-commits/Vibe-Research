@@ -9,13 +9,15 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { test } from "node:test";
 
-import { STAGES, codexEnv, codexEnvFor, fetchEnv, makeConfig, type RunConfig, type Stage } from "../src/config.ts";
+import { stages, codexEnv, codexEnvFor, fetchEnv, makeConfig, type RunConfig, type Stage } from "../src/config.ts";
 import { saveLedger, type FetchExecutor } from "../src/fetchrun.ts";
 import { sha256File, writeJson } from "../src/fsutil.ts";
 import { deriveRunStatus, exitCodeFor, prepareRunDir, runResearch } from "../src/orchestrate.ts";
 import { CodexRunner, EventsLog, codexOptionsFor, type AgentRunner, type TurnOutcome } from "../src/runner.ts";
 import { validateManifest } from "../src/schemas.ts";
 
+
+import "../src/finance/register.ts";   // 测试文件也是入口:垂类包要先注册
 const TS = "2026-08-21T10:00:00+08:00";
 const ev = (id: string, field: string, value: unknown, extra: Record<string, unknown> = {}) => ({ id, symbol: "300308", market: "SZ", field, value, unit: "元", currency: "CNY",
   period: "2026-08-21", as_of: "2026-08-21", source: "tencent", endpoint: "qt", fetched_at: TS, adjustment: "none", raw_ref: null, ...extra });
@@ -462,7 +464,7 @@ test("异常路径:取数执行器抛错 → research.failed / research.finished
 });
 
 test("deriveRunStatus 优先级与退出码", () => {
-  const ok = STAGES.map((s) => ({ stage: s, status: "complete" as const, attempts: 1, errors: [], validator_ok: true }));
+  const ok = stages().map((s) => ({ stage: s, status: "complete" as const, attempts: 1, errors: [], validator_ok: true }));
   const base = { stages: ok, gateOk: true, reportExists: true, quoteDecision: "normal", criticalAllFailed: false, partial: false };
   assert.equal(deriveRunStatus(base), "complete");
   assert.equal(deriveRunStatus({ ...base, quoteDecision: "stale" }), "stale");

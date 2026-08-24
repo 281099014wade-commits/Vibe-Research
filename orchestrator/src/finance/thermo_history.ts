@@ -24,14 +24,18 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-import type { RunConfig, Scenario } from "./config.ts";
-import type { Ledger, LedgerEntry } from "./fetchrun.ts";
-import { listFiles, nowIso, readJsonIfExists, sha256File, writeJson } from "./fsutil.ts";
-import { shDate } from "./knowledge.ts";
-import { loadProductConfig } from "./productConfig.ts";
-import { endpointsById, loadRegistry, registryPath, type EndpointDef } from "./registry.ts";
-import { validateFetchEnvelope } from "./schemas.ts";
+import type { RunConfig, Scenario } from "../config.ts";
+import type { Ledger, LedgerEntry } from "../fetchrun.ts";
+import { listFiles, nowIso, readJsonIfExists, sha256File, writeJson } from "../fsutil.ts";
+import { shDate } from "../knowledge.ts";
+import { loadProductConfig } from "../productConfig.ts";
+import { endpointsById, loadRegistry, registryPath, type EndpointDef } from "../registry.ts";
+import { validateFetchEnvelope } from "../schemas.ts";
 
+
+// **composition root**:垂类包在入口注册,Core 模块一律不 import 它
+// (Core 消费者靠副作用 import 硬接某个包,换垂类时靠入口 import 恢复不了 —— ESM 会缓存)。
+import "./register.ts";
 export const THERMO_DIR_REL = path.join("knowledge", "thermometers");
 export const THERMO_SCRIPT = "thermo_history";
 export const THERMO_FILE_REL = path.join("fetch", `${THERMO_SCRIPT}.json`);
@@ -463,7 +467,7 @@ export function thermoLedgerOverview(cfg: Pick<RunConfig, "dataRoot">): { endpoi
 }
 
 /**
- * 用法:node orchestrator/src/thermo_history.ts show|backfill [--repo-root <产品根>] [--data-root <用户数据区,默认产品配置的 dataRoot>] [--runs-dir <默认 <dataRoot>/runs>] [--json]
+ * 用法:node orchestrator/src/finance/thermo_history.ts show|backfill [--repo-root <产品根>] [--data-root <用户数据区,默认产品配置的 dataRoot>] [--runs-dir <默认 <dataRoot>/runs>] [--json]
  *   show     = 列出各端点序列的观测数 / 首末日期 / 无效条数
  *   backfill = 扫运行目录里已完成、非测试场景的运行,把温度计观测补进序列(幂等;首次启用或迁移后用)
  */
@@ -489,7 +493,7 @@ if (isMain) {
     if (json) console.log(JSON.stringify({ ...r, events }, null, 2));
     else console.log(`[thermo-history] 回填完成:有温度计观测的运行 ${r.runs} 个,新增观测 ${r.appended} 条,跳过运行 ${r.skipped} 个(测试场景 / 未完成 / 无账本)${events.filter((e) => String(e.type).includes("corrupt")).length ? ";⚠️ 有损坏序列文件被移到旁路" : ""}`);
   } else {
-    console.error("用法:node orchestrator/src/thermo_history.ts show|backfill [--repo-root <dir>] [--data-root <dir>] [--runs-dir <dir>] [--json]");
+    console.error("用法:node orchestrator/src/finance/thermo_history.ts show|backfill [--repo-root <dir>] [--data-root <dir>] [--runs-dir <dir>] [--json]");
     process.exit(2);
   }
 }

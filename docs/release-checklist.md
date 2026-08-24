@@ -8,7 +8,7 @@
 |---|---|---|
 | License | README / README_en 的 License 段与徽章写"pending" | 选定许可证(引擎 openai/codex 为 Apache-2.0,本仓库不含其源码),加 `LICENSE` 文件,替换两份 README 的徽章与 License 段 |
 | 仓库地址 | README 安装段 `git clone <本仓库地址>` 为占位 | 建公开仓库后替换两份 README 的 clone 地址;可加 Stars 徽章 |
-| 国产模型矩阵 | `providers/{deepseek,qwen,glm,kimi}.json` 的 `matrix.status` 未真测 | 设对应环境变量(`DEEPSEEK_API_KEY` / `DASHSCOPE_API_KEY` / `ZHIPU_API_KEY` / `MOONSHOT_API_KEY`)后 `node orchestrator/src/provider_matrix.ts --provider <id> --model <m>`,按结果回填 `matrix.status / results / note / last_run` 与 `verified_at` |
+| 国产模型矩阵 | `providers/{deepseek,qwen,glm,kimi}.json` 的 `matrix.status` 未真测 | 设对应环境变量(`DEEPSEEK_API_KEY` / `DASHSCOPE_API_KEY` / `ZHIPU_API_KEY` / `MOONSHOT_API_KEY`)后 `node orchestrator/src/finance/provider_matrix.ts --provider <id> --model <m>`,按结果回填 `matrix.status / results / note / last_run` 与 `verified_at` |
 | 模板易变字段 | 四个第三方模板 `default_model` / `context_limit_tokens` 未核实(`verified_at: null`) | 对照各厂商当前文档核实后填 `verified_at` |
 | 联系方式与赞赏 | 已按发布规范:X @linsizhen、邮箱、BMC 二维码 `assets/bmc-qr.png` | 核对无误即可 |
 

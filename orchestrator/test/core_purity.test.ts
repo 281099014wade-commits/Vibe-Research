@@ -4,6 +4,8 @@ import path from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 
+
+import "../src/finance/register.ts";   // 测试文件也是入口:垂类包要先注册
 /**
  * **Core 词汇纯净度棘轮**(架构审计 2026-08-24 的第一件事)。
  *
@@ -29,12 +31,15 @@ const SRC = path.join(HERE, "..", "src");
  */
 const ASCII_TERMS = ["EPS", "PE", "PEG", "TTM", "qfq", "hfq"];
 const CJK_TERMS = [ "申万", "扣非", "归母", "估值", "财报", "股价", "涨跌", "市值", "证券",
-  "交易日", "停牌", "盘前", "复权", "研报", "一致预期", "净利", "营收", "季报", "年报", "个股", "标的",
+  "交易日", "停牌", "复权", "研报", "一致预期", "净利", "营收", "季报", "年报", "个股", "标的",
   "产业链", "上市", "股东", "龙虎榜", "融资融券", "筹码", "行业", "板块"];
 
 /** 明确属于 finance-pack、不参与本检查的文件(它们本来就该是行业实现) */
-export const FINANCE_FILES = ["stages.ts", "industry.ts", "chokepoint.ts", "thermo_history.ts",
-  "hardtest.ts", "provider_matrix.ts"];
+/**
+ * 曾经的**文件名白名单**。现在全部物理搬进 `src/finance/`,由 `PACK_DIRS` 的目录边界覆盖 ——
+ * 审计点名过:文件名白名单挡不住"把通用编排继续写进 src/stages.ts",目录边界才挡得住。
+ */
+export const FINANCE_FILES: string[] = [];
 
 /**
  * 全局上限:所有 Core 文件的行业词**总数**。**只能下调。**
@@ -44,46 +49,41 @@ export const FINANCE_FILES = ["stages.ts", "industry.ts", "chokepoint.ts", "ther
  * ⚠️ 诚实说明:这仍是**约定 + 可见性**,不是机器证明"相对历史只降不升" ——
  * 真要机器保证得跟 git 历史比。它的定位是回归提示器,不是安全边界。
  */
-const CEILING = 149;
+/**
+ * 全局上限:所有 Core 文件的行业词**总数**。**已经清到 0,从此零容忍。**
+ *
+ * 沿革:67(词表有盲区,数不全)→ 146(ASCII 改大小写不敏感)→ 149(修好 A股 正则)
+ * → 126(stages / schemas 抽进 DomainPack)→ 83(语义槽位 + 报价规则进包)
+ * → 69(阶段显示名 / 议题映射 / 提醒字段 / 列标签进包)→ 18(注释措辞中性化)→ **0**。
+ *
+ * 🔴 **"0" 是什么意思,不是什么意思**:
+ * - 是:`src/`(除已声明的 pack 目录)里**不再出现这张词表上的任何词**;
+ *   阶段、脚本、计算函数、议题、章节、证据枚举、标准列、语义槽位、报价判定、基准期,
+ *   全部经 `DomainPack` 注入。
+ * - **不是**:Core 已经与垂类完全无关。证据契约里的 `symbol` / `market` / `period` /
+ *   `adjustment` 仍带着证券味道;`knowledge.ts` 的档案模板、`stages.ts` 的提示词
+ *   仍是金融写法(后者本就在 pack 文件清单里)。**词表只测得到它认识的词。**
+ * ⇒ 别把这个 0 当成"可以挂第二个垂类了"的证明;它只证明**这一类耦合**清干净了。
+ */
+const CEILING = 0;
 
 /**
- * 基线:当前每个 Core 候选文件里的行业词数量。**只能下调。**
- * 空缺 = 该文件必须保持 0(新增 Core 文件默认进这一档)。
+ * 基线:每个 Core 文件允许的行业词数量。**现在全部为 0** —— 空表即"所有文件都必须是 0"。
+ * 新增 Core 文件默认落进这一档;要往里加行业词,先问自己它是不是该进 `src/finance/`。
  */
-const BASELINE: Record<string, number> = {
-  // ⚠️ **2026-08-24 重新标定:67 → 146。这不是新增耦合,是原来看不见的耦合暴露了。**
-  //    ASCII 词表原本区分大小写,于是 `pe_ttm` / `eps_consensus` 这类**小写字段名**
-  //    一直是盲区(Codex lexicon-r1 P2 指出)。改成大小写不敏感后,validator 从 13 跳到 58 ——
-  //    它本来就是最重的那个,只是之前没数全。
-  //    随后修好 `A股` 的正则(它一度被整体转义成字面量)又露出 3 处 ⇒ 146 → 149。
-  //    ⇒ 教训:**棘轮的数字只在词表本身可信时才有意义**;每次修词表都要预期基线上跳,
-  //      并把上跳的原因写下来,否则下次没人分得清"暴露的旧耦合"和"新加的耦合"。
-  "validator.ts": 59,        // 审计点名:validator 本身就是金融实现(交易日 / 盘前 / 停牌 + 估值字段绑定)
-  "batch.ts": 15,            // 批量摘要的标准列
-  "alerts.ts": 14,
-  "schemas.ts": 14,          // market 固定为证券市场、adjustment 固定 qfq/hfq
-  "config.ts": 12,           // 阶段名是编译期常量,且注释里带估值语义
-  "fixture.ts": 6,
-  "orchestrate.ts": 5,
-  "registry.ts": 4,
-  "doctor.ts": 3,
-  "knowledge.ts": 3,
-  "number_fidelity.ts": 3,   // ✅ 已完成第一次搬迁(23 → 3):词表移入 `finance/lexicon.ts`,Core 侧改为注入
-  "progress.ts": 3,
-  "mcp.ts": 2,
-  "runner.ts": 2,
-  "api.ts": 1,
-  "report_sections.ts": 1,
-  "run.ts": 1,
-  "service.ts": 1,
-};
+const BASELINE: Record<string, number> = {};
 
 /**
  * 需要用正则表达的词条(**不走下面的整体转义**)。
  * 🔴 我一度把 `A\s*股` 塞进 `CJK_TERMS`,而那张表在构造正则前会整体转义 —— 于是它变成了
  * 匹配字面文本 `A\s*股` 的模式,`A股` / `A 股` 一个都命中不了,棘轮假绿(Codex lexicon-r2 P1)。
  */
-const CJK_PATTERNS: [string, RegExp][] = [["A股", /A\s*股/gi]];
+const CJK_PATTERNS: [string, RegExp][] = [
+  ["A股", /A\s*股/gi],
+  // 🔴 "盘前"会从**落盘前**里切出来 —— CJK 逐词 substring 没有词边界,这类词必须加负向前瞻。
+  //    这是继"A股 被整体转义"之后第二次证明:**词表本身不可信时,棘轮的数字就是假的**。
+  ["盘前", /(?<!落)盘前/g],
+];
 
 export function countDomainTerms(text: string): Record<string, number> {
   const out: Record<string, number> = {};

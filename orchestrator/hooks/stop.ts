@@ -11,11 +11,14 @@
 import fs from "node:fs";
 import path from "node:path";
 
-import { STAGES, type Stage } from "../src/config.ts";
+import { stages, type Stage } from "../src/config.ts";
 import { MAX_STOP_BLOCKS, STOP_FAILED_REL, appendHookLog, contextMatchesCwd, readHookContext, readHookLog, readStdin, type StopFailedMarker } from "../src/hooks.ts";
 import { writeJson } from "../src/fsutil.ts";
 import { loadRun, validateStage } from "../src/validator.ts";
 
+
+// **composition root**:钩子是独立子进程,也是一个入口 —— 垂类包要在这里注册
+import "../src/finance/register.ts";
 interface StopInput { cwd: string; stop_hook_active?: boolean; hook_event_name?: string; last_assistant_message?: string | null }
 
 function expectedArtifacts(stage: Stage, runDir: string): string[] {
@@ -32,7 +35,7 @@ async function main(): Promise<void> {
   const runDir = input.cwd;
   const ctx = readHookContext(runDir);
   const ts = () => new Date().toISOString();
-  if (!ctx || !(STAGES as readonly string[]).includes(ctx.stage) || !contextMatchesCwd(ctx, runDir)) {
+  if (!ctx || !stages().includes(ctx.stage) || !contextMatchesCwd(ctx, runDir)) {
     if (isRunDir(runDir)) appendHookLog(runDir, { ts: ts(), hook: "stop", decision: "error", reason: !ctx ? "钩子上下文缺失(被删?)" : "钩子上下文与 cwd 不一致(被改?)" });
     process.stderr.write("[vibe stop hook] 无有效钩子上下文,放行\n");
     return;

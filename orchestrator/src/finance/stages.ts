@@ -5,13 +5,13 @@
 import { industryPromptBlock, readIndustryFile } from "./industry.ts";
 import { chokePromptBlock } from "./chokepoint.ts";
 import { thermoHistoryPromptBlock } from "./thermo_history.ts";
-import { extraSectionsPromptBlock } from "./report_sections.ts";
+import { extraSectionsPromptBlock } from "../report_sections.ts";
 import fs from "node:fs";
 import path from "node:path";
 
-import { GAP_REASON_CODES, type RunConfig, type Stage } from "./config.ts";
-import type { Ledger } from "./fetchrun.ts";
-import { stageOutputSchema } from "./schemas.ts";
+import { GAP_REASON_CODES, type RunConfig, type Stage } from "../config.ts";
+import type { Ledger } from "../fetchrun.ts";
+import { stageOutputSchema } from "../schemas.ts";
 
 export interface PromptContext {
   attempt: number;

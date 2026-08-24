@@ -8,6 +8,8 @@ import { batchSummaryMarkdown, collectRun, runBatch } from "../src/batch.ts";
 import { alertsMarkdown, diffEvidence, pickRuns, runAlerts } from "../src/alerts.ts";
 import { writeJson } from "../src/fsutil.ts";
 
+
+import "../src/finance/register.ts";   // 测试文件也是入口:垂类包要先注册
 function repoWithRuns(): string {
   const repo = fs.mkdtempSync(path.join(os.tmpdir(), "vra-ba-"));
   const runs = path.join(repo, ".local", "runs");
@@ -58,7 +60,7 @@ test("alerts:按事实键对齐两次运行;只列两值;默认取同标的最�
   assert.ok(fs.existsSync(r.file) && r.file.includes(path.join(".local", "alerts", "SZ_300308")));
   assert.throws(() => runAlerts({ symbol: "002463", repoRoot: repo }), /不足两个/);
   // 显式指定跨标的 / 跨市场 / 同一运行 → 拒绝
-  assert.throws(() => runAlerts({ symbol: "300308", repoRoot: repo, base: "a1", next: "b1" }), /标的是 002463/);
+  assert.throws(() => runAlerts({ symbol: "300308", repoRoot: repo, base: "a1", next: "b1" }), /主体是 002463/);
   assert.throws(() => runAlerts({ symbol: "300308", market: "SH", repoRoot: repo, base: "a1", next: "a2" }), /市场是 SZ/);
   assert.throws(() => runAlerts({ symbol: "300308", repoRoot: repo, base: "a2", next: "a2" }), /同一运行/);
   assert.throws(() => runAlerts({ symbol: "../x", repoRoot: repo }), /非法代码/);

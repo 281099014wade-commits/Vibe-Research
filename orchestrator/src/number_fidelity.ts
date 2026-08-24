@@ -36,7 +36,7 @@ export function numbersOf(ids: string[], evById: Map<string, EvidenceItem>, calc
 /**
  * 只收 calc 的**输入**(不含 output.value / details)。
  * 🔴 这个区分是数字忠实度的核心:
- *   - calc 的**输入**同行并列是合法出处(`| 前瞻 PE 34.07 倍 [calc] | 昨收 943.0 元 / EPS 27.68 元 |`);
+ *   - calc 的**输入**同行并列是合法出处(`| 结果 34.07 倍 [calc] | 入参 943.0 元 / 27.68 元 |`);
  *   - calc 的**输出原始浮点**照抄则**必须判违规** —— 派生数字要写 display("37.40 倍"),
  *     不是 37.397700293773134。把两者混进同一个池,就等于把"照抄原始浮点"这条纪律废掉。
  */
@@ -356,7 +356,7 @@ export interface FidelityResult {
 /**
  * 逐行检查:一行里若引了 calc,则该行的数字必须能对上所引 calc 的 display,
  * 或对上同行 evidence 的原值(事实数字照抄),或是 calc 的输入 / 中间量。
- * `symbol` 用于把本次标的代码从"数字主张"里剔掉(裸写的 6 位代码不是数字)。
+ * `symbol` 用于把本次主体代码从"数字主张"里剔掉(裸写的 6 位代码不是数字)。
  */
 export function checkNumberFidelity(report: string, evById: Map<string, EvidenceItem>,
                                     calcById: Map<string, CalcRecord>, symbol?: string,

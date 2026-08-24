@@ -1,10 +1,11 @@
 #!/usr/bin/env node
 /**
- * 变化提醒(Phase 1 M3):同一标的两次运行的证据按事实键(field | period | unit | adjustment | record_key)对齐,列出 新增 / 消失 / 数值变化 的事实。
+ * 变化提醒(Phase 1 M3):同一主体两次运行的证据按事实键(field | period | unit | adjustment | record_key)对齐,列出 新增 / 消失 / 数值变化 的事实。
  * 只并列两次的值(不算变化率 / 不解读);供定时任务(cron / launchd 由用户自配)产出 .local/alerts/<symbol>/<new-run>.md。
- * 用法:node orchestrator/src/alerts.ts --symbol 300308 [--market SZ] [--base <run-id>] [--new <run-id>] [--fields price,pe_ttm,...]
- * 缺省:new = 该标的最新 complete 运行,base = 其前一次。
+ * 用法:node orchestrator/src/alerts.ts --symbol 300308 [--market SZ] [--base <run-id>] [--new <run-id>] [--fields <字段1,字段2,...>]
+ * 缺省:new = 该主体最新 complete 运行,base = 其前一次。
  */
+import { currentPack } from "./domain.ts";
 import fs from "node:fs";
 import path from "node:path";
 
@@ -13,13 +14,17 @@ import { readJsonIfExists, writeJson } from "./fsutil.ts";
 import { parseArgs } from "./run.ts";
 import { repoRootFromHere, serviceContext } from "./service.ts";
 
+
+// **composition root**:垂类包在入口注册,Core 模块一律不 import 它
+// (Core 消费者靠副作用 import 硬接某个包,换垂类时靠入口 import 恢复不了 —— ESM 会缓存)。
+import "./finance/register.ts";
 export interface EvidenceLite { id: string; field: string; value: unknown; unit: string; period: string; adjustment?: string; record_key?: string; source: string; script?: string }
 /** 对齐键含 source:只比较同一来源前后两次的值(跨源差异属"数据源冲突",由各运行 conflicts.json 显式报告,这里不做静默取舍) */
 export const alignKey = (e: EvidenceLite) => [e.field, e.period, e.unit, e.adjustment ?? "", e.record_key ?? "", e.source ?? ""].join("|");
 export interface AlertDiff { key: string; field: string; period: string; unit: string; kind: "changed" | "added" | "removed"; base?: EvidenceLite; next?: EvidenceLite }
 
-const DEFAULT_FIELDS = ["price", "total_market_cap", "pe_ttm", "pb", "eps_consensus_mean", "eps_analyst_count", "revenue_cum", "net_profit_parent_cum", "net_profit_deducted_cum", "margin_financing_balance_latest",
-  "shareholder_count", "lockup_upcoming_count", "dragon_tiger_count", "block_trade_count", "research_report_count_1y", "pe_ttm_latest", "announcement_title"];
+/** 变化提醒默认盯的字段**由垂类包提供** */
+const defaultFields = (): readonly string[] => currentPack().alertFields;
 
 export function loadRunEvidence(runDir: string): EvidenceLite[] {
   const merged = readJsonIfExists<EvidenceLite[] | { evidence: EvidenceLite[] }>(path.join(runDir, "evidence.json"));
@@ -27,7 +32,7 @@ export function loadRunEvidence(runDir: string): EvidenceLite[] {
   return items;
 }
 
-export function diffEvidence(base: EvidenceLite[], next: EvidenceLite[], fields: string[] = DEFAULT_FIELDS): AlertDiff[] {
+export function diffEvidence(base: EvidenceLite[], next: EvidenceLite[], fields: string[] = [...defaultFields()]): AlertDiff[] {
   const want = new Set(fields);
   const key = alignKey;
   const b = new Map<string, EvidenceLite>();
@@ -54,7 +59,7 @@ export function diffEvidence(base: EvidenceLite[], next: EvidenceLite[], fields:
 }
 
 export function alertsMarkdown(symbol: string, baseId: string, newId: string, diffs: AlertDiff[]): string {
-  const L = [`# 变化提醒 · ${symbol} · ${baseId} → ${newId}`, "", "> 按事实键(字段 / 期间 / 单位 / 复权 / 记录键)对齐两次运行的证据;只并列两值,不计算变化率、不解读。", "",
+  const L = [`# 变化提醒 · ${symbol} · ${baseId} → ${newId}`, "", "> 按事实键(字段 / 期间 / 单位 / 口径 / 记录键)对齐两次运行的证据;只并列两值,不计算变化率、不解读。", "",
     `- 变化 ${diffs.filter((d) => d.kind === "changed").length} · 新增 ${diffs.filter((d) => d.kind === "added").length} · 消失 ${diffs.filter((d) => d.kind === "removed").length}`, "",
     "| 类型 | 字段 | 期间 | 单位 | 旧值(id) | 新值(id) | 来源 |", "|---|---|---|---|---|---|---|"];
   // 按来源对齐:同一字段不同来源各成一行;跨源差异见各运行 conflicts.json
@@ -69,12 +74,12 @@ export function pickRuns(runsRoot: string, symbol: string, market?: string): str
     .filter((x) => x.m?.symbol === symbol && (!market || (x.m?.market ?? "") === market) && x.m?.status && x.m.status !== "failed" && x.m.finished_at).sort((a, b) => String(a.m!.finished_at).localeCompare(String(b.m!.finished_at))).map((x) => x.d);
 }
 
-/** 显式指定的 run 必须存在、同标的、同市场(给了 market 时)、非 failed */
+/** 显式指定的 run 必须存在、同主体、同市场(给了 market 时)、非 failed */
 function assertComparable(runsRoot: string, id: string, symbol: string, market?: string): void {
   if (!RUN_ID_RE.test(id)) throw new Error(`非法 run-id ${id}`);
   const m = readJsonIfExists<{ symbol?: string; market?: string; status?: string }>(path.join(runsRoot, id, "manifest.json"));
   if (!m) throw new Error(`运行 ${id} 不存在或无 manifest`);
-  if (m.symbol !== symbol) throw new Error(`运行 ${id} 的标的是 ${m.symbol},与请求 ${symbol} 不符`);
+  if (m.symbol !== symbol) throw new Error(`运行 ${id} 的主体是 ${m.symbol},与请求 ${symbol} 不符`);
   if (market !== undefined && (m.market ?? "") !== market) throw new Error(`运行 ${id} 的市场是 ${m.market || "(空)"},与 ${market || "(空)"} 不符`);
   if (m.status === "failed") throw new Error(`运行 ${id} 状态 failed,不可比较`);
 }
@@ -88,7 +93,7 @@ export function runAlerts(opts: { symbol: string; market?: string; base?: string
   const cand = pickRuns(runsRoot, opts.symbol, market);
   const next = opts.next ?? cand[cand.length - 1];
   const base = opts.base ?? cand[cand.length - 2];
-  if (!next || !base) throw new Error(`该标的可比较的运行不足两个(找到 ${cand.length} 个):${cand.join(", ")}`);
+  if (!next || !base) throw new Error(`该主体可比较的运行不足两个(找到 ${cand.length} 个):${cand.join(", ")}`);
   if (next === base) throw new Error("base 与 new 不能是同一运行");
   // 省略 market 时以 base 运行的市场为准(两次必须同市场;同代码不同市场不是时间序列)
   const baseMarket = (readJsonIfExists<{ market?: string }>(path.join(runsRoot, base, "manifest.json"))?.market ?? "");

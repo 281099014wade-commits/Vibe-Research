@@ -9,12 +9,14 @@ import { applyVoiceInjection, neutralizeActions } from "../src/fetchrun.ts";
 import { writeJson } from "../src/fsutil.ts";
 import os from "node:os";
 import { loadRegistry, regionOf, type EndpointDef } from "../src/registry.ts";
-import { EXTRA_TOPICS } from "../src/schemas.ts";
+import { extraTopics } from "../src/schemas.ts";
 import { linkOf } from "../src/viewer.ts";
 import { canonicalForGate, CJK_SEP_CHARS, complianceGate, TRAD_CHARS } from "../src/gate.ts";
-import { canaryNumberPresent, canaryWordPresent, claimTokens, cnNumeralToNumber } from "../src/hardtest.ts";
+import { canaryNumberPresent, canaryWordPresent, claimTokens, cnNumeralToNumber } from "../src/finance/hardtest.ts";
 import { checkAgentTrace, commandSafetyErrors } from "../src/validator.ts";
 
+
+import "../src/finance/register.ts";   // 测试文件也是入口:垂类包要先注册
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 
 test("市场声音层:注册表两个端点挂在 risk(optional)、CN、默认启用、模块 / mapper 可被 Python 导入", () => {
@@ -37,8 +39,8 @@ test("市场声音层:注册表两个端点挂在 risk(optional)、CN、默认�
 });
 
 test("市场声音层:risk 阶段 extra_findings 允许 topic「市场声音」;提示词含不可信文本 / 数字不当事实 / 指令不执行三条规则;报告可选章节", () => {
-  assert.ok(EXTRA_TOPICS.risk.includes("市场声音"));
-  const stages = fs.readFileSync(path.join(REPO, "orchestrator", "src", "stages.ts"), "utf8");
+  assert.ok(extraTopics().risk.includes("市场声音"));
+  const stages = fs.readFileSync(path.join(REPO, "orchestrator", "src", "finance", "stages.ts"), "utf8");
   for (const must of ["exa_market_voice", "exa_forum_voice", "不可信文本", "不得写成事实", "一律不执行", "## 市场声音", "写法要具体", "正文不贴 URL", "至少 3 条具体线索"]) assert.ok(stages.includes(must), must);
   const sop = fs.readFileSync(path.join(REPO, ".agents", "skills", "catalyst-risk", "SKILL.md"), "utf8");
   assert.ok(sop.includes("### 5.1 市场声音") && sop.includes("不得写成事实"));

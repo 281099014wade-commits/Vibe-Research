@@ -4,7 +4,15 @@
  */
 import AjvModule, { type ValidateFunction } from "ajv";
 
-import { GAP_REASON_CODES, STAGES, type Stage } from "./config.ts";
+import { GAP_REASON_CODES, stages, type Stage } from "./config.ts";
+import { currentPack } from "./domain.ts";
+
+/**
+ * 🔴 **带垂类枚举的 schema 一律做成函数,不能是模块级常量。**
+ * 市场代码、数据口径、阶段名、标准列、议题都来自 `DomainPack`,而包是在 import **之后**才注册的;
+ * 写成 `const` 会在模块求值时就去读包 → 抛"未注入 DomainPack"。
+ * `validateWith` 按 key 缓存编译结果,所以每次调用重建对象字面量并不会重复编译 schema。
+ */
 
 // Node ESM 导入 CJS 包:默认导入是 module.exports(ajv 同时挂了 .default = Ajv 类);类型取 ajv 的 default 导出
 type AjvCtor = (typeof import("ajv"))["default"];
@@ -14,7 +22,7 @@ const ajv = new Ajv({ allErrors: true, strict: false });
 const ISO_TS = "^\\d{4}-\\d{2}-\\d{2}[T ]\\d{2}:\\d{2}(:\\d{2})?([.+\\-Z].*)?$";
 const DATE = "^\\d{4}-\\d{2}-\\d{2}$";
 
-export const evidenceItemSchema = {
+export const evidenceItemSchema = () => ({
   type: "object",
   additionalProperties: false,
   required: ["id", "symbol", "market", "field", "value", "unit", "currency", "period", "as_of", "source", "endpoint",
@@ -22,7 +30,7 @@ export const evidenceItemSchema = {
   properties: {
     id: { type: "string", pattern: "^ev-[0-9a-f]{6,}$" },
     symbol: { type: "string", minLength: 1 },
-    market: { type: "string", enum: ["SH", "SZ", "BJ", "CN", "US", "HK", "TW"] },
+    market: { type: "string", enum: [...currentPack().evidence.markets] },
     field: { type: "string", minLength: 1 },
     value: { type: ["number", "string", "boolean", "null"] },
     unit: { type: "string" },
@@ -32,31 +40,31 @@ export const evidenceItemSchema = {
     source: { type: "string", minLength: 1 },
     endpoint: { type: "string", minLength: 1 },
     fetched_at: { type: "string", pattern: ISO_TS },
-    adjustment: { type: "string", enum: ["none", "qfq", "hfq", "not_applicable"] },
+    adjustment: { type: "string", enum: [...currentPack().evidence.adjustments] },
     raw_ref: { type: ["string", "null"] },
     note: { type: "string" },
     record_key: { type: "string" },
   },
-} as const;
+} as const);
 
-export const fetchEnvelopeSchema = {
+export const fetchEnvelopeSchema = () => ({
   type: "object",
   additionalProperties: false,
   required: ["script", "symbol", "market", "status", "fetched_at", "used_sources", "evidence", "extra", "errors"],
   properties: {
     script: { type: "string", minLength: 1 },
     symbol: { type: "string" },
-    market: { type: "string", enum: ["SH", "SZ", "BJ", "CN", "US", "HK", "TW", ""] },
+    market: { type: "string", enum: [...currentPack().evidence.markets, ""] },
     status: { type: "string", enum: ["ok", "partial", "failed"] },
     fetched_at: { type: "string", pattern: ISO_TS },
     primary_source: { type: ["string", "null"] },
     used_sources: { type: "array", items: { type: "string" } },
-    evidence: { type: "array", items: evidenceItemSchema },
+    evidence: { type: "array", items: evidenceItemSchema() },
     extra: { type: "object" },
     errors: { type: "array" },
     missing: { type: "array" },
   },
-} as const;
+} as const);
 
 export const calcRecordSchema = {
   type: "object",
@@ -110,17 +118,11 @@ export const gapSchema = {
   },
 } as const;
 
-export const STANDARD_COLUMNS = ["pe_deducted_x4", "forward_pe", "pe_ttm_percentile", "peg", "forward_cagr", "ttm_yoy", "qoq"];
+/** 批量摘要的标准列 —— 由垂类包提供 */
+export const standardColumns = (): readonly string[] => currentPack().standardColumns;
 
-/** Phase 1 M2:各阶段 extra_findings 允许的 topic(与 stages.ts EXT_GUIDE / SOP §6 一致;schema 与 validator 双重约束) */
-export const EXTRA_TOPICS: Record<Stage, string[]> = {
-  profile: ["行业归属", "股本与市值", "上市状态", "板块归属", "其他交叉核对"],
-  financials: ["三表交叉", "资产负债要点", "现金流要点", "其他交叉核对"],
-  estimates: ["逐篇预测", "评级分布", "其他线索"],
-  valuation: ["估值历史", "分红", "其他交叉核对"],
-  risk: ["资金行为", "解禁", "股东结构", "公告线索", "互动易", "新闻线索", "市场声音", "产业温度计", "卡口事件", "管制与准入", "数据日历", "海外头条", "招聘信号", "宏观概率", "其他线索"],
-  report: ["汇总"],
-};
+/** 各阶段 extra_findings 允许的 topic —— 由垂类包提供(schema 与 validator 双重约束) */
+export const extraTopics = (): Readonly<Record<Stage, readonly string[]>> => currentPack().extraTopics;
 
 /** 阶段产物 stages/<stage>.json 的通用骨架;各阶段再加专属必填项 */
 export function stageOutputSchema(stage: Stage): Record<string, unknown> {
@@ -135,7 +137,7 @@ export function stageOutputSchema(stage: Stage): Record<string, unknown> {
     // 知识层档案裁决(任何阶段都可写;claim 原话 / 反证或"无法裁决:原因" / 对口 ev- 或 calc- id)
     knowledge_conflicts: { type: "array", items: { type: "object", additionalProperties: false, required: ["claim", "refuted_by"], properties: { claim: { type: "string", minLength: 1 }, refuted_by: { type: "string", minLength: 1 }, evidence_ids: { type: "array", items: { type: "string", pattern: "^(ev-[0-9a-f]{6,}|calc-[0-9a-f]{16})$" } } } } },
     // Phase 1 M2:扩展数据发现(可选;每条必须引用 evidence / calc id;只报事实与数值,不得含交易信号)
-    extra_findings: { type: "array", maxItems: 12, items: { type: "object", additionalProperties: false, required: ["topic", "summary", "evidence_ids"], properties: { topic: { type: "string", enum: EXTRA_TOPICS[stage] }, summary: { type: "string", minLength: 1, maxLength: 600 }, evidence_ids: { type: "array", minItems: 1, maxItems: 40, items: { type: "string", pattern: "^(ev-[0-9a-f]{6,}|calc-[0-9a-f]{16})$" } } } } },
+    extra_findings: { type: "array", maxItems: 12, items: { type: "object", additionalProperties: false, required: ["topic", "summary", "evidence_ids"], properties: { topic: { type: "string", enum: [...(extraTopics()[stage] ?? [])] }, summary: { type: "string", minLength: 1, maxLength: 600 }, evidence_ids: { type: "array", minItems: 1, maxItems: 40, items: { type: "string", pattern: "^(ev-[0-9a-f]{6,}|calc-[0-9a-f]{16})$" } } } } },
   };
   const required = ["stage", "status", "summary", "evidence_ids", "calculation_ids", "gaps"];
   if (stage === "profile") {
@@ -146,8 +148,8 @@ export function stageOutputSchema(stage: Stage): Record<string, unknown> {
   }
   if (stage === "valuation") {
     props.standard_columns = {
-      type: "object", additionalProperties: false, required: STANDARD_COLUMNS,
-      properties: Object.fromEntries(STANDARD_COLUMNS.map((k) => [k, { type: "string", pattern: "^(calc-[0-9a-f]{16}|未获取[::].+)$" }])),
+      type: "object", additionalProperties: false, required: [...standardColumns()],
+      properties: Object.fromEntries(standardColumns().map((k) => [k, { type: "string", pattern: "^(calc-[0-9a-f]{16}|未获取[::].+)$" }])),
     };
     required.push("standard_columns");
   }
@@ -181,7 +183,7 @@ export const turnReplySchema = {
   additionalProperties: false,
 } as const;
 
-export const manifestSchema = {
+export const manifestSchema = () => ({
   type: "object",
   additionalProperties: false,
   required: ["run_id", "symbol", "market", "started_at", "finished_at", "status", "stages", "codex_version", "model", "model_note", "calc_version",
@@ -204,7 +206,7 @@ export const manifestSchema = {
     started_at: { type: "string", pattern: ISO_TS }, finished_at: { type: ["string", "null"], pattern: ISO_TS },
     status: { type: "string", enum: ["complete", "incomplete", "failed", "stale", "running"] },
     stages: { type: "array", items: { type: "object", additionalProperties: false, required: ["stage", "status", "attempts", "errors", "validator_ok"],
-      properties: { stage: { type: "string", enum: [...STAGES] }, status: { type: "string", enum: ["complete", "incomplete", "skipped", "failed"] }, attempts: { type: "integer" }, errors: { type: "array", items: { type: "string" } }, validator_ok: { type: "boolean" } } } },
+      properties: { stage: { type: "string", enum: [...stages()] }, status: { type: "string", enum: ["complete", "incomplete", "skipped", "failed"] }, attempts: { type: "integer" }, errors: { type: "array", items: { type: "string" } }, validator_ok: { type: "boolean" } } } },
     codex_version: { type: "string" }, model: { type: ["string", "null"] }, model_note: { type: "string" }, calc_version: { type: "string" },
     repo_version: { type: "string" }, config_hash: { type: "string" }, raw_hashes: { type: "object" },
     execution_scope: { type: "array", items: { type: "string" } }, partial_run: { type: "boolean" }, thread_id: { type: ["string", "null"] },
@@ -226,7 +228,7 @@ export const manifestSchema = {
     thermo_archived: { type: ["object", "null"], additionalProperties: false, required: ["endpoints", "appended", "skipped", "corrupt_moved"], properties: { endpoints: { type: "array", items: { type: "string" } }, appended: { type: "integer" }, skipped: { type: "integer" }, corrupt_moved: { type: "integer" } } },
     final_errors: { type: "array", items: { type: "string" } },
   },
-} as const;
+} as const);
 
 const compiled = new Map<string, ValidateFunction>();
 function compile(key: string, schema: object): ValidateFunction {
@@ -243,12 +245,12 @@ export function validateWith(key: string, schema: object, data: unknown): string
   return (v.errors ?? []).map((e) => `${e.instancePath || "/"} ${e.message ?? ""}${e.params ? " " + JSON.stringify(e.params) : ""}`);
 }
 
-export const validateFetchEnvelope = (d: unknown) => validateWith("fetch", fetchEnvelopeSchema, d);
-export const validateEvidenceItem = (d: unknown) => validateWith("evidence", evidenceItemSchema, d);
+export const validateFetchEnvelope = (d: unknown) => validateWith("fetch", fetchEnvelopeSchema(), d);
+export const validateEvidenceItem = (d: unknown) => validateWith("evidence", evidenceItemSchema(), d);
 export const validateCalcRecord = (d: unknown) => validateWith("calc", calcRecordSchema, d);
 export const validateStageOutput = (stage: Stage, d: unknown) => validateWith(`stage:${stage}`, stageOutputSchema(stage), d);
-export const validateManifest = (d: unknown) => validateWith("manifest", manifestSchema, d);
+export const validateManifest = (d: unknown) => validateWith("manifest", manifestSchema(), d);
 
 export function isStage(s: string): s is Stage {
-  return (STAGES as readonly string[]).includes(s);
+  return stages().includes(s);
 }

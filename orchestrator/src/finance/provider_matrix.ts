@@ -2,7 +2,7 @@
 /**
  * Provider 兼容测试矩阵(Phase 1 M4,开发方案 v2 §6 的 10 项):对某个 provider profile 用 Codex SDK 真跑 10 个小回合,机器判定 pass / partial / fail,
  * 结果写 .local/provider-matrix/<id>/<时间>/results.json + summary.md(不含任何密钥值)。
- * 用法:node orchestrator/src/provider_matrix.ts --provider deepseek [--model deepseek-chat] [--tests 1,2,8] [--timeout-min 5] [--reasoning medium] [--auth api_key|chatgpt_login]
+ * 用法:node orchestrator/src/finance/provider_matrix.ts --provider deepseek [--model deepseek-chat] [--tests 1,2,8] [--timeout-min 5] [--reasoning medium] [--auth api_key|chatgpt_login]
  * 每项定义(可判定口径):
  *  ① 单次文本:回复含约定 token;② 单工具调用:至少 1 条 command 且输出含约定串;③ 连续三轮工具调用:step-A/B/C 三条输出各出自不同的 command 项且按序出现(合并成一条 → partial);
  *  ④ 并行工具调用:两条 command 都执行且事件流里观察到两条 command 同时在途(item.started 后未 completed 又来一条)→ pass;都执行但串行 → partial;
@@ -18,13 +18,17 @@ import path from "node:path";
 
 import { Codex, type CodexOptions, type ThreadEvent } from "@openai/codex-sdk";
 
-import { CODEX_SHELL_ENV_POLICY, codexEnv } from "./config.ts";
-import { writeJson } from "./fsutil.ts";
-import { loadProductConfig } from "./productConfig.ts";
-import { assertAuth, codexProviderConfig, loadProviderProfile, providerEnv, type ProviderProfileFile } from "./providers.ts";
-import { redact, repoRootFromHere } from "./service.ts";
-import { parseArgs } from "./run.ts";
+import { CODEX_SHELL_ENV_POLICY, codexEnv } from "../config.ts";
+import { writeJson } from "../fsutil.ts";
+import { loadProductConfig } from "../productConfig.ts";
+import { assertAuth, codexProviderConfig, loadProviderProfile, providerEnv, type ProviderProfileFile } from "../providers.ts";
+import { redact, repoRootFromHere } from "../service.ts";
+import { parseArgs } from "../run.ts";
 
+
+// **composition root**:垂类包在入口注册,Core 模块一律不 import 它
+// (Core 消费者靠副作用 import 硬接某个包,换垂类时靠入口 import 恢复不了 —— ESM 会缓存)。
+import "./register.ts";
 export interface MatrixCase { no: number; name: string; verdict: "pass" | "partial" | "fail" | "n/a" | "error"; detail: string; duration_ms: number; commands: number; items: number; reasoning_items: number; failed?: string | null }
 
 export interface TurnSummary {
@@ -175,7 +179,7 @@ export async function runMatrix(opts: { provider: string; model?: string; tests?
 async function main(): Promise<void> {
   const a = parseArgs(process.argv.slice(2));
   const str = (v: unknown) => (typeof v === "string" ? v : undefined);
-  if (!str(a.provider)) { console.error("用法:node orchestrator/src/provider_matrix.ts --provider <id> [--model M] [--tests 1,2,8] [--timeout-min 5] [--auth api_key|chatgpt_login]"); process.exit(2); }
+  if (!str(a.provider)) { console.error("用法:node orchestrator/src/finance/provider_matrix.ts --provider <id> [--model M] [--tests 1,2,8] [--timeout-min 5] [--auth api_key|chatgpt_login]"); process.exit(2); }
   const tests = str(a.tests)?.split(",").map((s) => Number(s.trim())).filter((n) => n >= 1 && n <= 10);
   const r = await runMatrix({ provider: str(a.provider)!, model: str(a.model), tests: tests?.length ? tests : undefined, timeoutMs: str(a["timeout-min"]) ? Number(a["timeout-min"]) * 60_000 : undefined, auth: str(a.auth), reasoning: str(a.reasoning) });
   console.error(`[matrix] done → ${r.dir}/summary.md`);

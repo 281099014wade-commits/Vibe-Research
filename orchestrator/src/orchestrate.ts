@@ -8,14 +8,14 @@ import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 
-import { STAGES, STATUS_PRIORITY, type RunConfig, type RunStatus, type Stage } from "./config.ts";
+import { stages as packStages, STATUS_PRIORITY, type RunConfig, type RunStatus, type Stage } from "./config.ts";
 import { ledgerSummary, loadLedgerFromDisk, type FetchExecutor, type Ledger } from "./fetchrun.ts";
 import { PLAN_REL, planFileOf } from "./registry.ts";
 import { archiveRun, recallKnowledge, shouldRecall } from "./knowledge.ts";
 import { FixtureError, fixtureFreshness, readFixture, seedRunDir, verifyFixture, type FixtureManifest } from "./fixture.ts";
-import { appendThermoLedger } from "./thermo_history.ts";
-import { INDUSTRY_FILE_REL, applyIndustryGate, detectIndustryTags, loadIndustryTags, writeIndustryFile } from "./industry.ts";
-import { CHOKE_FILE_REL, loadChokeTable, scanChokepoints, writeChokeFile } from "./chokepoint.ts";
+import { appendThermoLedger } from "./finance/thermo_history.ts";
+import { INDUSTRY_FILE_REL, applyIndustryGate, detectIndustryTags, loadIndustryTags, writeIndustryFile } from "./finance/industry.ts";
+import { CHOKE_FILE_REL, loadChokeTable, scanChokepoints, writeChokeFile } from "./finance/chokepoint.ts";
 import { writeViewer } from "./viewer.ts";
 import { atomicWrite, ensureDirs, nowIso, sha256File, sha256Text, writeJson } from "./fsutil.ts";
 import { complianceGate, normalizeReportStatus } from "./gate.ts";
@@ -24,7 +24,7 @@ import { installSkillsIsolation } from "./skills_isolation.ts";
 import { rawHashes, writeConflicts, writeManifest, writeMergedArtifacts, type Manifest, type StageRecord } from "./merge.ts";
 import type { AgentRunner } from "./runner.ts";
 import { turnReplySchema, validateManifest } from "./schemas.ts";
-import { buildGateRewritePrompt, buildStagePrompt } from "./stages.ts";
+import { buildGateRewritePrompt, buildStagePrompt } from "./finance/stages.ts";
 import { allCriticalFetchFailed, checkAgentTrace, deriveQuoteDecision, deriveStageStatus, loadRun, summarizeErrorsForAgent, validateFetchIntegrity,
   validateFinalArtifacts, validateProtectedArtifacts, validateReport, validateStage, type AgentTrace, type CalcVerifier, type ProtectedExpectation,
   type ValidationResult } from "./validator.ts";
@@ -68,7 +68,7 @@ export function prepareRunDir(cfg: RunConfig): void {
     throw new Error(`Phase 0 宪法必须是产品根的 AGENTS.md(${discovered}),因为 Codex 自动加载的就是它;配置为 ${cfg.constitutionPath} 不会被引擎加载(自定义宪法路径需 Phase 1 另造加载机制)`);
   const root = path.resolve(cfg.repoRoot);
   if (!rd.startsWith(root + path.sep)) throw new Error(`运行目录 ${rd} 不在产品根 ${root} 之内:Codex 将发现不到 AGENTS.md / .agents/skills(Phase 0 限制;Phase 1 launcher 需设 project_root_markers 或把 data 放在产品根内)`);
-  // 🔴 夹具的校验放在**清空之前**:夹具坏了 / 过期 / 标的不符时,不该先把旧运行目录毁掉再失败
+  // 🔴 夹具的校验放在**清空之前**:夹具坏了 / 过期 / 主体不符时,不该先把旧运行目录毁掉再失败
   //    (Codex fixture-r1 P2)。这里只校验不落盘,播种在建目录之后。
   // 顺序:①不改磁盘的 overwrite 门控 → ②夹具校验(也不改磁盘)→ ③清空 → ④建目录 → ⑤播种。
   // 前两步都不动磁盘,所以夹具坏 / 过期 / 口径不符时旧运行目录**原封不动**(Codex fixture-r1 P2 / r2 P3)。
@@ -98,7 +98,7 @@ export function prepareRunDir(cfg: RunConfig): void {
 /**
  * 用夹具播种运行目录(只在 cfg.seedFrom 时)。**校验在前、播种在后**:
  * 完整性(逐文件哈希 + 树哈希 + 不许有清单外的多余文件)与新鲜度(同一数据日)任一不过就抛,
- * 绝不"降级继续" —— 拿上周的估值配今天的风险数据,硬测试会因错误的原因通过或失败。
+ * 绝不"降级继续" —— 拿上周的数配今天的数,硬测试会因错误的原因通过或失败。
  */
 /** 当前 calc 库版本(与 runResearchInner 里取法一致;取不到则 "unknown") */
 function calcVersionOf(cfg: RunConfig): string {
@@ -128,7 +128,7 @@ export function checkFixture(cfg: RunConfig, calcVersion?: string): FixtureManif
   if (mism.length) throw new FixtureError(`夹具口径与本次运行不一致:${mism.join(";")};重建夹具`);
   const fresh = fixtureFreshness(m);
   if (!fresh.fresh && !cfg.allowStaleFixture) {
-    throw new FixtureError(`夹具数据日 ${m.data_day} 不是今天(${fresh.today}):财务 / 估值逐日变化,跨日复用会让硬测试因错误的原因通过或失败;重建夹具,或显式加 --allow-stale-fixture 承担这个代价`);
+    throw new FixtureError(`夹具数据日 ${m.data_day} 不是今天(${fresh.today}):数据逐日变化,跨日复用会让硬测试因错误的原因通过或失败;重建夹具,或显式加 --allow-stale-fixture 承担这个代价`);
   }
   return m;
 }
@@ -170,8 +170,9 @@ async function runResearchInner(cfg: RunConfig, deps: Deps, onlyStages?: Stage[]
   if (onlyStages?.some((s) => seededStages.includes(s))) {
     throw new FixtureError(`--stages 里含夹具已播种的阶段(${onlyStages.filter((s) => seededStages.includes(s)).join(", ")}):要重跑它就别用夹具`);
   }
-  const stagesToRun = STAGES.filter((s) => (!onlyStages || onlyStages.includes(s)) && !seededStages.includes(s));
-  const partial = stagesToRun.length !== STAGES.length;
+  const allStages = packStages();
+  const stagesToRun = allStages.filter((s) => (!onlyStages || onlyStages.includes(s)) && !seededStages.includes(s));
+  const partial = stagesToRun.length !== allStages.length;
   const configHash = sha256Text(JSON.stringify({ ...cfg, runDir: undefined, repoRoot: undefined })).slice(0, 16);
 
   const manifest: Manifest = {
@@ -275,7 +276,7 @@ async function runResearchInner(cfg: RunConfig, deps: Deps, onlyStages?: Stage[]
   for (const stage of stagesToRun) {
     const scripts = cfg.stagePlan[stage];
     let toFetch = [...scripts.required, ...scripts.optional];
-    // 产业温度计门控(第 13 层):带 industry_tags 的端点只在标的命中对应产业标签时才取;判定用 profile 阶段已落盘的行业 / 概念信封
+    // 产业温度计门控(第 13 层):带 industry_tags 的端点只在主体命中对应产业标签时才取;判定用首阶段已落盘的分类信封
     if (toFetch.some((id) => (cfg.endpoints[id]?.industry_tags ?? []).length)) {
       const table = loadIndustryTags(cfg.repoRoot);  // 缺失 / 损坏直接抛 → 运行失败出声,不当"零标签"
       const det = detectIndustryTags(cfg.runDir, table);

@@ -30,9 +30,9 @@ export interface EndpointDef {
   notes?: string;
   libs?: string[];
   sample?: string;
-  /** 产业温度计:只在研究标的命中这些产业标签(datasources/industry_tags.json)时才取 */
+  /** 产业温度计:只在研究主体命中这些标签(datasources/industry_tags.json)时才取 */
   industry_tags?: string[];
-  /** 温度计历史序列:这些证据字段(白名单)在归档时写进用户数据区序列,下次运行生成 _prev / _change_* 比较证据(orchestrator/src/thermo_history.ts) */
+  /** 温度计历史序列:这些证据字段(白名单)在归档时写进用户数据区序列,下次运行生成 _prev / _change_* 比较证据(orchestrator/src/finance/thermo_history.ts) */
   history_fields?: string[];
   [k: string]: unknown;
 }
@@ -125,10 +125,10 @@ export interface PlanFile {
 export function planFileOf(scope: ScopeKind, registryVersion: string | null, plan: StagePlan, critical: string[], endpoints: Record<string, EndpointDef>): PlanFile {
   const ids = new Set<string>();
   for (const v of Object.values(plan)) for (const id of [...v.required, ...v.optional]) ids.add(id);
-  const eps: PlanFile["endpoints"] = {};
+  const epMap: PlanFile["endpoints"] = {};
   for (const id of ids) {
     const d = endpoints[id];
-    if (d) eps[id] = { module: d.module, symbol_kind: d.symbol_kind, title: d.title, source: d.source, compliance: d.compliance };
+    if (d) epMap[id] = { module: d.module, symbol_kind: d.symbol_kind, title: d.title, source: d.source, compliance: d.compliance };
   }
-  return { scope, registry_version: registryVersion, stage_plan: plan, critical, endpoints: eps };
+  return { scope, registry_version: registryVersion, stage_plan: plan, critical, endpoints: epMap };
 }

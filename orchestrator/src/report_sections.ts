@@ -22,21 +22,10 @@
  */
 
 /** risk 阶段 topic → 报告里的专属章节标题(与 stages.ts 的 report EXT_GUIDE 写法一一对应) */
-export const TOPIC_SECTION: Record<string, string> = {
-  资金行为: "资金与市场行为",
-  解禁: "资金与市场行为",
-  股东结构: "资金与市场行为",
-  公告线索: "公告 · 互动易 · 新闻线索",
-  互动易: "公告 · 互动易 · 新闻线索",
-  新闻线索: "公告 · 互动易 · 新闻线索",
-  市场声音: "市场声音",
-  产业温度计: "产业温度计",
-  卡口事件: "卡口事件",
-  管制与准入: "管制与准入",
-  海外头条: "海外头条",
-  招聘信号: "招聘信号",
-  宏观概率: "宏观概率",
-};
+/** 议题 → 报告章节的归并映射**由垂类包提供**(没列的议题不进专属章节,只作全文要求) */
+import { currentPack } from "./domain.ts";
+
+export const topicSections = (): Record<string, string> => currentPack().topicSections as Record<string, string>;
 
 /**
  * 有 topic 但**没有专属章节**的两个 —— 不要求章节(否则会逼出一个无处安放的空章节),
@@ -80,7 +69,7 @@ export function requiredExtraSections(riskStageOutput: unknown): ExtraRequiremen
     const topic = typeof f.topic === "string" && f.topic.trim() ? f.topic.trim() : "";
     if (!topic) continue;
     const ids = cleanIds(f.evidence_ids);
-    const section = TOPIC_SECTION[topic];
+    const section = topicSections()[topic];
     if (!section) { mergeTopic(unsectioned, topic, ids); continue; }   // 无专属章节 / 未知 topic → 全文要求
     const list = bySection.get(section) ?? [];
     mergeTopic(list, topic, ids);

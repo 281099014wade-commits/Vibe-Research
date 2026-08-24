@@ -13,7 +13,7 @@
  *    若为提速而精简 report 的输入,就等于把要测的现象本身测没了。
  * 2. **播种运行必须被隔离**。产物混了别次运行的数据 → 与 scenario 运行同等对待:
  *    `manifest.test_scenario=true`、不进知识层、不进温度计历史。
- * 3. **陈旧夹具必须拒绝**。财务 / 估值是逐日变化的,拿上周的估值配今天的风险数据,
+ * 3. **陈旧夹具必须拒绝**。这些数据是逐日变化的,拿上周的数配今天的数,
  *    硬测试会**因为错误的原因通过或失败** —— 那比慢更糟。默认只允许同一数据日。
  *
  * ⚠️ 夹具运行**不能替代**发布前那次完整运行(见 docs/release-checklist.md 第 3 步)。
@@ -28,6 +28,10 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 
+
+// **composition root**:垂类包在入口注册,Core 模块一律不 import 它
+// (Core 消费者靠副作用 import 硬接某个包,换垂类时靠入口 import 恢复不了 —— ESM 会缓存)。
+import "./finance/register.ts";
 export const FIXTURE_MANIFEST = "_fixture.json";
 /** 夹具收录的目录:fetch(含 _ledger / _plan)/ raw / calcs / stages —— loadRun 就是从这些派生证据与账本的 */
 export const FIXTURE_DIRS = ["fetch", "raw", "calcs", "stages"] as const;
@@ -152,7 +156,7 @@ export function createFixture(runDir: string, outDir: string, opts: { stages: st
   try { sm = JSON.parse(fs.readFileSync(srcManifest, "utf8")); }
   catch (e) { throw new FixtureError(`源运行 manifest.json 不是合法 JSON:${e instanceof Error ? e.message : String(e)}`); }
   // 🔴 身份字段必须与来源运行一致 —— 否则夹具可以谎报它是谁的数据(Codex fixture-r3 P1:
-  //    从 A 股某标的的运行里"造"一个声称是另一标的的夹具,指纹相同就能全程通过)。
+  //    从某个主体的运行里"造"一个声称是另一主体的夹具,指纹相同就能全程通过)。
   if (String(sm.symbol ?? "") !== opts.symbol || String(sm.market ?? "") !== opts.market) {
     throw new FixtureError(`来源运行是 ${String(sm.symbol ?? "?")}.${String(sm.market ?? "?")},与声称的 ${opts.symbol}.${opts.market} 不符`);
   }
@@ -231,7 +235,7 @@ export function verifyFixture(dir: string): FixtureManifest {
   return m;
 }
 
-/** 夹具是否与"今天"同一数据日 —— 财务 / 估值逐日变化,跨日复用会让硬测试因错误的原因通过或失败 */
+/** 夹具是否与"今天"同一数据日 —— 数据逐日变化,跨日复用会让硬测试因错误的原因通过或失败 */
 export function fixtureFreshness(m: FixtureManifest, now: Date = new Date()): { fresh: boolean; today: string } {
   const today = shanghaiDay(now);
   return { fresh: m.data_day === today, today };

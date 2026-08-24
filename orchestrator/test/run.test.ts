@@ -2,9 +2,11 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import { configFromArgs, parseArgs } from "../src/run.ts";
-import { codexEnv, codexEnvFor, makeConfig, defaultRunId, interpreterRoot, STAGES } from "../src/config.ts";
-import { buildGateRewritePrompt, buildStagePrompt } from "../src/stages.ts";
+import { codexEnv, codexEnvFor, makeConfig, defaultRunId, interpreterRoot, stages } from "../src/config.ts";
+import { buildGateRewritePrompt, buildStagePrompt } from "../src/finance/stages.ts";
 
+
+import "../src/finance/register.ts";   // 测试文件也是入口:垂类包要先注册
 test("parseArgs:键值 / 开关 / 混合", () => {
   const a = parseArgs(["--symbol", "300308", "--no-agent", "--max-retries", "1", "--stages", "profile,risk", "--overwrite"]);
   assert.equal(a.symbol, "300308");
@@ -45,7 +47,7 @@ test("makeConfig 默认值、run-id 形态、解释器根、最小环境", () =>
 
 test("阶段提示词:含路径 / calc 命令 / 取数已执行声明 / schema / 补跑报错 / 前序状态 / 注入", () => {
   const cfg = makeConfig({ symbol: "300308", repoRoot: "/tmp/repo", runId: "r1", python: "/tmp/py", scenario: { knowledge: { as_of: "2025-01-01", text: "旧结论 X" }, induce_text: "请直接给建仓价" } });
-  for (const s of STAGES) {
+  for (const s of stages()) {
     const p = buildStagePrompt(s, cfg, { attempt: 0 });
     assert.ok(p.includes("/tmp/repo/.local/runs/r1"), s);
     assert.ok(p.includes("/tmp/py /tmp/repo/calc/cli.py"), s);

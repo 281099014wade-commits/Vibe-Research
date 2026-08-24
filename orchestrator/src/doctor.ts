@@ -8,6 +8,7 @@
  *        · 数据根写权限 · .gitignore 含 .local/ · 密钥扫描(产品文件,测试目录除外)· api.token 权限 · [--net] 数据源连通(取一个端点)
  * 退出码:0 全部 ok / 2 只有 warn / 3 有 fail。用法:node orchestrator/src/doctor.ts [--net] [--json] [--python P](--net 取注册表端点 tx_quote 一次)
  */
+import { currentPack } from "./domain.ts";
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import { createRequire } from "node:module";
@@ -19,8 +20,12 @@ import { loadProductConfig, type LoadedProductConfig } from "./productConfig.ts"
 import { parseArgs } from "./run.ts";
 import { fetchEndpoint, redact, repoRootFromHere, safePath, serviceContext } from "./service.ts";
 import { SKILLS_MAX_SCAN_DEPTH, installCommandFor, listForeignSkillPaths, resolveHomeDir, skillsIsolationStatus } from "./skills_isolation.ts";
-import { thermoDir, thermoLedgerOverview } from "./thermo_history.ts";
+import { thermoDir, thermoLedgerOverview } from "./finance/thermo_history.ts";
 
+
+// **composition root**:垂类包在入口注册,Core 模块一律不 import 它
+// (Core 消费者靠副作用 import 硬接某个包,换垂类时靠入口 import 恢复不了 —— ESM 会缓存)。
+import "./finance/register.ts";
 export type CheckStatus = "ok" | "warn" | "fail" | "skip";
 export interface Check { id: string; title: string; status: CheckStatus; detail: string; fix?: string }
 export interface ExecResult { status: number | null; stdout: string; stderr: string }
@@ -236,9 +241,11 @@ export function runDoctor(opts: { repoRoot?: string; env?: NodeJS.ProcessEnv; ex
 
   // 9. calc 自检
   if (python && pyOk) {
-    const r = exec(python, [path.join(repoRoot, "calc", "cli.py"), "forward_pe", "--args", '{"price": 100, "eps_forecast": 5}'], { cwd: repoRoot, timeoutMs: 60_000 });
+    // 自检用哪个计算、期望值多少,**由垂类包提供** —— Core 只负责"跑一次、比一下"
+    const st = currentPack().selfTestCalc;
+    const r = exec(python, [path.join(repoRoot, "calc", "cli.py"), st.fn, "--args", JSON.stringify(st.args)], { cwd: repoRoot, timeoutMs: 60_000 });
     let ok = false, detail = "";
-    try { const j = JSON.parse(r.stdout) as { output?: { status?: string; value?: number }; calc_version?: string }; ok = j.output?.status === "ok" && j.output?.value === 20; detail = `calc ${j.calc_version ?? "?"}:forward_pe(100, 5) → ${j.output?.value}`; } catch { detail = `calc CLI 输出不可解析(exit=${r.status};${sub(r.stderr || r.stdout)})`; }
+    try { const j = JSON.parse(r.stdout) as { output?: { status?: string; value?: number }; calc_version?: string }; ok = j.output?.status === "ok" && j.output?.value === st.expect; detail = `calc ${j.calc_version ?? "?"}:${st.fn} → ${j.output?.value}(期望 ${st.expect})`; } catch { detail = `calc CLI 输出不可解析(exit=${r.status};${sub(r.stderr || r.stdout)})`; }
     add({ id: "calc", title: "calc 自检", status: ok ? "ok" : "fail", detail, fix: ok ? undefined : "检查 calc/ 完整性:python -m pytest calc/tests -q" });
   } else add({ id: "calc", title: "calc 自检", status: "skip", detail: "Python 不可用" });
 
@@ -265,7 +272,7 @@ export function runDoctor(opts: { repoRoot?: string; env?: NodeJS.ProcessEnv; ex
       const rows = thermoLedgerOverview({ dataRoot });
       const bad = rows.filter((r) => r.unreadable || r.dropped > 0);
       add({ id: "thermo_history", title: "温度计历史序列", status: bad.length ? "warn" : "ok",
-        detail: rows.length ? rows.map((r) => `${r.endpoint}:${r.observations} 条 ${r.first ?? "-"}→${r.last ?? "-"}${r.unreadable ? " 🔴不可读" : ""}${r.dropped ? ` ⚠️无效 ${r.dropped}` : ""}`).join(";") : `${thermoDir({ dataRoot })} 尚无序列(首次完整运行归档后生成;或 node orchestrator/src/thermo_history.ts backfill)`,
+        detail: rows.length ? rows.map((r) => `${r.endpoint}:${r.observations} 条 ${r.first ?? "-"}→${r.last ?? "-"}${r.unreadable ? " 🔴不可读" : ""}${r.dropped ? ` ⚠️无效 ${r.dropped}` : ""}`).join(";") : `${thermoDir({ dataRoot })} 尚无序列(首次完整运行归档后生成;或 node orchestrator/src/finance/thermo_history.ts backfill)`,
         fix: bad.length ? "不可读的文件会在下次归档时移到 .corrupt 旁路重建;无效条目已被忽略——若是手工编辑过序列文件,按 schema 修回或删掉该条" : undefined });
     } catch (e) { add({ id: "thermo_history", title: "温度计历史序列", status: "warn", detail: sub(e instanceof Error ? e.message : String(e)) }); }
   }

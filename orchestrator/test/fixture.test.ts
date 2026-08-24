@@ -10,6 +10,8 @@ import {
 import { checkFixture, seedFixtureInto } from "../src/orchestrate.ts";
 import { manifestSchema, validateWith } from "../src/schemas.ts";
 
+
+import "../src/finance/register.ts";   // 测试文件也是入口:垂类包要先注册
 const SEEDED = ["profile", "financials", "estimates", "valuation"];
 const FP = { registry_version: "1.0.0", endpoint_scope: "full", calc_version: "0.3.2", repo_version: "abc123" };
 
@@ -175,7 +177,7 @@ test("🔴 符号链接:夹具内的链接文件与链接目录都要拒绝(词�
 test("manifest schema 认得 seeded_from(加了 TS 类型却忘了 schema,整次运行会被判 failed)", () => {
   // 这正是首次实测踩到的:两个阶段都 complete,却因 manifest schema 不认新字段而 status=failed
   const base = { seeded_from: { fixture_data_day: "2026-08-24", source_run_id: "r-1", stages: ["profile"], stale: false } };
-  const err = (o: unknown) => validateWith("manifest-t", manifestSchema, o).join(" | ");
+  const err = (o: unknown) => validateWith("manifest-t", manifestSchema(), o).join(" | ");
   assert.doesNotMatch(err(base), /seeded_from/);
   assert.match(err({ seeded_from: { ...base.seeded_from, stale: "yes" } }), /stale must be boolean/);
   assert.match(err({ seeded_from: { ...base.seeded_from, x: 1 } }), /additional properties/);

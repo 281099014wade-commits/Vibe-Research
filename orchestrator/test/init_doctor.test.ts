@@ -8,6 +8,8 @@ import { fileURLToPath } from "node:url";
 import { cmpVersion, isPrerelease, parseCodexVersion, resolveBundledCodex, runDoctor, scanSecrets, type Exec } from "../src/doctor.ts";
 import { assertDataRootInside, detectPython, gitignoreCovers, runInit } from "../src/init.ts";
 
+
+import "../src/finance/register.ts";   // 测试文件也是入口:垂类包要先注册
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 /** doctor 的 skills 隔离检查按 env.HOME 找用户级 skill:测试用空的假 HOME,不依赖开发者机器上的 ~/.agents/skills */
 const FAKE_HOME = fs.mkdtempSync(path.join(os.tmpdir(), "vra-fake-home-"));

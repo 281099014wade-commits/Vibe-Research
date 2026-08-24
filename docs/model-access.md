@@ -17,7 +17,7 @@ auth 的解析规则:用户没在 `.local/config.json` / `VRA_PROVIDER_AUTH` / `
 # 1) 密钥只放环境变量(变量名见模板 env_key;此处以 DeepSeek 为例)
 export DEEPSEEK_API_KEY=...
 # 2) 先跑 10 项兼容矩阵(结果在 .local/provider-matrix/deepseek/<时间>/summary.md,不含密钥)
-node orchestrator/src/provider_matrix.ts --provider deepseek --model deepseek-chat
+node orchestrator/src/finance/provider_matrix.ts --provider deepseek --model deepseek-chat
 # 3) 矩阵可接受后用于研究(或写进 .local/config.json)
 node orchestrator/src/run.ts --symbol 300308 --market SZ --provider deepseek --model deepseek-chat --python "$(pwd)/.venv/bin/python" < /dev/null
 ```
@@ -59,7 +59,7 @@ node orchestrator/src/run.ts --symbol 300308 --market SZ --provider deepseek --m
 | ⑨ | 多轮上下文延续 | 第二回合复述第一回合约定词 | 会话不连续 |
 | ⑩ | 无 previous_response_id 协议下的延续 | wire_api=chat 时 ⑨ 通过即 pass | responses 协议记 n/a(由 Codex 内部处理) |
 
-判定口径(含 ④ 如何用 `item.started/completed` 交错证明并发、⑦ 为什么要 `model_reasoning_summary=detailed`)见 `orchestrator/src/provider_matrix.ts` 头注释;`judge()` 有逐项正反单测。结果文件落盘前做两层脱敏(provider 密钥精确替换 + 通用 token / 签名 URL)。矩阵不全绿的 provider 只应用于试验;编排器会把 provider 与矩阵状态写进运行的 `manifest.json`。
+判定口径(含 ④ 如何用 `item.started/completed` 交错证明并发、⑦ 为什么要 `model_reasoning_summary=detailed`)见 `orchestrator/src/finance/provider_matrix.ts` 头注释;`judge()` 有逐项正反单测。结果文件落盘前做两层脱敏(provider 密钥精确替换 + 通用 token / 签名 URL)。矩阵不全绿的 provider 只应用于试验;编排器会把 provider 与矩阵状态写进运行的 `manifest.json`。
 
 OpenAI 基线(2026-08-22,订阅登录,引擎默认模型):9 pass · 1 n/a。
 

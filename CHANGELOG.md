@@ -2,6 +2,77 @@
 
 格式遵循 Keep a Changelog;版本号待首次发布时定(当前未发布)。
 
+## 未发布 · Core / DomainPack 第二次拆分:stages / schemas 变成可注入契约,Core 行业词清到 0(2026-08-25)
+
+第一次拆分只搬了词表,Core 里还剩 149 处行业词。这次把**阶段与 schema 也做成契约**,清到 **0**。
+
+### 新的 `DomainPack` 契约(`src/domain.ts`)
+
+判断一样东西该放哪边,只问一句:**换个垂类它要不要重写?** 现在这些全部经注入:
+阶段名 / 每阶段取数脚本 / 关键脚本 / 每阶段计算函数 / 议题 / 报告章节 /
+证据枚举(市场、口径、两套全市场区域码)/ 标准列与列标签与所在阶段 / 阶段显示名 /
+议题→章节映射 / 提醒字段 / **语义槽位表** / **"数据陈旧"判定** / **基准期解析** / doctor 自检 calc / 词表。
+金融那一份在 `src/finance/pack.ts`。
+
+🔴 **用注册期完整性校验替代编译期穷尽性检查。** `Stage` 从字面量联合退化成 `string`,
+`Record<Stage, …>` 的穷尽检查随之失去 —— 换来的是注册时**四张阶段表的键集必须与 stages 完全一致**
+(不许缺、不许多)。对可插拔设计这比编译期更管用:它同样拦得住第三方包写漏,
+而编译期只保护得了我们自己的代码。⚠️ 但**别把它说成完整替代** —— 它补回的是"阶段键穷尽性"这一项。
+
+### 结构性收口
+
+- **金融实现物理搬进 `src/finance/`**(stages / hardtest / industry / chokepoint / thermo_history /
+  provider_matrix + pack / lexicon / semantic_slots / quote_freshness / fiscal_year):
+  纯净度检查从**文件名白名单**改成**目录边界** —— 白名单挡不住"把通用编排继续写进 src/stages.ts"。
+- **注册点从 Core 消费者移到入口**(run / api / mcp / doctor / service / 钩子子进程 / 各 CLI / 测试):
+  validator 不再副作用 import 金融包。
+- **`hooks/` 纳入 typecheck**。它一直不在 `tsconfig.include` 里,所以 `hooks/stop.ts` 引用已删除的
+  `STAGES` 时编译器一声不吭 —— 是运行时才炸的。
+
+### Codex 审计闭环:七轮(domainpack-r1 → r7 通过)
+
+**其中 4 条是我修上一轮时自己引入的**,都是同一个根因的漏改:
+- 「每个字段只读一次」我只对 `stageScripts` 做了,**其余五张表照旧二次读取 getter**;
+- 补救时写的 `entriesOnce()` 把 `new Map()` / `new Date()` **吞成空表**,
+  没有阶段穷尽检查的那几张表于是"空表通过",等于绕过整个注册期校验;
+- 「深冻结」对非普通对象**原样返回**,`Map` 仍是共享可变引用,`shared.set()` 就能改掉已生效配置;
+- 稀疏数组检查我写在了 `.map()` 回调里 —— **回调对空洞压根不执行**,被自己新加的测试当场打红。
+
+🔴 **第四次"照 Codex 字面实现会坏"**:它建议 `topicSections` 的值用 `reportSections` 校验。
+但那是**两个命名空间** —— `reportSections` 是必需骨架章节,而 topicSections 的值是**扩展章节**名
+("资金与市场行为")。照字面实现会把正确配置全判错。只采纳了键的校验(议题必须已声明)。
+
+其余采纳的修复:阶段名必须是**安全路径段**(它会被拼进 `stages/<stage>.json`,写个 `../..` 就穿出去了);
+`criticalScripts` 必须出现在某阶段计划里(拼错则"关键脚本全失败 → failed"永远匹配不上,是**静默降级**);
+`standardColumnLabels` 必须**恰好覆盖** `standardColumns`(缺列会静默少一列表头);
+`selfTestCalc.args` 必须是**普通对象**且只含 JSON 式值(`Map` / `NaN` / `undefined` / 稀疏数组
+在 `JSON.stringify` 后与快照对不上,而它是要传给 calc CLI 的);
+深拷贝用 `Object.create(null)` 防 `__proto__` 原型污染;`resetDomainPack` 连词表一起清。
+
+### 关于"纯净度 0"的诚实说明
+
+**是**:`src/`(除 pack 目录)里不再出现那张词表上的任何词。
+**不是**:Core 已与垂类无关 —— 证据契约的 `symbol` / `market` / `period` / `adjustment`
+仍带证券味道,`knowledge.ts` 的档案模板仍是金融写法。**词表只测得到它认识的词。**
+
+这次又抓到**两个假阳性 + 一处词表看不见的真耦合**:
+- `registry.ts` 的 `const eps` 是 **endpoints 的缩写**,被当成了 `EPS`(已改名消歧);
+- `runner.ts` 的「盘前」是从"落**盘前**脱敏"里切出来的(CJK 逐词 substring 没有词边界,已加负向前瞻);
+- 而 `batch.ts` 硬编码的 `"valuation.json"` **一路躲过了棘轮** —— 词表全是中文与几个缩写,
+  **看不见英文阶段名**。已改为 `standardColumnsStage` 插槽。
+⇒ 沿革:149 → 126(阶段/schema 进包)→ 83(语义槽位 + 报价规则)→ 69(显示名/映射/字段/列标签)
+→ 18(注释中性化)→ **0**;棘轮改**零容忍**。
+
+### 遗留(已写进注释,不是本次范围)
+
+- 词表是**进程级单例**。这与产品形态一致(一个垂类一个仓库、一个安装包、一个进程);
+  要同进程多租户才需要实例级 DomainRuntime。
+- `topicSections` 的**值**、`semanticSlots ↔ stageCalcs` 的关联,现有契约表达不了,
+  要新增字段才能校验。
+
+新增 `test/domain.test.ts` **20 条**(注册期校验是编译期穷尽性的替代品,失效了没人会发现)。
+测试:TS **265** / typecheck 干净(含 hooks/)/ Python 222 / calc 188 / doctor 15 ok。
+
 ## 未发布 · Core / DomainPack 第一次拆分(2026-08-24)
 
 战略转向垂类 AgentOS(同一个 Core,按行业挂不同 DomainPack)。架构审计的验收标准 =

@@ -2,8 +2,10 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import { complianceGate, missingSections, normalizeReportStatus, referencedIds, reportStatusToken } from "../src/gate.ts";
-import { REPORT_SECTIONS } from "../src/config.ts";
+import { reportSections } from "../src/config.ts";
 
+
+import "../src/finance/register.ts";   // 测试文件也是入口:垂类包要先注册
 test("合规 gate:命中建仓 / 目标价类词", () => {
   const r = complianceGate("## 结论摘要\n- 建议在 900 元附近建仓\n- 目标价 1200 元");
   assert.equal(r.ok, false);
@@ -25,7 +27,7 @@ test("合规 gate:正常报告通过", () => {
 
 test("章节缺失检测", () => {
   const report = "# X 研究报告 · 状态:complete\n## 结论摘要\n## 事实\n## 推断\n## 估值\n## 风险与反证\n## 裁决点\n";
-  assert.deepEqual(missingSections(report, REPORT_SECTIONS), ["数据缺口"]);
+  assert.deepEqual(missingSections(report, [...reportSections()]), ["数据缺口"]);
 });
 
 test("引用 id 提取去重", () => {

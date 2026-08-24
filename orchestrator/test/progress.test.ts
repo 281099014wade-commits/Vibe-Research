@@ -6,6 +6,8 @@ import { createRequire } from "node:module";
 import { test } from "node:test";
 import { ProgressReporter, clip, humanElapsed } from "../src/progress.ts";
 
+
+import "../src/finance/register.ts";   // 测试文件也是入口:垂类包要先注册
 /** 收集器 + 可控时钟:进度行必须完全确定,不能依赖真实时间 */
 function harness(runDir: string, startMs = 0) {
   const lines: string[] = [];

@@ -6,10 +6,19 @@ import path from "node:path";
 
 import type { ProviderProfile } from "./productConfig.ts";
 import { providerEnv, type ProviderProfileFile } from "./providers.ts";
+import { currentPack } from "./domain.ts";
 import { buildStagePlan, criticalScripts as registryCriticalScripts, endpointsById, loadRegistry, type EndpointDef, type ScopeKind, type StagePlan } from "./registry.ts";
 
-export const STAGES = ["profile", "financials", "estimates", "valuation", "risk", "report"] as const;
-export type Stage = (typeof STAGES)[number];
+/**
+ * 阶段名**由垂类包提供**(`DomainPack.stages`),Core 只知道"有一串阶段、按序执行"。
+ *
+ * ⚠️ `Stage` 因此退化成 `string`,`Record<Stage, …>` 的编译期穷尽性检查没有了 ——
+ * 换来的是注册期的**键集必须与 stages 完全一致**校验(见 `domain.ts` 顶部说明)。
+ * 那条校验拦得住第三方包写漏,编译期检查只保护得了我们自己的代码。
+ */
+export type Stage = string;
+/** 当前垂类的阶段顺序。**运行期读**,不要在模块顶层求值(注册发生在 import 之后)。 */
+export const stages = (): readonly Stage[] => currentPack().stages;
 
 export type RunStatus = "complete" | "incomplete" | "failed" | "stale";
 export type StageStatus = "complete" | "incomplete" | "skipped" | "failed";
@@ -95,7 +104,7 @@ export interface RunConfig {
   overwrite: boolean;
   /** 硬测试数据夹具目录:播种前几个阶段的产物并跳过它们(见 fixture.ts)。**播种运行一律按测试运行隔离** */
   seedFrom?: string;
-  /** 允许使用非当日的夹具(默认拒绝:财务 / 估值逐日变化,跨日复用会让硬测试因错误的原因通过或失败) */
+  /** 允许使用非当日的夹具(默认拒绝:数据逐日变化,跨日复用会让硬测试因错误的原因通过或失败) */
   allowStaleFixture?: boolean;
   scenario: Scenario | null;
   /** 端点范围:core = 仅 legacy 8 脚本(Phase 0 行为);full = 注册表全部启用且市场匹配的端点(Phase 1 M1) */
@@ -113,34 +122,20 @@ export interface RunConfig {
   knowledgeArchive: boolean;
 }
 
-/** 每阶段必需 / 可选的取数脚本(由编排器执行;fetch/<script>.json 必须存在且有账本记录) */
-export const STAGE_SCRIPTS: Record<Stage, { required: string[]; optional: string[] }> = {
-  profile: { required: ["fetch_profile", "fetch_quote", "fetch_trade_calendar"], optional: [] },
-  financials: { required: ["fetch_financials"], optional: [] },
-  estimates: { required: ["fetch_estimates"], optional: [] },
-  valuation: { required: [], optional: ["fetch_pe_history"] },
-  risk: { required: [], optional: ["fetch_announcements", "fetch_kline"] },
-  report: { required: [], optional: [] },
-};
+/** 每阶段必需 / 可选的取数脚本(注册表缺失时的回退计划)—— 由垂类包提供 */
+export const stageScripts = (): StagePlan<Stage> => currentPack().stageScripts as StagePlan<Stage>;
 
-/** 关键脚本全部失败 → 运行 failed(无法产出可用研究) */
-export const CRITICAL_SCRIPTS = ["fetch_quote", "fetch_financials", "fetch_estimates"];
+/** 关键脚本全部失败 → 运行 failed(无法产出可用研究)—— 由垂类包提供 */
+export const packCriticalScripts = (): string[] => [...currentPack().criticalScripts];
 
-/** 每阶段必须出现的 calc 函数(calc 记录的 id 必须列在该阶段 calculation_ids;或 gaps 以 operation 精确说明) */
-export const STAGE_CALCS: Record<Stage, string[]> = {
-  profile: [],
-  financials: ["quarterize", "latest_quarter", "ttm_sum", "ttm_yoy", "qoq"],
-  estimates: ["forward_cagr", "consensus_dispersion"],
-  valuation: ["pe_deducted_annualized", "forward_pe", "pe_ttm_from_parts", "percentile_rank", "peg", "pe_digestion_scenarios", "forward_vs_ttm_judgement"],
-  risk: [],
-  report: [],
-};
+/** 某阶段必须出现的计算函数 —— 由垂类包提供 */
+export const stageCalcs = (stage: Stage): readonly string[] => currentPack().stageCalcs[stage] ?? [];
 
 export const GAP_REASON_CODES = ["source_failed", "source_partial", "upstream_not_meaningful", "upstream_missing",
   "insufficient_periods", "not_supported_market", "optional_skipped", "other"] as const;
 
-/** report.md 必须出现的章节标题(SOP §5 骨架) */
-export const REPORT_SECTIONS = ["结论摘要", "事实", "推断", "估值", "风险与反证", "裁决点", "数据缺口"];
+/** report.md 必须出现的章节标题 —— 由垂类包提供 */
+export const reportSections = (): readonly string[] => currentPack().reportSections;
 
 /** 合规 gate:命中即视为投资动作建议(AGENTS.md §0 第 3 条) */
 export const GATE_PATTERNS: string[] = [
@@ -188,13 +183,13 @@ export function makeConfig(partial: Partial<RunConfig> & { symbol: string; repoR
   if (!stagePlan || !criticalScripts || !endpoints) {
     const reg = loadRegistry(repoRoot);
     if (reg) {
-      stagePlan ??= buildStagePlan(reg, STAGES, { market: partial.market ?? "", scope: endpointScope });
+      stagePlan ??= buildStagePlan(reg, stages(), { market: partial.market ?? "", scope: endpointScope });
       criticalScripts ??= registryCriticalScripts(reg);
       endpoints ??= endpointsById(reg);
       registryVersion ??= reg.version;
     } else {
-      stagePlan ??= STAGE_SCRIPTS;
-      criticalScripts ??= CRITICAL_SCRIPTS;
+      stagePlan ??= stageScripts();
+      criticalScripts ??= packCriticalScripts();
       endpoints ??= {};
     }
   }

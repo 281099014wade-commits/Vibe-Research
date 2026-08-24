@@ -7,7 +7,7 @@
  *      [--config <用户配置.json>] [--codex-path <引擎二进制>] [--codex-home <目录>](默认读 vibe-research.config.json + .local/config.json + 环境变量 VRA_*)
  *      [--no-hooks](不安装 Stop / PreToolUse 钩子;默认安装到产品 CODEX_HOME)
  *      [--endpoints full|core](full = 注册表全部启用端点(默认);core = 仅 Phase 0 的 8 个 legacy 脚本)
- *      [--knowledge on|off](默认 on:召回 .local/knowledge 里该标的的档案注入提示词)[--no-archive](不生成 viewer / 附录、不归档知识层)
+ *      [--knowledge on|off](默认 on:召回 .local/knowledge 里该主体的档案注入提示词)[--no-archive](不生成 viewer / 附录、不归档知识层)
  *      [--progress on|off](默认 on:把阶段进度与各阶段 summary 实时打到 **stderr**,首次可读产出 ~80 秒;stdout 的 JSON 契约不变)
  *      [--seed-from <夹具目录>] [--allow-stale-fixture](**仅硬测试用**:播种前几个阶段的产物并跳过它们,省约一半墙钟;播种运行按测试运行隔离,不进知识层,不能替代发布前的完整运行)
  *      [--provider <id>](providers/<id>.json;默认 openai;非 openai 只能 api_key,未显式指定 auth 时自动选模板唯一支持的模式;也可用环境变量 VRA_PROVIDER)
@@ -27,6 +27,10 @@ import { CodexRunner, sdkCodexVersion } from "./runner.ts";
 import { isStage } from "./schemas.ts";
 import { verifyCalcs } from "./validator.ts";
 
+
+// **composition root**:垂类包在入口注册,Core 模块一律不 import 它
+// (Core 消费者靠副作用 import 硬接某个包,换垂类时靠入口 import 恢复不了 —— ESM 会缓存)。
+import "./finance/register.ts";
 export function parseArgs(argv: string[]): Record<string, string | boolean> {
   const out: Record<string, string | boolean> = {};
   for (let i = 0; i < argv.length; i++) {

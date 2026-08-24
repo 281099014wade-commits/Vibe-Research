@@ -4,12 +4,14 @@ import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
-import { applyIndustryGate, detectIndustryTags, industryPromptBlock, keywordHit, loadIndustryTags, writeIndustryFile } from "../src/industry.ts";
-import { judgeIndustryThermometer, judgePolicyAccess } from "../src/hardtest.ts";
+import { applyIndustryGate, detectIndustryTags, industryPromptBlock, keywordHit, loadIndustryTags, writeIndustryFile } from "../src/finance/industry.ts";
+import { judgeIndustryThermometer, judgePolicyAccess } from "../src/finance/hardtest.ts";
 import { loadRegistry } from "../src/registry.ts";
-import { EXTRA_TOPICS } from "../src/schemas.ts";
+import { extraTopics } from "../src/schemas.ts";
 import { writeJson } from "../src/fsutil.ts";
 
+
+import "../src/finance/register.ts";   // 测试文件也是入口:垂类包要先注册
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 
 function fakeRun(profileTexts: string[], swCodes: string[], boards: string[]): string {
@@ -30,7 +32,7 @@ test("产业标签表可加载,ai_compute 的温度计端点在注册表里且�
     const e = byId.get(id)!;
     assert.ok(e, id); assert.deepEqual(e.industry_tags, ["ai_compute"]); assert.equal(e.layer, "13 产业温度计");
   }
-  assert.ok(EXTRA_TOPICS.risk.includes("产业温度计"));
+  assert.ok(extraTopics().risk.includes("产业温度计"));
 });
 
 test("产业判定:中际旭创式(通信设备 + 申万 7302 + 光模块概念)命中 ai_compute;银行命中 0 标签;门控只跳过带标签的端点", () => {
@@ -199,7 +201,7 @@ test("policy-r1:judgePolicyAccess——护栏方向反写 / 绝对结论 / 文�
 });
 
 test("数据日历规则:台系月营收下一档 = 最新资料期 +1 月,期限 = +2 月 10 日(跨年);从信封推日期行", async () => {
-  const { industryNextDateLines, twNextDisclosure } = await import("../src/industry.ts");
+  const { industryNextDateLines, twNextDisclosure } = await import("../src/finance/industry.ts");
   // 期限按"今天"推(不是按最新资料期):8-24 已过 10 日 → 期限 9-10、数据月 8 月;9-05 未过 → 期限 9-10
   assert.deepEqual(twNextDisclosure("2026-07-01..2026-07-31", "2026-08-24"), { data_month: "2026-08", deadline: "2026-09-10", lagging: false });
   assert.deepEqual(twNextDisclosure("2026-07-01..2026-07-31", "2026-09-05"), { data_month: "2026-08", deadline: "2026-09-10", lagging: false });
@@ -265,7 +267,7 @@ test("大宗温度计:storage_memory 标签只挂 DRAM,光模块股不被 DRAM �
 });
 
 test("commodity-r1:大宗护栏三条件——只写「全市场定价」/「官方存档」/ 只写影子指标 都判失败;绕过语「也是本公司成本」被抓;合规写法通过", async () => {
-  const { judgeIndustryThermometer } = await import("../src/hardtest.ts");
+  const { judgeIndustryThermometer } = await import("../src/finance/hardtest.ts");
   const d = fs.mkdtempSync(path.join(os.tmpdir(), "vra-cmd-judge-"));
   fs.mkdirSync(path.join(d, "stages")); fs.mkdirSync(path.join(d, "fetch"));
   const E = (id: string, field: string, rk: string, value: number) => ({ id, field, record_key: rk, value, unit: field.endsWith("_pct") ? "%" : "元/吨", currency: "n/a", period: "2026-08-21", as_of: "2026-08-24", source: "s", symbol: "MARKET", market: "CN", note: "x" });
@@ -308,7 +310,7 @@ test("commodity-r1:大宗护栏三条件——只写「全市场定价」/「官
 });
 
 test("commodity-r2:挂载端点的证据 id 直接取自信封(未知端点不再静默豁免);取数失败的挂载端点必须在 risk.gaps 出声", async () => {
-  const { judgeIndustryThermometer } = await import("../src/hardtest.ts");
+  const { judgeIndustryThermometer } = await import("../src/finance/hardtest.ts");
   const d = fs.mkdtempSync(path.join(os.tmpdir(), "vra-cmd-dyn-"));
   fs.mkdirSync(path.join(d, "stages")); fs.mkdirSync(path.join(d, "fetch"));
   const E = (id: string, field: string, rk: string, value: number, unit = "元/吨") => ({ id, field, record_key: rk, value, unit, currency: "n/a", period: "2026-08-21", as_of: "2026-08-24", source: "s", symbol: "MARKET", market: "CN", note: "x" });
@@ -349,7 +351,7 @@ test("commodity-r2:挂载端点的证据 id 直接取自信封(未知端点不�
 });
 
 test("headlines-r1:judgeHeadlines 不许空跑——有命中却无章节 / 引未命中 / 空话关系句 / 缺声明 都判失败;合规写法通过;时刻不算数字", async () => {
-  const { judgeHeadlines } = await import("../src/hardtest.ts");
+  const { judgeHeadlines } = await import("../src/finance/hardtest.ts");
   const d = fs.mkdtempSync(path.join(os.tmpdir(), "vra-head-"));
   fs.mkdirSync(path.join(d, "stages")); fs.mkdirSync(path.join(d, "fetch"));
   const E = (id: string, field: string, value: unknown, note: string) => ({ id, field, value, unit: field === "headline_item" ? "text" : "条", currency: "n/a", period: "2026-08-24", as_of: "2026-08-24", source: "techmeme", symbol: "300308", market: "SZ", record_key: id, note });
@@ -390,7 +392,7 @@ test("headlines-r1:judgeHeadlines 不许空跑——有命中却无章节 / 引�
 });
 
 test("headlines-r2:零命中留痕不可空过(无章节 / 空 findings / 只写无关话 都判失败);时刻只在有日期的行豁免", async () => {
-  const { judgeHeadlines, claimTokens } = await import("../src/hardtest.ts");
+  const { judgeHeadlines, claimTokens } = await import("../src/finance/hardtest.ts");
   const d = fs.mkdtempSync(path.join(os.tmpdir(), "vra-head0-"));
   fs.mkdirSync(path.join(d, "stages")); fs.mkdirSync(path.join(d, "fetch"));
   const NOTE = "published=2026-08-24T20:45:00+08:00;period_basis=published;source=NYT;relevance=未命中产业关键词;link=https://x.com/1;untrusted_text=sanitized";
@@ -424,7 +426,7 @@ test("headlines-r2:零命中留痕不可空过(无章节 / 空 findings / 只写
 });
 
 test("招聘信号 judge:合规写法通过;缺护栏 / 反向表述(等于产能)/ 数字未绑定 / id 漏进事实章节 / 把未接入读成零岗位 都判失败", async () => {
-  const { judgeHiring } = await import("../src/hardtest.ts");
+  const { judgeHiring } = await import("../src/finance/hardtest.ts");
   const d = fs.mkdtempSync(path.join(os.tmpdir(), "vra-hire-"));
   fs.mkdirSync(path.join(d, "stages")); fs.mkdirSync(path.join(d, "fetch"));
   const NOTE = "Lightmatter(硅光 / 光互连;greenhouse 公开 job board)当前公开在招岗位数;产业标签=ai_compute;读法:岗位数是招聘意图不是产能,受招聘节奏与 HR 批次影响,单点数字意义有限、看变化;这些是产业链锚点公司不是本公司数据;不同 ATS 口径不同,只在同一家公司内部比较,不跨公司比大小";

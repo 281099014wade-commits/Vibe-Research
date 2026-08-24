@@ -1,12 +1,17 @@
 /**
- * 金融行业包的**注册入口**。任何会走到数字忠实度校验的进程,都必须先 import 这一行。
+ * 金融垂类包的**注册入口**。任何会走到 Core 校验 / 编排的进程,都必须先 import 这一行。
  *
- * 这是 Core + DomainPack 边界的第一块砖:Core(`number_fidelity.ts`)不再内联行业词表,
- * 改为接受注入;金融词表落在 `finance/`。以后 DomainPack 契约完善后,这里会扩展成注册
- * stages / schemas / validators / reportSections 的完整入口。
+ * Core(`domain.ts` / `number_fidelity.ts`)不内联任何垂类配置,改为接受注入;
+ * 金融那一份全部落在 `finance/`。词表是 `DomainPack` 的一个字段,
+ * `registerDomainPack` 会一并注册 —— **只有这一个注册点**,不会出现"注册了包却忘了词表"。
+ *
+ * ⚠️ 这是**副作用 import**。架构审计指出过:Core 消费者靠副作用 import 硬接某个包,
+ * 换垂类时无法靠入口 import 恢复(ESM 会缓存)。正解是从 composition root 显式注入并一路传下去。
+ * 现状是过渡形态 —— 单垂类进程里成立,多垂类要等实例级 DomainRuntime。
  */
-import { setDomainLexicon } from "../number_fidelity.ts";
+import { registerDomainPack } from "../domain.ts";
 import { FINANCE_LEXICON } from "./lexicon.ts";
+import { FINANCE_PACK } from "./pack.ts";
 
-setDomainLexicon(FINANCE_LEXICON);
-export { FINANCE_LEXICON };
+registerDomainPack(FINANCE_PACK);
+export { FINANCE_LEXICON, FINANCE_PACK };

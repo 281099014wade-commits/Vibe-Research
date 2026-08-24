@@ -5,13 +5,15 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 
-import { CRITICAL_SCRIPTS, STAGE_SCRIPTS, makeConfig } from "../src/config.ts";
+import { packCriticalScripts, stageScripts, makeConfig } from "../src/config.ts";
 import { sha256File, writeJson } from "../src/fsutil.ts";
 import { archiveRun, companyDir, recallKnowledge, safeFmValue, sensitiveHits, shDate, shouldRecall, truncateBySection } from "../src/knowledge.ts";
 import type { Manifest } from "../src/merge.ts";
 import { loadRun } from "../src/validator.ts";
 import { APPENDIX_REL, VIEWER_REL, renderAppendix, collectViewerData, writeViewer } from "../src/viewer.ts";
 
+
+import "../src/finance/register.ts";   // 测试文件也是入口:垂类包要先注册
 const TS = "2026-08-22T10:00:00+08:00";
 
 function fakeRun(): { cfg: ReturnType<typeof makeConfig>; ledger: Record<string, unknown>; manifest: Manifest } {
@@ -39,7 +41,7 @@ function fakeRun(): { cfg: ReturnType<typeof makeConfig>; ledger: Record<string,
 
 test("viewer:生成自包含 viewer.html + report_appendix.md,含证据 / 计算 / 阶段 / 账本", () => {
   const { cfg, ledger, manifest } = fakeRun();
-  const run = loadRun(cfg.runDir, ledger as never, { plan: STAGE_SCRIPTS, critical: CRITICAL_SCRIPTS, endpoints: {} });
+  const run = loadRun(cfg.runDir, ledger as never, { plan: stageScripts(), critical: packCriticalScripts(), endpoints: {} });
   const { htmlPath, appendixPath } = writeViewer(cfg, run, manifest);
   assert.equal(path.basename(htmlPath), VIEWER_REL);
   assert.equal(path.basename(appendixPath), APPENDIX_REL);
@@ -55,7 +57,7 @@ test("viewer:生成自包含 viewer.html + report_appendix.md,含证据 / 计算
 
 test("knowledge:归档到 .local/knowledge(runs + latest + 索引),正文只含结构化字段;召回按 as_of+valid_days 判 fresh/stale;refuted 不召回", () => {
   const { cfg, ledger, manifest } = fakeRun();
-  const run = loadRun(cfg.runDir, ledger as never, { plan: STAGE_SCRIPTS, critical: CRITICAL_SCRIPTS, endpoints: {} });
+  const run = loadRun(cfg.runDir, ledger as never, { plan: stageScripts(), critical: packCriticalScripts(), endpoints: {} });
   const now = new Date("2026-08-22T06:00:00Z");
   const r = archiveRun(cfg, run, manifest, { now });
   assert.ok(fs.existsSync(r.runFile) && fs.existsSync(r.latestFile));
@@ -82,14 +84,14 @@ test("knowledge:归档到 .local/knowledge(runs + latest + 索引),正文只含�
 test("knowledge:归档正文命中合规 gate 的行被整行删除并记录", () => {
   const { cfg, ledger, manifest } = fakeRun();
   writeJson(path.join(cfg.runDir, "stages", "risk.json"), { stage: "risk", status: "complete", summary: "建议逢低买入并加仓", evidence_ids: [], calculation_ids: [], gaps: [], counter_evidence: [], decision_points: [], source_conflicts: [] });
-  const run = loadRun(cfg.runDir, ledger as never, { plan: STAGE_SCRIPTS, critical: CRITICAL_SCRIPTS, endpoints: {} });
+  const run = loadRun(cfg.runDir, ledger as never, { plan: stageScripts(), critical: packCriticalScripts(), endpoints: {} });
   const r = archiveRun(cfg, run, manifest);
   assert.ok(r.gateRemoved.length >= 1 && r.gateRemoved[0].includes("加仓"));
   assert.ok(!fs.readFileSync(r.latestFile, "utf8").includes("加仓"));
 });
 
 test("提示词:召回的 cfg.knowledge 注入为知识层档案;scenario.knowledge 优先;无档案不注入;扩展数据规则只在 full 计划下出现", async () => {
-  const { buildStagePrompt } = await import("../src/stages.ts");
+  const { buildStagePrompt } = await import("../src/finance/stages.ts");
   const repo = fs.mkdtempSync(path.join(os.tmpdir(), "vra-kp-"));
   fs.mkdirSync(path.join(repo, ".local", "runs"), { recursive: true });
   const REPO_REAL = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
@@ -114,7 +116,7 @@ test("knowledge:私密信息 gate 整行删除(邮箱 / 手机 / 用户路径 / 
   const { cfg, ledger, manifest } = fakeRun();
   writeJson(path.join(cfg.runDir, "stages", "risk.json"), { stage: "risk", status: "complete", summary: "联系人 someone@example.com 电话 13800138000", evidence_ids: [], calculation_ids: [], gaps: [],
     counter_evidence: [{ claim: "文件在 /Users/someone/Desktop/私密.xlsx", counter: "api_key: sk-xxxx", evidence_ids: [] }], decision_points: [{ what_would_change: "正常裁决点", next_data_point: "2026-10-30" }], source_conflicts: [] });
-  const run = loadRun(cfg.runDir, ledger as never, { plan: STAGE_SCRIPTS, critical: CRITICAL_SCRIPTS, endpoints: {} });
+  const run = loadRun(cfg.runDir, ledger as never, { plan: stageScripts(), critical: packCriticalScripts(), endpoints: {} });
   const r = archiveRun(cfg, run, { ...manifest, status: "stale" } as typeof manifest);
   const txt = fs.readFileSync(r.latestFile, "utf8");
   assert.ok(r.gateRemoved.length >= 2);
@@ -132,7 +134,7 @@ test("viewer:DOM id 唯一;agent 写的 </script> / HTML 载荷不会逃出数�
   const { cfg, ledger, manifest } = fakeRun();
   writeJson(path.join(cfg.runDir, "stages", "risk.json"), { stage: "risk", status: "complete", summary: "</script><script>alert(1)</script><img src=x onerror=alert(2)>", evidence_ids: [], calculation_ids: [], gaps: [], counter_evidence: [], decision_points: [], source_conflicts: [] });
   fs.writeFileSync(path.join(cfg.runDir, "report.md"), "# r\n</script><b>x</b>\n");
-  const run = loadRun(cfg.runDir, ledger as never, { plan: STAGE_SCRIPTS, critical: CRITICAL_SCRIPTS, endpoints: {} });
+  const run = loadRun(cfg.runDir, ledger as never, { plan: stageScripts(), critical: packCriticalScripts(), endpoints: {} });
   const { htmlPath } = writeViewer(cfg, run, manifest);
   const html = fs.readFileSync(htmlPath, "utf8");
   const ids = [...html.matchAll(/ id="([^"]+)"/g)].map((m) => m[1]);
@@ -156,7 +158,7 @@ test("knowledge:frontmatter 动态字段(公司名 / 来源)单行规范化 + �
   env.used_sources = ["tencent", "evil\nvalid_days: 1"];
   fs.writeFileSync(f, JSON.stringify(env));
   (ledger.fetch_profile as { sha256: string }).sha256 = sha256File(f);
-  const run = loadRun(cfg.runDir, ledger as never, { plan: STAGE_SCRIPTS, critical: CRITICAL_SCRIPTS, endpoints: {} });
+  const run = loadRun(cfg.runDir, ledger as never, { plan: stageScripts(), critical: packCriticalScripts(), endpoints: {} });
   const r = archiveRun(cfg, run, manifest);
   const txt = fs.readFileSync(r.latestFile, "utf8");
   const fm = txt.split("\n---\n")[0];

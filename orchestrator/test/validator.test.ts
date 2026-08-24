@@ -12,6 +12,8 @@ import { sha256File, writeJson } from "../src/fsutil.ts";
 import { validateCalcRecord, validateEvidenceItem, validateFetchEnvelope, validateStageOutput } from "../src/schemas.ts";
 import { loadLedgerFromDisk, saveLedger } from "../src/fetchrun.ts";
 
+
+import "../src/finance/register.ts";   // 测试文件也是入口:垂类包要先注册
 function tmpRun(): string {
   const d = fs.mkdtempSync(path.join(os.tmpdir(), "vra-run-"));
   for (const s of ["raw", "fetch", "calcs", "stages"]) fs.mkdirSync(path.join(d, s), { recursive: true });

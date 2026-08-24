@@ -4,18 +4,20 @@ import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
-import { chokePromptBlock, classifyText, loadChokeTable, normTitle, scanChokepoints, selectForPrompt, splitClauses, writeChokeFile, type ChokeHit } from "../src/chokepoint.ts";
-import { judgeChokepoint } from "../src/hardtest.ts";
+import { chokePromptBlock, classifyText, loadChokeTable, normTitle, scanChokepoints, selectForPrompt, splitClauses, writeChokeFile, type ChokeHit } from "../src/finance/chokepoint.ts";
+import { judgeChokepoint } from "../src/finance/hardtest.ts";
 import { applyAnnouncementInjection } from "../src/fetchrun.ts";
 import { writeJson } from "../src/fsutil.ts";
-import { EXTRA_TOPICS } from "../src/schemas.ts";
+import { extraTopics } from "../src/schemas.ts";
 
+
+import "../src/finance/register.ts";   // 测试文件也是入口:垂类包要先注册
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const table = loadChokeTable(repoRoot);
 
-test("分类表可加载;8 类各有 keywords 与 decision_hint;EXTRA_TOPICS.risk 含「卡口事件」", () => {
+test("分类表可加载;8 类各有 keywords 与 decision_hint;extraTopics().risk 含「卡口事件」", () => {
   assert.deepEqual(Object.keys(table.categories).sort(), ["供需", "减产停产", "收购合资", "涨价", "管制制裁", "认证导入", "订单合同", "扩产"].sort());
-  assert.ok(EXTRA_TOPICS.risk.includes("卡口事件"));
+  assert.ok(extraTopics().risk.includes("卡口事件"));
   const mk = (body: unknown) => { const r = fs.mkdtempSync(path.join(os.tmpdir(), "vra-cp-")); fs.mkdirSync(path.join(r, "datasources")); fs.writeFileSync(path.join(r, "datasources", "chokepoint_keywords.json"), JSON.stringify(body)); return r; };
   assert.throws(() => loadChokeTable(mk({ scan_fields: [], categories: [] })), /非法/);
   assert.throws(() => loadChokeTable(mk({ scan_fields: ["x"], categories: { a: { keywords: [], decision_hint: "h" } } })), /非法/);

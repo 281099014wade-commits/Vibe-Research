@@ -11,6 +11,9 @@ import fs from "node:fs";
 import { appendHookLog, contextMatchesCwd, readHookContext, readStdin } from "../src/hooks.ts";
 import { checkAgentTrace } from "../src/validator.ts";
 
+
+// **composition root**:钩子是独立子进程,也是一个入口 —— 垂类包要在这里注册
+import "../src/finance/register.ts";
 interface PreToolUseInput { cwd: string; tool_name: string; tool_input: Record<string, unknown>; hook_event_name?: string }
 
 const NETWORK_RE = /(^|[\s;&|(])(curl|wget|pip3?\s+install|python3?\s+-m\s+pip\s+install|git\s+(clone|fetch|pull|push)|nc|ssh|scp|rsync)\b/;

@@ -7,8 +7,8 @@
  */
 import fs from "node:fs";
 import path from "node:path";
-import { readJsonIfExists, writeJson } from "./fsutil.ts";
-import type { EndpointDef } from "./registry.ts";
+import { readJsonIfExists, writeJson } from "../fsutil.ts";
+import type { EndpointDef } from "../registry.ts";
 
 export interface IndustryTagDef { title: string; strong_keywords: string[]; weak_keywords?: string[]; sw_prefixes?: string[]; thermometers: string[]; guard: string }
 export interface IndustryTable { tags: Record<string, IndustryTagDef> }

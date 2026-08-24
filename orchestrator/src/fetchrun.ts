@@ -11,7 +11,7 @@ import path from "node:path";
 import { GATE_PATTERNS, fetchEnv, type RunConfig, type Scenario } from "./config.ts";
 import { fetchArgv } from "./registry.ts";
 import { listFiles, nowIso, readJsonIfExists, sha256File, writeJson } from "./fsutil.ts";
-import { applyThermometerHistory } from "./thermo_history.ts";
+import { applyThermometerHistory } from "./finance/thermo_history.ts";
 
 export interface LedgerEntry {
   script: string;

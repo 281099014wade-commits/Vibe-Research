@@ -5,34 +5,36 @@ import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
-import { CRITICAL_SCRIPTS, STAGES, STAGE_SCRIPTS, makeConfig } from "../src/config.ts";
+import { packCriticalScripts, stages, stageScripts, makeConfig } from "../src/config.ts";
 import { buildStagePlan, criticalScripts, endpointsById, fetchArgv, loadRegistry, planFileOf, regionOf } from "../src/registry.ts";
 import { loadRun, validateFetchIntegrity } from "../src/validator.ts";
 import { sha256File, writeJson } from "../src/fsutil.ts";
 
+
+import "../src/finance/register.ts";   // 测试文件也是入口:垂类包要先注册
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 
-test("注册表可读;core 计划与 Phase 0 STAGE_SCRIPTS 完全一致;关键端点一致", () => {
+test("注册表可读;core 计划与 Phase 0 stageScripts() 完全一致;关键端点一致", () => {
   const reg = loadRegistry(REPO);
   assert.ok(reg && reg.endpoints.length > 80, "注册表应已接入 80+ 端点");
-  assert.deepEqual(buildStagePlan(reg!, STAGES, { market: "SZ", scope: "core" }), STAGE_SCRIPTS);
-  assert.deepEqual(criticalScripts(reg!), CRITICAL_SCRIPTS);
+  assert.deepEqual(buildStagePlan(reg!, stages(), { market: "SZ", scope: "core" }), stageScripts());
+  assert.deepEqual(criticalScripts(reg!), packCriticalScripts());
 });
 
 test("full 计划:必需项不变,只增加可选端点;美股 / 港股端点不进 A 股计划;禁用端点排除", () => {
   const reg = loadRegistry(REPO)!;
-  const full = buildStagePlan(reg, STAGES, { market: "SZ", scope: "full" });
-  for (const s of STAGES) {
-    assert.deepEqual(full[s].required, STAGE_SCRIPTS[s].required, `${s} required 不得变`);
-    for (const id of STAGE_SCRIPTS[s].optional) assert.ok(full[s].optional.includes(id));
+  const full = buildStagePlan(reg, stages(), { market: "SZ", scope: "full" });
+  for (const s of stages()) {
+    assert.deepEqual(full[s].required, stageScripts()[s].required, `${s} required 不得变`);
+    for (const id of stageScripts()[s].optional) assert.ok(full[s].optional.includes(id));
   }
   assert.ok(full.profile.optional.includes("em_concept_blocks"));
   assert.ok(full.risk.optional.includes("cninfo_announcements"));
   const byId = endpointsById(reg);
-  for (const s of STAGES) for (const id of [...full[s].required, ...full[s].optional]) assert.ok(byId[id].market.includes("CN"), `${id} 不是 CN 端点却进了 A 股计划`);
+  for (const s of stages()) for (const id of [...full[s].required, ...full[s].optional]) assert.ok(byId[id].market.includes("CN"), `${id} 不是 CN 端点却进了 A 股计划`);
   const reg2 = { ...reg, endpoints: reg.endpoints.map((e) => (e.id === "em_concept_blocks" ? { ...e, enabled: false } : e)) };
-  assert.ok(!buildStagePlan(reg2, STAGES, { market: "SZ", scope: "full" }).profile.optional.includes("em_concept_blocks"));
-  const us = buildStagePlan(reg, STAGES, { market: "US", scope: "full" });
+  assert.ok(!buildStagePlan(reg2, stages(), { market: "SZ", scope: "full" }).profile.optional.includes("em_concept_blocks"));
+  const us = buildStagePlan(reg, stages(), { market: "US", scope: "full" });
   assert.deepEqual(us.profile.required, []);
   assert.equal(regionOf("SH"), "CN"); assert.equal(regionOf(""), "CN"); assert.equal(regionOf("us"), "US"); assert.equal(regionOf("HK"), "HK");
   assert.throws(() => regionOf("XX"), /未知市场/);
@@ -50,14 +52,14 @@ test("fetchArgv:legacy 走脚本自身;其余走 fetch_endpoint.py;symbol_kind=n
 test("makeConfig:默认 core(硬测试 / 旧行为);full 才接入注册表端点;无注册表的仓库回退常量", () => {
   const c1 = makeConfig({ symbol: "300308", market: "SZ", repoRoot: REPO, runId: "t-reg-1" });
   assert.equal(c1.endpointScope, "core");
-  assert.deepEqual(c1.stagePlan, STAGE_SCRIPTS);
+  assert.deepEqual(c1.stagePlan, stageScripts());
   assert.ok(c1.registryVersion);
   const c2 = makeConfig({ symbol: "300308", market: "SZ", repoRoot: REPO, runId: "t-reg-2", endpointScope: "full" });
-  assert.ok(c2.stagePlan.risk.optional.length > STAGE_SCRIPTS.risk.optional.length);
-  assert.deepEqual(c2.criticalScripts, CRITICAL_SCRIPTS);
+  assert.ok(c2.stagePlan.risk.optional.length > stageScripts().risk.optional.length);
+  assert.deepEqual(c2.criticalScripts, packCriticalScripts());
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "vra-noreg-"));
   const c3 = makeConfig({ symbol: "300308", market: "SZ", repoRoot: tmp, runId: "t-reg-3", endpointScope: "full" });
-  assert.deepEqual(c3.stagePlan, STAGE_SCRIPTS);
+  assert.deepEqual(c3.stagePlan, stageScripts());
   assert.equal(c3.registryVersion, null);
   assert.deepEqual(c3.endpoints, {});
 });
@@ -76,17 +78,17 @@ test("validator:raw 类端点的 market=CN 非 MARKET 证据豁免;US 全市场�
   put("em_stock_search", "CN", "苹果");
   put("finra_short_ranking", "US", "MARKET");
   put("tx_us_quote", "US", "AAPL");
-  const plan = planFileOf("full", "1.0.0", STAGE_SCRIPTS, CRITICAL_SCRIPTS, { em_stock_search: { id: "em_stock_search", module: "eastmoney", function: "stock_search", market: ["US", "HK"], symbol_kind: "raw" } });
+  const plan = planFileOf("full", "1.0.0", stageScripts(), packCriticalScripts(), { em_stock_search: { id: "em_stock_search", module: "eastmoney", function: "stock_search", market: ["US", "HK"], symbol_kind: "raw" } });
   // planFileOf 只收录计划内端点;这里直接构造 endpoints 映射写盘
   plan.endpoints = { em_stock_search: { module: "eastmoney", symbol_kind: "raw" } };
   writeJson(path.join(run, "fetch", "_plan.json"), plan);
   const view = loadRun(run, ledger as never);
-  assert.deepEqual(view.plan, STAGE_SCRIPTS);
+  assert.deepEqual(view.plan, stageScripts());
   assert.equal(view.endpoints.em_stock_search.symbol_kind, "raw");
   const r = validateFetchIntegrity(view);
   assert.deepEqual(r.errors.filter((e) => e.includes("market/symbol")), []);
   // 去掉 raw 豁免 → 该证据报错
-  const view2 = loadRun(run, ledger as never, { plan: STAGE_SCRIPTS, critical: CRITICAL_SCRIPTS, endpoints: {} });
+  const view2 = loadRun(run, ledger as never, { plan: stageScripts(), critical: packCriticalScripts(), endpoints: {} });
   assert.equal(validateFetchIntegrity(view2).errors.filter((e) => e.includes("market/symbol")).length, 1);
 });
 
@@ -113,7 +115,7 @@ test("validator:账本状态与信封 status 不一致 → 完整性错误;证�
   // 账本条目的产物被删除
   put("s_deleted", "ok", "ok", [ev("ev-aaaaa6")]);
   fs.rmSync(path.join(run, "fetch", "s_deleted.json"));
-  const r = validateFetchIntegrity(loadRun(run, ledger as never, { plan: STAGE_SCRIPTS, critical: CRITICAL_SCRIPTS, endpoints: {} }));
+  const r = validateFetchIntegrity(loadRun(run, ledger as never, { plan: stageScripts(), critical: packCriticalScripts(), endpoints: {} }));
   assert.equal(r.errors.filter((e) => e.includes("不一致") && e.includes("s_mismatch")).length, 1);
   assert.equal(r.errors.filter((e) => e.includes("s_selfbad") && e.includes("不自洽")).length, 1);
   assert.equal(r.errors.filter((e) => e.includes("s_deleted") && e.includes("已不存在")).length, 1);
@@ -131,7 +133,7 @@ test("validator:账本状态与信封 status 不一致 → 完整性错误;证�
   put("s_dir", "ok", "ok", [ev("ev-aaaab0")]);
   fs.rmSync(path.join(run, "fetch", "s_dir.json"));
   fs.mkdirSync(path.join(run, "fetch", "s_dir.json"));
-  const r2 = validateFetchIntegrity(loadRun(run, ledger as never, { plan: STAGE_SCRIPTS, critical: CRITICAL_SCRIPTS, endpoints: {} }));
+  const r2 = validateFetchIntegrity(loadRun(run, ledger as never, { plan: stageScripts(), critical: packCriticalScripts(), endpoints: {} }));
   assert.equal(r2.errors.filter((e) => e.includes("s_nofile") && e.includes("缺 file")).length, 1);
   assert.equal(r2.errors.filter((e) => e.includes("s_wrong") && e.includes("与脚本名不符")).length, 1);
   assert.equal(r2.errors.filter((e) => e.includes("s_escape") && e.includes("与脚本名不符")).length, 1);
@@ -159,7 +161,7 @@ test("validator:extra_findings 的 topic 枚举 / summary 上限 / id 必须存�
   put("em_stock_info", [ev("ev-e00001", "total_shares")]);
   const base = { stage: "profile", status: "complete", summary: "ok", evidence_ids: ["ev-aa0001", "ev-bb0001"], calculation_ids: [], gaps: [], quote_decision: "normal", quote_decision_reason: "r", moat_tag: "待补" };
   const stageFile = path.join(run, "stages", "profile.json");
-  const pi = { plan: STAGE_SCRIPTS, critical: CRITICAL_SCRIPTS, endpoints: {} };
+  const pi = { plan: stageScripts(), critical: packCriticalScripts(), endpoints: {} };
   assert.ok(validateStageOutput("profile", { ...base, extra_findings: [{ topic: "资金行为", summary: "x", evidence_ids: ["ev-aa0001"] }] }).length > 0, "非法 topic");
   assert.ok(validateStageOutput("profile", { ...base, extra_findings: [{ topic: "股本与市值", summary: "x".repeat(601), evidence_ids: ["ev-aa0001"] }] }).length > 0, "摘要超长");
   assert.ok(validateStageOutput("profile", { ...base, extra_findings: [{ topic: "股本与市值", summary: "x", evidence_ids: [] }] }).length > 0, "空 id");

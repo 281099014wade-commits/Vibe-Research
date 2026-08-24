@@ -6,13 +6,13 @@ import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 
-import { CRITICAL_SCRIPTS, HOME_PREFIXES, REPORT_SECTIONS, STAGE_CALCS, STAGE_SCRIPTS, fetchEnv,
+import { currentPack } from "./domain.ts";
+import { HOME_PREFIXES, packCriticalScripts, reportSections, stageCalcs, stageScripts, fetchEnv,
   type RunConfig, type RunStatus, type Stage, type StageStatus } from "./config.ts";
 import { loadLedgerFromDisk, type Ledger } from "./fetchrun.ts";
 import { PLAN_REL, type EndpointDef, type PlanFile, type StagePlan } from "./registry.ts";
 import { complianceGate, missingSections, referencedIds, reportStatusToken } from "./gate.ts";
 import { extraSectionErrors, requiredExtraSections } from "./report_sections.ts";
-import "./finance/register.ts";   // 注册金融包的词表(Core + DomainPack 边界的第一块砖)
 import { checkNumberFidelity, quotedHistory } from "./number_fidelity.ts";
 import { resultProjection, type ResultProjectionItem } from "./calc_projection.ts";
 
@@ -69,8 +69,8 @@ export interface PlanInfo { plan: StagePlan<Stage>; critical: string[]; endpoint
 
 function planFromDisk(runDir: string): PlanInfo {
   const pf = readJsonIfExists<PlanFile>(path.join(runDir, PLAN_REL));
-  if (pf?.stage_plan) return { plan: pf.stage_plan as StagePlan<Stage>, critical: pf.critical ?? CRITICAL_SCRIPTS, endpoints: pf.endpoints ?? {} };
-  return { plan: STAGE_SCRIPTS, critical: CRITICAL_SCRIPTS, endpoints: {} };
+  if (pf?.stage_plan) return { plan: pf.stage_plan as StagePlan<Stage>, critical: pf.critical ?? packCriticalScripts(), endpoints: pf.endpoints ?? {} };
+  return { plan: stageScripts(), critical: packCriticalScripts(), endpoints: {} };
 }
 
 export function loadRun(runDir: string, ledger?: Ledger, planInfo?: PlanInfo): RunView {
@@ -148,10 +148,11 @@ export function validateFetchIntegrity(run: RunView): ValidationResult {
     if (se.length) errors.push(`fetch/${script}.json 不符契约:${se.slice(0, 3).join("; ")}`);
     const rawKind = run.endpoints[script]?.symbol_kind === "raw";
     for (const e of env.evidence ?? []) {
-      // 全市场证据:market 为区域码(CN / US / HK)且 symbol=MARKET,二者必须同真同假;raw 类端点(指数 / 关键词 / 期权标的)豁免
-      const regionCode = e.market === "CN" || e.market === "US" || e.market === "HK";
-      if (e.symbol === "MARKET" && !regionCode) errors.push(`${e.id} market/symbol 不匹配:全市场证据(symbol=MARKET)的 market 须为 CN|US|HK`);
-      if (e.market === "CN" && e.symbol !== "MARKET" && !rawKind) errors.push(`${e.id} market/symbol 不匹配:A 股全市场证据须 market=CN 且 symbol=MARKET(个股须 SH|SZ|BJ)`);
+      // 全市场证据:market 为区域码(CN / US / HK)且 symbol=MARKET,二者必须同真同假;raw 类端点(指数 / 关键词 / 期权主体)豁免
+      // 两条**不同**的规则,别合并:哪些 market **可以**带 MARKET(marketWideCodes),
+      // 与哪些 market **必须**是 MARKET(marketWideOnlyCodes,因为该市场的个体用别的代码)。
+      if (e.symbol === "MARKET" && !marketWide().includes(e.market)) errors.push(`${e.id} market/symbol 不匹配:全市场证据(symbol=MARKET)的 market 须为 ${marketWide().join("|")}`);
+      if (marketWideOnly().includes(e.market) && e.symbol !== "MARKET" && !rawKind) errors.push(`${e.id} market/symbol 不匹配:market=${e.market} 只用于全市场证据,须 symbol=MARKET`);
       if (!e.raw_ref && e.source !== "injected") errors.push(`${e.id} 缺 raw_ref:每条证据必须指向本次 raw/ 内的原始响应(AGENTS.md §4 / §5);硬测试注入证据除外`);
       if (e.raw_ref) {
         const rawRoot = path.resolve(run.runDir, "raw");
@@ -167,33 +168,21 @@ export function validateFetchIntegrity(run: RunView): ValidationResult {
 
 /** 确定性报价判定(SOP §2),不信任 agent 自填 */
 export type QuoteDecision = "normal" | "pre_open" | "stale" | "unknown_unverified" | "missing";
+/**
+ * 确定性报价判定 —— **规则本身由垂类包提供**(`DomainPack.quoteDecision`)。
+ *
+ * "什么叫数据陈旧"是彻头彻尾的垂类问题 —— 判据随垂类完全不同;
+ * 换个垂类(比如餐饮的当日营业数据)判据完全不同。Core 只负责**在该判的时候去问包**,
+ * 并把结果并进运行状态(见 `deriveStageStatus` / `orchestrate.ts`)。
+ */
 export function deriveQuoteDecision(run: RunView): { decision: QuoteDecision; reason: string } {
-  const q = run.fetch["fetch_quote"];
-  const cal = run.fetch["fetch_trade_calendar"];
-  if (!q || q.status === "failed") return { decision: "missing", reason: "fetch_quote 缺失或失败" };
-  if (!cal || cal.status === "failed") return { decision: "unknown_unverified", reason: "缺少交易日历,无法判定报价时效" };
-  const qx = q.extra as Record<string, unknown>;
-  const cx = cal.extra as Record<string, unknown>;
-  const quoteDate = String(qx.quote_date ?? "");
-  const ref = String(cx.reference_quote_day ?? "");
-  const last = String(cx.last_trading_day ?? "");
-  const phase = String(cx.session_phase ?? "");
-  const stale = qx.is_stale;
-  const preOpenOk = phase === "pre_open" && (quoteDate === ref || quoteDate === last);
-  if (!quoteDate || !ref) return { decision: "unknown_unverified", reason: "缺 quote_date / reference_quote_day" };
-  if (quoteDate < ref) return { decision: "stale", reason: `quote_date ${quoteDate} < reference_quote_day ${ref}:个股停牌或数据陈旧` };
-  if (quoteDate > ref && !preOpenOk) return { decision: "stale", reason: `quote_date ${quoteDate} 晚于参考日 ${ref} 且非盘前集合竞价:数据异常` };
-  if (stale === true) {
-    if (preOpenOk) return { decision: "pre_open", reason: `盘前(session_phase=pre_open)且 quote_date ${quoteDate} 吻合,按昨收继续` };
-    return { decision: "stale", reason: "成交额 0 且现价 == 昨收,且非盘前:停牌 / 废码" };
-  }
-  if (stale === "unknown") {
-    const k = run.fetch["fetch_kline"];
-    const kx = (k?.extra ?? {}) as Record<string, unknown>;
-    if (k && k.status !== "failed" && String(kx.end ?? "") === ref) return { decision: "normal", reason: "is_stale=unknown,K 线最新日期 == 参考日,二次验证通过" };
-    return { decision: "unknown_unverified", reason: "is_stale=unknown 且无法用 K 线二次验证" };
-  }
-  return { decision: "normal", reason: `quote_date ${quoteDate} == reference_quote_day ${ref},is_stale=false` };
+  // 包的返回类型是结构化的 { decision: string };这里收窄回 Core 的联合类型。
+  // 包给出未知取值时按"无法核实"处理,而不是让一个野字符串流进状态机。
+  const r = currentPack().quoteDecision(run);
+  const known: QuoteDecision[] = ["normal", "pre_open", "stale", "unknown_unverified", "missing"];
+  return known.includes(r.decision as QuoteDecision)
+    ? { decision: r.decision as QuoteDecision, reason: r.reason }
+    : { decision: "unknown_unverified", reason: `垂类包给出未知的报价判定 ${JSON.stringify(r.decision)}:${r.reason}` };
 }
 
 /** 阶段校验(同步、纯文件) */
@@ -239,10 +228,10 @@ export function validateStage(stage: Stage, run: RunView): ValidationResult {
   // 3. 必需 calc:该阶段 calculation_ids 中有该函数的记录,或 gaps 以 operation 精确说明
   const stageCalcFns = new Set(run.calcs.filter((c) => c.record && so.calculation_ids?.includes(c.record.calculation_id ?? "")).map((c) => c.record!.function));
   const gapOps = new Set((so.gaps ?? []).map((g) => g.operation));
-  for (const fn of STAGE_CALCS[stage]) {
+  for (const fn of stageCalcs(stage)) {
     if (!stageCalcFns.has(fn) && !gapOps.has(fn)) errors.push(`阶段 ${stage} 缺少 calc ${fn}:calculation_ids 里没有该函数的记录,gaps 也没有 operation=${fn}`);
   }
-  if ((so.gaps ?? []).length && so.status === "complete" && (so.gaps ?? []).some((g) => STAGE_CALCS[stage].includes(g.operation) || scripts.required.includes(g.operation)))
+  if ((so.gaps ?? []).length && so.status === "complete" && (so.gaps ?? []).some((g) => stageCalcs(stage).includes(g.operation) || scripts.required.includes(g.operation)))
     errors.push(`有必需项缺口却把阶段标为 complete`);
 
   // 4. calc 记录契约与引用
@@ -287,13 +276,22 @@ export function validateStage(stage: Stage, run: RunView): ValidationResult {
 }
 
 /**
- * 语义槽位 v2:验证"输入选对了"——引用对的证据字段 / 期间、对的上游计算(按口径角色:营收 / 归母 / 扣非),
+ * 语义槽位 v2:验证"输入选对了"——引用对的证据字段 / 期间、对的上游计算(按口径角色,角色由垂类包定义),
  * 且实参值 == 所引用证据值(单位参数 == 证据单位)、下游实参 == 上游计算 output.value(单位 == output.unit)。
  */
-export type Role = "revenue_cum" | "net_profit_parent_cum" | "net_profit_deducted_cum";
-const ROLES: Role[] = ["revenue_cum", "net_profit_parent_cum", "net_profit_deducted_cum"];
+/**
+ * 口径角色。**具体有哪些角色由垂类包定义**(`DomainPack.roles`),Core 只知道"角色是个字符串"。
+ * 与阶段名同理:退化成 `string` 换来可插拔,代价由注册期校验补上。
+ */
+export type Role = string;
+/** 口径角色**由垂类包提供**(`DomainPack.roles`) */
+const rolesOf = (): readonly string[] => currentPack().roles;
+/** 哪些 market 代表"全市场"(此时 symbol 必须是 MARKET)—— 由垂类包提供 */
+const marketWide = (): readonly string[] => currentPack().evidence.marketWideCodes;
+/** 哪些 market **只**用于全市场证据(该市场的个体用别的代码)—— 由垂类包提供 */
+const marketWideOnly = (): readonly string[] => currentPack().evidence.marketWideOnlyCodes;
 type Fy = "T" | "T+2" | "T+years";
-interface Slot {
+export interface Slot {
   fn: string;
   /** inputs_refs 中必须含这些 field 的 evidence(每个至少一条) */
   evidenceFields?: string[];
@@ -313,55 +311,26 @@ interface Slot {
   distinctBy?: "field";
   requiredGroups?: string[];
 }
-const SLOTS: Record<string, Slot[]> = {
-  financials: [
-    { fn: "quarterize", distinctBy: "field", requiredGroups: [...ROLES] },
-    { fn: "latest_quarter", upstream: [{ fn: "quarterize" }], coverRoles: ["net_profit_deducted_cum"] },
-    { fn: "ttm_sum", upstream: [{ fn: "quarterize" }], coverRoles: ["net_profit_parent_cum"] },
-    { fn: "ttm_yoy", upstream: [{ fn: "quarterize" }], coverRoles: ["net_profit_parent_cum"] },
-    { fn: "qoq", upstream: [{ fn: "quarterize" }], coverRoles: ["net_profit_deducted_cum"] },
-  ],
-  estimates: [
-    { fn: "forward_cagr", evidenceFields: ["eps_consensus_mean"], constArgs: { years: 2 },
-      bind: [{ arg: "eps_t", field: "eps_consensus_mean", fy: "T" }, { arg: "eps_t_plus_n", field: "eps_consensus_mean", fy: "T+years" }] },
-    { fn: "consensus_dispersion", evidenceFields: ["eps_consensus_min", "eps_consensus_mean", "eps_consensus_max"],
-      bind: [{ arg: "low", field: "eps_consensus_min", fy: "T+2" }, { arg: "mean", field: "eps_consensus_mean", fy: "T+2" }, { arg: "high", field: "eps_consensus_max", fy: "T+2" }],
-      samePeriod: { fields: ["eps_consensus_min", "eps_consensus_mean", "eps_consensus_max"], fy: "T+2" } },
-  ],
-  valuation: [
-    { fn: "pe_deducted_annualized", evidenceFields: ["total_market_cap"], upstream: [{ fn: "latest_quarter", role: "net_profit_deducted_cum" }],
-      bind: [{ arg: "total_market_cap", field: "total_market_cap", unitArg: "cap_unit" }],
-      bindUpstream: [{ arg: "latest_quarter_deducted_profit", fn: "latest_quarter", role: "net_profit_deducted_cum", unitArg: "profit_unit" }] },
-    { fn: "forward_pe", evidenceFields: ["price", "eps_consensus_mean"], bind: [{ arg: "price", field: "price" }, { arg: "eps_forecast", field: "eps_consensus_mean", fy: "T" }] },
-    { fn: "pe_ttm_from_parts", evidenceFields: ["total_market_cap"], upstream: [{ fn: "ttm_sum", role: "net_profit_parent_cum" }],
-      bind: [{ arg: "total_market_cap", field: "total_market_cap", unitArg: "cap_unit" }],
-      bindUpstream: [{ arg: "ttm_profit", fn: "ttm_sum", role: "net_profit_parent_cum", unitArg: "profit_unit" }] },
-    { fn: "percentile_rank", evidenceFields: ["pe_ttm_traded_history_points", "pe_ttm"], bind: [{ arg: "current", field: "pe_ttm" }] },
-    { fn: "peg", upstream: [{ fn: "pe_deducted_annualized" }, { fn: "forward_cagr" }], bindUpstream: [{ arg: "pe", fn: "pe_deducted_annualized" }, { arg: "cagr", fn: "forward_cagr" }] },
-    { fn: "pe_digestion_scenarios", upstream: [{ fn: "pe_deducted_annualized" }, { fn: "forward_cagr" }], bindUpstream: [{ arg: "pe", fn: "pe_deducted_annualized" }, { arg: "cagr", fn: "forward_cagr" }] },
-    { fn: "forward_vs_ttm_judgement", upstream: [{ fn: "forward_cagr" }, { fn: "ttm_yoy", role: "net_profit_parent_cum" }],
-      bindUpstream: [{ arg: "forward_cagr_value", fn: "forward_cagr" }, { arg: "ttm_yoy_value", fn: "ttm_yoy", role: "net_profit_parent_cum" }] },
-  ],
-};
+/** 语义槽位表**由垂类包提供**(`DomainPack.semanticSlots`);Core 只保留"怎么走这张表"的机制 */
+const slotsOf = (stage: string): Slot[] => (currentPack().semanticSlots[stage] ?? []) as Slot[];
 
 /** 口径角色:quarterize 看其引用证据的唯一 field;其他函数沿上游计算递归(必须唯一) */
 export function roleOf(c: CalcRecord, run: RunView, depth = 0): Role | null {
   if (depth > 8) return null;
   if (c.function === "quarterize") {
     const fields = [...new Set(refsEvidence(c, run).map((e) => e.field))];
-    return fields.length === 1 && (ROLES as string[]).includes(fields[0]) ? (fields[0] as Role) : null;
+    return fields.length === 1 && rolesOf().includes(fields[0]) ? (fields[0] as Role) : null;
   }
   const roles = [...new Set(refsCalcs(c, run).map((u) => roleOf(u, run, depth + 1)).filter((r): r is Role => !!r))];
   return roles.length === 1 ? roles[0] : null;
 }
 
-/** 当前财年 T(fetch_estimates.extra.current_fy,形如 FY2026;缺失则取 eps_consensus_mean 最早财年) */
+/**
+ * 基准期(语义槽位里 `fy: "T"` 的那个 T)。**怎么定由垂类包说了算**
+ * (`DomainPack.baselinePeriod`)—— 金融看当前财年,别的垂类可能是别的口径。
+ */
 export function fiscalT(run: RunView): number | null {
-  const raw = (run.fetch["fetch_estimates"]?.extra as Record<string, unknown> | undefined)?.current_fy;
-  const m = /(\d{4})/.exec(String(raw ?? ""));
-  if (m) return Number(m[1]);
-  const ys = [...run.evidence.values()].filter((e) => e.field === "eps_consensus_mean").map((e) => Number((/(\d{4})/.exec(e.period) ?? [])[1])).filter((n) => !Number.isNaN(n));
-  return ys.length ? Math.min(...ys) : null;
+  return currentPack().baselinePeriod(run);
 }
 const fyLabel = (n: number) => `FY${n}`;
 function resolveFy(fy: Fy | undefined, T: number | null, inputs: Record<string, unknown>): string | null {
@@ -374,7 +343,7 @@ function resolveFy(fy: Fy | undefined, T: number | null, inputs: Record<string, 
 
 export function validateCalcSlots(stage: Stage, run: RunView, so: StageOutput): ValidationResult {
   const errors: string[] = [];
-  const slots = SLOTS[stage] ?? [];
+  const slots = slotsOf(stage);
   const stageCalcs = (so.calculation_ids ?? []).map((id) => run.calcById.get(id)).filter((c): c is CalcRecord => !!c);
   const gapOps = new Set((so.gaps ?? []).map((g) => g.operation));
   const T = fiscalT(run);
@@ -446,7 +415,7 @@ function valuesEqual(a: unknown, b: unknown): boolean {
 export function validateReport(run: RunView, expectedStatus?: RunStatus): ValidationResult {
   const errors: string[] = [];
   if (!run.report) return ok(["缺少 report.md"]);
-  const miss = missingSections(run.report, REPORT_SECTIONS);
+  const miss = missingSections(run.report, [...reportSections()]);
   if (miss.length) errors.push(`report.md 缺少章节:${miss.join(" / ")}`);
   // 扩展章节:risk 阶段落了哪些 topic 是既成事实 → 报告必须写出对应章节并引其证据。
   // 原来这条纪律只在提示词里,实测会被静默丢掉(见 report_sections.ts 顶部)。
@@ -720,7 +689,7 @@ export function deriveStageStatus(stage: Stage, validatorOk: boolean, turnFailed
   if (requiredFailed) return "incomplete";
   if (so?.status === "skipped") return "skipped";
   if (so?.status === "incomplete") return "incomplete";
-  if ((so?.gaps ?? []).some((g) => STAGE_CALCS[stage].includes(g.operation))) return "incomplete";
+  if ((so?.gaps ?? []).some((g) => stageCalcs(stage).includes(g.operation))) return "incomplete";
   return "complete";
 }
 

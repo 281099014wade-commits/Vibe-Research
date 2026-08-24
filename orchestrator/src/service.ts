@@ -9,12 +9,16 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { FETCH_ENV_KEYS, RUN_ID_RE, STAGES, fetchEnv } from "./config.ts";
+import { FETCH_ENV_KEYS, RUN_ID_RE, stages as packStages, fetchEnv } from "./config.ts";
 import { readJsonIfExists } from "./fsutil.ts";
 import { recallKnowledge, type KnowledgeRecall } from "./knowledge.ts";
 import { loadProductConfig } from "./productConfig.ts";
 import { REGISTRY_REL, loadRegistry, type EndpointDef } from "./registry.ts";
 
+
+// **composition root**:垂类包在入口注册,Core 模块一律不 import 它
+// (Core 消费者靠副作用 import 硬接某个包,换垂类时靠入口 import 恢复不了 —— ESM 会缓存)。
+import "./finance/register.ts";
 export interface ServiceContext { repoRoot: string; dataRoot: string; python: string; node: string; providerEnvKey: string | null }
 
 export function repoRootFromHere(): string {
@@ -34,7 +38,7 @@ export class ServiceError extends Error {
   constructor(code: string, message: string) { super(message); this.code = code; }
 }
 
-const SYMBOL_RE = /^[A-Za-z0-9.\-]{1,12}$/;       // A 股 6 位 / 美股 ticker / 港股 5 位 / 带前缀写法
+const SYMBOL_RE = /^[A-Za-z0-9.\-]{1,12}$/;       // 主体代码:数字 / 字母 / 点 / 连字符,长度 1-12
 const SYMBOL_FREE_RE = /^[^\s\/\\]{1,40}$/;       // raw 类端点(关键词 / 指数)允许中文,但不允许路径分隔符与空白
 const MARKETS = new Set(["", "SH", "SZ", "BJ", "CN", "US", "HK"]);
 const SESSION_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
@@ -200,7 +204,7 @@ export function startResearch(ctx: ServiceContext, req: { symbol: string; market
   const symbol = assertSymbol(req.symbol, "cn6");
   const market = assertMarket(req.market);
   const stages = Array.isArray(req.stages) ? req.stages.map(String) : [];
-  for (const s of stages) if (!(STAGES as readonly string[]).includes(s)) throw new ServiceError("bad_stage", `未知阶段 ${show(s)}`);
+  for (const s of stages) if (!packStages().includes(s)) throw new ServiceError("bad_stage", `未知阶段 ${show(s)}`);
   const scope = assertScope(req.endpoints);
   const kn = assertKnowledgeFlag(req.knowledge);
   const runId = req.run_id !== undefined ? assertRunId(req.run_id) : `${new Date().toISOString().replace(/[-:T]/g, "").slice(0, 15)}-${symbol}-svc`;

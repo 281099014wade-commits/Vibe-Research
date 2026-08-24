@@ -15,15 +15,13 @@
  * - 不打印本机绝对路径(事件里带路径的字段一律不取),与事件流本身的脱敏口径一致。
  * - 不碰 stdout:批处理 / MCP / HTTP API 都靠 stdout 的 JSON,**加一个字节都可能破坏调用方**。
  */
+import { currentPack } from "./domain.ts";
 import fs from "node:fs";
 import path from "node:path";
 import { redact } from "./service.ts";
 
-/** 阶段的中文名。同时是**白名单** —— 只有这些 stage 允许被拼进文件路径(见 stageSummary) */
-const STAGE_LABEL: Record<string, string> = {
-  profile: "公司画像", financials: "财务", estimates: "一致预期",
-  valuation: "估值", risk: "风险与线索", report: "成稿",
-};
+/** 阶段显示名**由垂类包提供**。同时是**白名单** —— 只有这些 stage 允许被拼进文件路径(见 stageSummary) */
+const stageLabels = (): Record<string, string> => currentPack().stageLabels as Record<string, string>;
 
 /** stages/<stage>.json 读取上限:超过就当没有 summary。显示层不为一个坏文件把事件循环卡住(Codex progress-r1 P2) */
 const MAX_STAGE_FILE_BYTES = 2 * 1024 * 1024;
@@ -49,7 +47,7 @@ export function stripPaths(text: string): string {
   // 所以这里改成扫描器,把判据写成一条能讲清楚的规则:
   //   **遇到全角标点时,只有它后面还会出现路径分隔符,才认为路径还在继续。**
   //   `conf.json)损坏` -> `)` 之后没有 / -> 路径到此为止(不吞中文);
-  //   `客户(机密)/财报.json` -> `(` 之后还有 / -> 继续(不泄露)。
+  //   `客户(机密)/报表.json` -> `(` 之后还有 / -> 继续(不泄露)。
   // 跨空白同理:只有下一个词里带分隔符才接着吃,所以 "<路径> 不存在" 不会被过度吞。
   const src = String(text ?? "");
   // 盘符两种写法都要认:C:\ 与 C:/(Codex progress-r10)
@@ -152,7 +150,7 @@ export class ProgressReporter {
   private stageSummary(stage: string): string | null {
     // 🔴 stage 来自事件 payload,而 runner 构造事件时 `...payload` 在固定字段之后 —— **payload 能覆盖 stage**。
     //    所以这里只认白名单阶段名,并再做一次目录包含校验(Codex progress-r1 P1:否则 "../../x" 可读到别处的 JSON)。
-    if (!Object.prototype.hasOwnProperty.call(STAGE_LABEL, stage)) return null;
+    if (!Object.prototype.hasOwnProperty.call(stageLabels(), stage)) return null;
     try {
       const dir = path.resolve(this.runDir, "stages");
       // 目录本身是链接时,下面对 f 与 dir 各做一次 realpath 会**双双解析到同一个外部目录**而放行
@@ -186,7 +184,7 @@ export class ProgressReporter {
     const type = s(ev.type);
     const stage = s(ev.stage);
     // 非白名单 stage 同样会进多条输出 —— 必须过 clip,否则 payload 覆盖 stage 就能注入控制字符 / 换行(Codex progress-r2 P1)
-    const label = STAGE_LABEL[stage] ?? clip(stage, 40);
+    const label = stageLabels()[stage] ?? clip(stage, 40);
     switch (type) {
       case "research.started":
         this.line(`开始研究 ${clip(s(ev.symbol), 20)}.${clip(s(ev.market), 8)} · 共 ${Array.isArray(ev.stages) ? ev.stages.length : "?"} 个阶段`);
@@ -198,7 +196,7 @@ export class ProgressReporter {
         // 取数在每个阶段开头几秒内成批完成 —— 逐条打会刷屏,攒到 turn.prompt 时汇总成一行。
         // 这一行是**用户在第一分钟里唯一能看到的实质内容**(实测 +5 秒),所以失败的源要点名。
         // 只给白名单阶段建批次:否则 payload 里塞任意 stage 就能让这个 Map 无界增长(Codex progress-r2 P2)
-        if (!Object.prototype.hasOwnProperty.call(STAGE_LABEL, stage)) return;
+        if (!Object.prototype.hasOwnProperty.call(stageLabels(), stage)) return;
         const b = this.batches.get(stage) ?? { ok: 0, badCount: 0, bad: [], announced: false };
         if (b.announced) { b.ok = 0; b.badCount = 0; b.bad = []; b.announced = false; }   // 已播报过 → 补跑的新一批,从零开始
         if (s(ev.status) === "ok") b.ok += 1;
