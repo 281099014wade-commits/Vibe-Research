@@ -123,17 +123,37 @@ def test_gpu_rent_failure_modes(monkeypatch):
 
 
 def test_registry_endpoints_and_tag_table():
+    """标签表与注册表**双向**一致:每个 tag 的 thermometers 都是真端点、端点的 industry_tags 必须回指该 tag;
+    每个端点的 module / mapper_module 都能导入且参数对得上(端点可以来自不同源模块,如大宗走 commodity)。"""
+    import importlib
+    import inspect
     reg = json.load(open(os.path.join(REPO, "datasources", "registry.json"), encoding="utf-8"))
     eps = {e["id"]: e for e in reg["endpoints"]}
-    for i in ("tw_monthly_revenue", "gpu_rent_thermometer"):
-        e = eps[i]
-        assert e["layer"] == "13 产业温度计" and e["industry_tags"] == ["ai_compute"] and e["stages"] == {"risk": "optional"} and e["symbol_kind"] == "none"
-        assert e["mapper_module"] == "mappers_industry" and hasattr(mappers_industry, e["mapper"]) and hasattr(industry, e["function"])
-        import inspect
-        params = inspect.signature(getattr(industry, e["function"])).parameters
-        assert all(k in params for k in e.get("args", {})), f"{i} 注册表参数必须被函数接受"
     tags = json.load(open(os.path.join(REPO, "datasources", "industry_tags.json"), encoding="utf-8"))["tags"]
-    assert set(tags["ai_compute"]["thermometers"]) == {"tw_monthly_revenue", "gpu_rent_thermometer"} and "折旧参考线" in tags["ai_compute"]["guard"]
+    seen = set()
+    for tag, td in tags.items():
+        assert td["thermometers"], f"{tag} 没有温度计"
+        for i in td["thermometers"]:
+            e = eps[i]
+            seen.add(i)
+            assert e["layer"] == "13 产业温度计" and e["stages"] == {"risk": "optional"} and e["symbol_kind"] == "none"
+            assert tag in e["industry_tags"], f"{i} 的 industry_tags 必须回指 {tag}(单向声明会让门控与提示词对不上)"
+            mod = importlib.import_module(f"sources.{e['module']}")
+            mappers = importlib.import_module(f"sources.{e['mapper_module']}")
+            assert hasattr(mod, e["function"]) and hasattr(mappers, e["mapper"])
+            params = inspect.signature(getattr(mod, e["function"])).parameters
+            assert all(k in params for k in e.get("args", {})), f"{i} 注册表参数必须被函数接受"
+    # 反向:**第 13 层**带 industry_tags 的端点必须被某个 tag 的 thermometers 收录(否则取了数、提示词却不列它 → 没人写进报告);
+    # 其它层(如第 15 层数据日历的 us_anchor_earnings)可以借用同一套产业门控但不算温度计,由各自的提示词条目介绍。
+    tagged13 = {e["id"] for e in reg["endpoints"] if e.get("industry_tags") and e.get("layer") == "13 产业温度计"}
+    assert tagged13 == seen, f"第 13 层端点与标签表不一致:仅端点声明 {tagged13 - seen} / 仅标签表列出 {seen - tagged13}"
+    other = [e["id"] for e in reg["endpoints"] if e.get("industry_tags") and e.get("layer") != "13 产业温度计"]
+    for i in other:
+        assert all(t in tags for t in eps[i]["industry_tags"]), f"{i} 借用了不存在的产业标签"
+    assert set(tags["ai_compute"]["thermometers"]) == {"tw_monthly_revenue", "gpu_rent_thermometer", "cn_commodity_futures"}
+    assert "折旧参考线" in tags["ai_compute"]["guard"] and "采购价" in tags["ai_compute"]["guard"]
+    assert set(tags["storage_memory"]["thermometers"]) == {"dram_spot_thermo"}
+    assert "不是 HBM 价格" in tags["storage_memory"]["guard"] and "社区" in tags["storage_memory"]["guard"]
 
 
 # ---------- Codex industry-r1 补的用例 ----------

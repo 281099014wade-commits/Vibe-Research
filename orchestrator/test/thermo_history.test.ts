@@ -452,3 +452,21 @@ test("paragraphsOf:空行分段;相邻列表项各自成段;不带标记的续�
   // 无首尾竖线的 GFM 表格:分隔行上面是表头,表头与每个数据行各自成段,不能借下一段护栏(Codex thermo-r3)
   assert.deepEqual(paragraphsOf(["前文", "指标 | 数值 | 证据", "--- | --- | ---", "台光 | 192.07 | [ev-tw]", "说明 | 必须与金像电差分后归因 |", "", "后文"]), ["前文", "指标 | 数值 | 证据", "台光 | 192.07 | [ev-tw]", "说明 | 必须与金像电差分后归因 |", "后文"]);
 });
+
+test("claimTokens:时间窗口标签(约 30 日涨跌 / 7 日均价)不算数字主张,真实数值仍算", async () => {
+  const { claimTokens } = await import("../src/hardtest.ts");
+  const t1 = claimTokens("约30日涨跌分别为 1.61%、2.89% [ev-a1a1a1a1a1a1]").map((x) => x.n);
+  assert.deepEqual(t1, [1.61, 2.89], "窗口里的 30 不该被当主张");
+  assert.deepEqual(claimTokens("7 日均价 54.10 美元").map((x) => x.n), [54.1]);
+  assert.deepEqual(claimTokens("30 日回撤 -12.5%").map((x) => x.n), [-12.5]);
+  // 不是窗口标签的同形数字仍要算:"30 元" / "30 倍" / 独立的 107520
+  assert.deepEqual(claimTokens("沪铜 107520 元/吨").map((x) => x.n), [107520]);
+  assert.deepEqual(claimTokens("PE 30 倍").map((x) => x.n), [30]);
+  // 期限主张不是窗口标签,不能被剥(Codex commodity-r2)
+  assert.deepEqual(claimTokens("回款周期约30天").map((x) => x.n), [30]);
+  assert.deepEqual(claimTokens("交付周期约 45 日").map((x) => x.n), [45]);
+  // 6 位数带数量单位仍是真主张
+  assert.deepEqual(claimTokens("出货量 123456 台").map((x) => x.n), [123456]);
+  assert.deepEqual(claimTokens("持股 123456 股").map((x) => x.n), [123456]);
+  assert.deepEqual(claimTokens("代码 300308 的公司").map((x) => x.n), [], "纯 6 位代码仍当代码剥掉");
+});

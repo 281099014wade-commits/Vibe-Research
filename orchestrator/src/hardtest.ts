@@ -34,6 +34,14 @@ interface EvidenceItem { id: string; symbol: string; market: string; field: stri
 interface CalcRecord { calculation_id: string; function: string; inputs: Record<string, unknown> | null; inputs_refs: { ref_type: string; ref_id: string }[]; output: { value: unknown; unit: string; status: string; details: Record<string, unknown> } }
 interface StageRec { stage: string; status: string; attempts: number; errors: string[] }
 const readEvidence = (d: string) => readJsonIfExists<EvidenceItem[]>(rel(d, "evidence.json")) ?? [];
+/** 本次运行的标的代码(manifest 优先,回退到证据里出现最多的 6 位 symbol):用于把正文里裸写的自家代码当代码而非数字主张 */
+const runSymbol = (d: string, ev?: EvidenceItem[]): string | undefined => {
+  const m = readJsonIfExists<{ symbol?: string }>(rel(d, "manifest.json"));
+  if (m?.symbol && /^\d{6}$/.test(m.symbol)) return m.symbol;
+  const counts = new Map<string, number>();
+  for (const e of ev ?? []) if (/^\d{6}$/.test(String(e.symbol))) counts.set(String(e.symbol), (counts.get(String(e.symbol)) ?? 0) + 1);
+  return [...counts.entries()].sort((a, b) => b[1] - a[1])[0]?.[0];
+};
 const readCalcs = (d: string) => readJsonIfExists<CalcRecord[]>(rel(d, "calculations.json")) ?? [];
 const readManifest = (d: string) => readJsonIfExists<Manifest & { stages: StageRec[] }>(rel(d, "manifest.json"));
 const readStage = (d: string, stage: string) => readJsonIfExists<Record<string, unknown>>(rel(d, "stages", `${stage}.json`));
@@ -197,7 +205,7 @@ function numberBound(token: number, pool: number[]): boolean {
   return pool.some((v) => SCALES.some((s) => { const w = v * s; if (!Number.isFinite(w)) return false; const tol = Math.max(Math.abs(token) * 2e-3, 5e-3); return Math.abs(w - token) <= tol || Math.abs(Math.round(w * 100) / 100 - token) <= tol; }));
 }
 /** 一行里需要证据支撑的数字:排除日期 / 年份 / FY / 代码 / id 内数字 / 序号 / ×倍数记号 / 小整数计数 */
-export function claimNumbers(line: string): number[] { return claimTokens(line).map((t) => t.n); }
+export function claimNumbers(line: string, symbol?: string): number[] { return claimTokens(line, symbol).map((t) => t.n); }
 /** 数字及其书写形态(含紧随的单位字符,用于在字符串证据——如公告标题——里做原文匹配) */
 // 金额词与数值之间允许"约 / 为 / 达 / 超过 / 接近 / 近 / 逾 / 的 / 总计 / 合计 / 规模"等修饰(Codex r3d:`总市值约1.6T`)
 const MONEY_BEFORE_RE = /(市值|营收|收入|金额|利润|资产|负债|现金|估值|USD|RMB|CNY|HKD|EUR|[$¥€£￥])(?:约|为|达|超过|接近|近|逾|的|总计|合计|规模|\s)*$/i;
@@ -212,7 +220,7 @@ export function stripSpeedLabels(s: string): string {
     return SPEED_CTX_RE.test(before) || SPEED_CTX_RE.test(after) ? " " : m;
   });
 }
-export function claimTokens(line: string): { n: number; raw: string }[] {
+export function claimTokens(line: string, symbol?: string): { n: number; raw: string }[] {
   // 先剥离 id、日期、年份 / FY、6 位代码、字母前缀代码(C39)、序号 / 计数 / ×N / 季度标记 / 情景锚点记号(30x);年份与代码只在独立数字时剥离,不能咬进 19826269128.43 这类长数字
   // 先剥 URL(链接里的数字不是主张)与速率标签(1.6T / 800G / 3.2T / 400Gbps 是产品类别名,不是数字主张);
   // 但金额语境不剥:"$1.6T" / "1.6T 美元" / "800G 元" 前有货币符号或后接金额 / 百分比单位时仍是数字主张(Codex 审查 voice-r1)
@@ -220,8 +228,18 @@ export function claimTokens(line: string): { n: number; raw: string }[] {
   // HTTP 状态码(HTTP 429 / 状态码 402)是故障描述不是数字主张(ht11:agent 如实写"H100 因 HTTP 429 未获取"被判未绑定)
   // 联邦公报文号 2026-11571 / 公告编号 2026-001 是编号不是数字(年份剥掉后会留下 -11571 负数 —— Codex policy-r1)
   let s = stripSpeedLabels(line.replace(/https?:\/\/[^\s)\]]+/g, " ").replace(/(HTTP|状态码|status)\s?[1-5]\d{2}(?!\d)/gi, " ").replace(/(?<![\d.])(19|20)\d{2}-\d{3,6}(?![\d.-])/g, " ").replace(/(?<![\d.])1260H\b/g, " ").replace(/(?<![\w.])[\w-]+(?:\.[\w-]+)*\.(?:com|cn|net|org|io|co|hk|tw|jp|kr|de|uk|info|biz|tv|me|ai|app)(?:\.[a-z]{2})?(?![\w.])/gi, " ")).replace(/(ev-[0-9a-f]{6,}|calc-[0-9a-f]{16})(?![0-9a-zA-Z_])/g, " ").replace(/\d{4}-\d{2}-\d{2}/g, " ").replace(/\d{4}Q[1-4]|\d{4}H[12]/g, " ")
-    .replace(/FY\s?\d{4}/g, " ").replace(/(?<![\d.])(19|20)\d{2}(?![\d.])\s*[年]?/g, " ").replace(/(?<![\d.])\d{6}(?![\d.])/g, " ").replace(/(?<![\d.])[A-Za-z]\d+(?![\d.])/g, " ")
-    .replace(/第\s*\d+\s*[次条行名]|\d+\s*[次条行个家名项]\b|×\s*\d+|\d+\s*季度?|Q\d|(?<![\d.])\d+(?:\.\d+)?x\b/g, " ");
+    .replace(/FY\s?\d{4}/g, " ").replace(/(?<![\d.])(19|20)\d{2}(?![\d.])\s*[年]?/g, " ")// 6 位数默认当 A 股代码剥掉,**但后面紧跟单位就是真数字**(ht21 真踩:沪铜 107520 元/吨 恰好 6 位 → 原规则让它从不参与绑定校验,是既有假绿)
+    // 6 位数当 A 股代码剥掉的条件:**代码语境**(括号内 / 代码·证券·标的·股票 前缀 / SH·SZ·BJ 前后缀)或**等于本次运行的标的代码**。
+    // 单位白名单永远补不全(辆 / 平方米 / 千瓦…—— Codex commodity-r3),所以裸的、又不是本标的代码的 6 位数一律当真主张交给绑定校验
+    .replace(/(?<=[(（【]|代码|证券|标的|股票|简称|[Ss][HhZz]|[Bb][Jj])\s*(?<![\d.])\d{6}(?![\d.])/g, " ")
+    .replace(/(?<![\d.])\d{6}(?![\d.])(?=\s*[)）】]|\.(?:SH|SZ|BJ|sh|sz|bj))/g, " ")
+    .replace(/(?<![\d.])[A-Za-z]\d+(?![\d.])/g, " ")
+    .replace(/第\s*\d+\s*[次条行名]|\d+\s*[次条行个家名项]\b|×\s*\d+|\d+\s*季度?|Q\d|(?<![\d.])\d+(?:\.\d+)?x\b/g, " ")
+    // 时间**窗口标签**不是数字主张:"约 30 日涨跌" / "7 日均价" / "30 日回撤" —— 与速率标签(1.6T)同类
+    // (ht21 真踩:大宗那行写"约30日涨跌分别为 …",5 个涨跌值都绑好了,却被窗口里的 30 判成未绑定)
+    // 只有**后接窗口词**才算窗口标签;"回款周期约 30 天" / "交付周期约 45 日" 是真主张,不能剥(Codex commodity-r2)
+    .replace(/约?\s?\d+\s?[日天](?=\s*(涨跌|变动|均价|均值|窗口|区间|回撤|新高|新低|走势|涨幅|跌幅))/g, " ");
+  if (symbol && /^\d{6}$/.test(symbol)) s = s.replace(new RegExp(`(?<![\\d.])${symbol}(?![\\d.])`, "g"), " ");  // 本次标的代码在正文里裸写也当代码
   const out: { n: number; raw: string }[] = [];
   for (const m of s.matchAll(/-?\d[\d,]*\.?\d*(?:e[+-]?\d+)?/gi)) {
     const raw = m[0]; const n = Number(raw.replace(/,/g, "")); if (!Number.isFinite(n)) continue;
@@ -235,14 +253,16 @@ export function claimTokens(line: string): { n: number; raw: string }[] {
   return out;
 }
 export function judgeNumberBinding(d: string): { total: number; bound: number; unbound: string[] } {
-  const evById = new Map(readEvidence(d).map((e) => [e.id, e])); const calcById = new Map(readCalcs(d).map((c) => [c.calculation_id, c]));
+  const evAll = readEvidence(d);
+  const sym = runSymbol(d, evAll);
+  const evById = new Map(evAll.map((e) => [e.id, e])); const calcById = new Map(readCalcs(d).map((c) => [c.calculation_id, c]));
   const secs = reportSections(readReport(d));
   let total = 0, bound = 0; const unbound: string[] = [];
   for (const [sec, lines] of Object.entries(secs)) {
     if (sec === "_head" || sec === "数据缺口") continue;
     for (const line of lines) {
       if (/^\s*\|[-: |]+\|\s*$/.test(line)) continue;
-      const toks = claimTokens(line); if (!toks.length) continue;
+      const toks = claimTokens(line, sym); if (!toks.length) continue;
       const ids = [...line.matchAll(/(?<![0-9a-zA-Z_-])(ev-[0-9a-f]{6,}|calc-[0-9a-f]{16})(?![0-9a-zA-Z_])/g)].map((m) => m[1]).filter((id) => evById.has(id) || calcById.has(id)); // 右边界:任何字母 / 数字 / 下划线后缀都不算合法引用
       const pool = numbersOf(ids, evById, calcById);
       for (const t of toks) { total++; if (ids.length && (numberBound(t.n, pool.nums) || pool.texts.some((x) => x.includes(t.raw)))) bound++; else unbound.push(`[${sec}] ${t.n} ← ${line.trim().slice(0, 220)}`); }
@@ -613,7 +633,9 @@ const PROSE_BEFORE = /(近|过去|未来|连续|第|每|共|约|前|后|历时|�
  * 引用的 calc 全部没有 display 字段 → applicable=false(旧运行,跳过)。
  */
 export function judgeDisplayFidelity(d: string): { applicable: boolean; total: number; exact: number; violations: string[] } {
-  const evById = new Map(readEvidence(d).map((e) => [e.id, e])); const calcById = new Map(readCalcs(d).map((c) => [c.calculation_id, c]));
+  const evAllD = readEvidence(d);
+  const dispSymbol = runSymbol(d, evAllD);
+  const evById = new Map(evAllD.map((e) => [e.id, e])); const calcById = new Map(readCalcs(d).map((c) => [c.calculation_id, c]));
   const secs = reportSections(readReport(d));
   let total = 0, exact = 0, anyDisplay = false; const violations: string[] = [];
   for (const [sec, lines] of Object.entries(secs)) {
@@ -627,7 +649,7 @@ export function judgeDisplayFidelity(d: string): { applicable: boolean; total: n
       const evPool = numbersOf(evIds, evById, calcById);
       const calcPool = numbersOf(calcIds, evById, calcById);
       const hasDisp = (raw: string) => { const n = normDisp(raw); return [...displays].some((x) => x === n || x.startsWith(n)); };
-      for (const t of claimTokens(line)) {
+      for (const t of claimTokens(line, dispSymbol)) {
         const unit = /[^0-9.,e+-]+$/.exec(t.raw)?.[0] ?? "";
         const num = t.raw.slice(0, t.raw.length - unit.length);
         const decimal = /\.\d/.test(num);
@@ -725,7 +747,7 @@ export function judgePolicyAccess(d: string): JudgeResult {
   let total = 0; const unbound: string[] = [];
   for (const line of sec) {
     const cited = (line.match(/ev-[0-9a-f]{6,}/g) ?? []).filter((id) => polIds.has(id));
-    for (const c of claimTokens(line)) { total++; if (!cited.some((id) => Number(valueOf.get(id)) === c.n)) unbound.push(`${c.raw}@${line.slice(0, 30)}`); }
+    for (const c of claimTokens(line, runSymbol(d, ev))) { total++; if (!cited.some((id) => Number(valueOf.get(id)) === c.n)) unbound.push(`${c.raw}@${line.slice(0, 30)}`); }
     for (const mm of line.replace(/ev-[0-9a-f]{6,}/g, " ").matchAll(/(\d+)\s*条/g)) {
       total++;
       const n = Number(mm[1]);
@@ -835,7 +857,10 @@ export function judgeIndustryThermometer(d: string): JudgeResult {
   const m = readManifest(d) as (ReturnType<typeof readManifest> & { industry_tags?: { tags: string[]; skipped: string[] }; fetch_ledger?: Record<string, { status: string }> }) | null;
   const report = readReport(d);
   const ev = readEvidence(d);
-  const thermo = ev.filter((e) => /^(tw_monthly_|tw_chain_|gpu_)/.test(e.field));
+  const indEarly = readJsonIfExists<{ thermometers?: Record<string, string[]> }>(path.join(d, "fetch", "_industry.json"));
+  const mountedIds = new Set([...new Set(Object.values(indEarly?.thermometers ?? {}).flat())].flatMap((id) => (readJsonIfExists<{ evidence?: { id?: string }[] }>(path.join(d, "fetch", `${id}.json`))?.evidence ?? []).map((e) => String(e.id))));
+  // 温度计证据 = 挂载端点信封里的证据(动态)∪ 已知字段前缀(兼容没有 _industry.json 的旧运行)
+  const thermo = ev.filter((e) => mountedIds.has(e.id) || /^(tw_monthly_|tw_chain_|gpu_|commodity_futures_|dram_spot_)/.test(e.field));
   const thermoIds = new Set(thermo.map((e) => e.id));
   const valueOf = new Map(thermo.map((e) => [e.id, e.value]));
   const risk = readStage(d, "risk") as { extra_findings?: { topic: string; evidence_ids: string[] }[] } | null;
@@ -852,7 +877,7 @@ export function judgeIndustryThermometer(d: string): JudgeResult {
   const fieldOf = new Map(thermo.map((e) => [e.id, e.field]));
   for (const line of paragraphsOf(sec)) {
     const cited = (line.match(/ev-[0-9a-f]{6,}/g) ?? []).filter((id) => thermoIds.has(id));
-    for (const c of claimTokens(line)) {
+    for (const c of claimTokens(line, runSymbol(d, ev))) {
       total++;
       const okBind = cited.some((id) => { const v = Number(valueOf.get(id)); return Number.isFinite(v) && (Math.abs(v - c.n) <= 0.011 || Math.abs(v - c.n) <= Math.abs(v) * 0.005); });
       if (!okBind) unbound.push(`${c.raw}@${line.slice(0, 40)}`);
@@ -872,10 +897,38 @@ export function judgeIndustryThermometer(d: string): JudgeResult {
     const gpuGuardOk = /折旧参考线/.test(line) && GPU_POS.test(line) && !GPU_NEG.test(stripped);
     if (cited.some((id) => /^tw_/.test(fieldOf.get(id) ?? "")) && !twGuardOk) guardMiss.push(`台系护栏缺或反向@${line.slice(0, 40)}`);
     if (cited.some((id) => /^gpu_/.test(fieldOf.get(id) ?? "")) && !gpuGuardOk) guardMiss.push(`GPU 护栏缺或反向@${line.slice(0, 40)}`);
+    // 大宗期货:必须写明"不是本公司采购价 / 全市场定价"这类正向护栏,且不得反向("就是采购成本 / 等于本公司成本")
+    // 大宗期货:**两个事实都要写**(Codex commodity-r1:只写"全市场定价"不够,"也是本公司成本"必须被抓)
+    const FUT_MARKET = /(全市场定价|市场定价(?!权)|市场价(?!格?表)|公开市场价格)/;
+    const FUT_NOT_MINE = /(不是|并非|非|不等于|不代表|不能视为|不可视为|不能当作|不构成)(?:(?!采购价|采购成本|本公司成本|公司成本)[^。;,，;]){0,20}?(采购价|采购成本|本公司成本|公司成本)/;
+    const FUT_NEG = /(就是|即|也是|等于|等同于|视作|视为|相当于|当作|即为)(?:(?!采购价|采购成本|本公司成本|公司成本)[^。;,，;]){0,20}?(采购价|采购成本|本公司成本|公司成本)|按(?:此|该)价(?:格)?采购/;
+    const futStripped = line.replace(new RegExp(FUT_NOT_MINE.source, "g"), "");
+    const futOk = FUT_MARKET.test(line) && FUT_NOT_MINE.test(line) && !FUT_NEG.test(futStripped);
+    if (cited.some((id) => /^commodity_futures_/.test(fieldOf.get(id) ?? "")) && !futOk) guardMiss.push(`大宗期货护栏缺或反向@${line.slice(0, 40)}`);
+    // DRAM:**三个事实都要写**(Codex commodity-r1:"官方存档"能骗过只查"存档"的写法;影子指标与不是 HBM 价格不能二选一)
+    const DRAM_SRC = /(社区(转录|仓|存档)|非官方|不是官方|第三方转录|转录(自|的)?\s?DRAMeXchange)/;
+    const DRAM_SHADOW = /影子指标/;
+    const DRAM_NOT_HBM = /(不是|并非|非|不等于|不代表|不能视为|不可视为)\s?HBM\s?(价格|报价)/;
+    const DRAM_NEG = /(就是|即|也是|等于|等同于|视作|视为|相当于)\s?HBM\s?(价格|报价)|官方(一手|数据源|口径)/;
+    const dramStripped = line.replace(new RegExp(DRAM_NOT_HBM.source, "g"), "").replace(new RegExp(DRAM_SRC.source, "g"), "");
+    const dramOk = DRAM_SRC.test(line) && DRAM_SHADOW.test(line) && DRAM_NOT_HBM.test(line) && !DRAM_NEG.test(dramStripped);
+    if (cited.some((id) => /^dram_spot_/.test(fieldOf.get(id) ?? "")) && !dramOk) guardMiss.push(`DRAM 护栏缺或反向@${line.slice(0, 40)}`);
   }
   const led = m?.fetch_ledger ?? {};
   const ledOk = (id: string) => ["ok", "partial"].includes(led[id]?.status ?? "");
-  const ind = readJsonIfExists<{ tags: string[] }>(path.join(d, "fetch", "_industry.json"));
+  const ind = readJsonIfExists<{ tags: string[]; thermometers?: Record<string, string[]> }>(path.join(d, "fetch", "_industry.json"));
+  // 本次挂载的温度计端点(标签表 → 端点)。证据 id **直接从该端点的信封读**,不靠字段前缀映射
+  // (Codex commodity-r2:映射漏了新端点就静默豁免,等于"不可省略"这条从来没真正动态化)
+  const mountedAll = [...new Set(Object.values(ind?.thermometers ?? {}).flat())];
+  const idsOfEndpoint = (id: string): Set<string> => new Set((readJsonIfExists<{ evidence?: { id?: string }[] }>(path.join(d, "fetch", `${id}.json`))?.evidence ?? []).map((e) => String(e.id)));
+  const mountedOk = mountedAll.filter((id) => ledOk(id));
+  const mountedFailed = mountedAll.filter((id) => !ledOk(id));
+  const missingInReport = mountedOk.filter((id) => { const ids = idsOfEndpoint(id); return ids.size > 0 && ![...secIds].some((x) => ids.has(x)); });
+  // 端点 ok 却零证据 = mapper 回归,必须显式失败(Codex commodity-r3:原来 ids.size===0 直接豁免,等于"取到数但没产出证据也不用提")
+  const emptyMounted = mountedOk.filter((id) => idsOfEndpoint(id).size === 0);
+  // 取数失败的挂载端点必须在 risk.gaps 里出声(否则"挂了、失败了、报告一个字不提"会静默通过 —— Codex commodity-r2)
+  const riskGaps = ((readStage(d, "risk") as { gaps?: { operation?: string }[] } | null)?.gaps ?? []).map((g) => String(g.operation ?? ""));
+  const failedSilently = mountedFailed.filter((id) => !riskGaps.includes(id));
   const checks = [
     ok("运行完成且 complete", !!m && m.status === "complete" && m.exit_code === 0, `${m?.status} / ${m?.exit_code}`),
     ok("manifest.industry_tags 命中 ai_compute,且 fetch/_industry.json 与之一致", !!m?.industry_tags?.tags.includes("ai_compute") && !!ind?.tags.includes("ai_compute"), `${JSON.stringify(m?.industry_tags?.tags)} / ${JSON.stringify(ind?.tags)}`),
@@ -883,6 +936,9 @@ export function judgeIndustryThermometer(d: string): JudgeResult {
     ok("温度计证据落进 evidence.json(≥ 4 条,含 tw_ 与 gpu_)", thermo.length >= 4 && thermo.some((e) => /^tw_/.test(e.field)) && thermo.some((e) => /^gpu_/.test(e.field)), `${thermo.length} 条`),
     ok("risk 阶段有 topic「产业温度计」的 extra_findings 且引用温度计证据 id", findings.length > 0 && findings.some((x) => x.evidence_ids.some((id) => thermoIds.has(id))), `${findings.length} 条`),
     ok("报告「## 产业温度计」章节引用两类温度计的证据 id(台系 + GPU)", hasTw && hasGpu && secIds.size >= 2, `${secIds.size} 个 id(tw=${hasTw} gpu=${hasGpu})`),
+    ok("本次挂载并取到数的**每个**温度计端点都在报告章节被引用(证据 id 直接取自该端点信封,不靠字段映射)", missingInReport.length === 0, missingInReport.length ? `报告未引用:${missingInReport.join("、")}` : `挂载成功 ${mountedOk.length} 个全部在场`),
+    ok("挂载且账本 ok 的端点必须真的产出证据(零证据 = mapper 回归,不许静默豁免)", emptyMounted.length === 0, emptyMounted.length ? `ok 但零证据:${emptyMounted.join("、")}` : "无"),
+    ok("挂载但取数失败的温度计端点必须在 risk.gaps 出声(不许静默省略)", failedSilently.length === 0, failedSilently.length ? `失败且无 gaps:${failedSilently.join("、")}` : mountedFailed.length ? `失败 ${mountedFailed.length} 个都已出声` : "无失败端点"),
     ok("章节里每个数字都绑到温度计证据 value(≥ 2 个数字,0 个未绑定)", total >= 2 && unbound.length === 0, `${total} 个数字,未绑定 ${unbound.length}${unbound.length ? ":" + unbound.slice(0, 3).join(" | ") : ""}`),
     ok("护栏句与数字同行:引台系 id 的行有差分 / 不能单独归因,引 GPU id 的行有折旧参考线 / 不是保本线", guardMiss.length === 0 && secIds.size > 0, guardMiss.length ? guardMiss.slice(0, 3).join(" | ") : "逐行在场"),
     ok("温度计 id 只出现在「产业温度计 / 风险与反证 / 裁决点 / 数据缺口」,其它章节(结论摘要 / 事实 / 推断 / 估值…)引用须同行写明「产业链上下游数据 / 不是本公司数据」", (() => {
@@ -976,7 +1032,7 @@ export function judgeThermoHistory(d: string): JudgeResult {
   const hist = ev.filter((e) => e.source === "history" && /_(prev|change_abs|change_pct|change_pp)$/.test(e.field));
   const histIds = new Set(hist.map((e) => e.id));
   const valueOf = new Map(hist.map((e) => [e.id, e.value]));
-  const thermoById = new Map(ev.filter((e) => /^(tw_monthly_|tw_chain_|gpu_)/.test(e.field)).map((e) => [e.id, e]));
+  const thermoById = new Map(ev.filter((e) => /^(tw_monthly_|tw_chain_|gpu_|commodity_futures_|dram_spot_)/.test(e.field)).map((e) => [e.id, e]));
   const thermoVal = (id: string): number | null => { const v = thermoById.get(id)?.value; return typeof v === "number" ? v : null; };
   const envOf = (s: string) => readJsonIfExists<{ evidence?: { field: string; value: unknown; record_key?: string }[] }>(path.join(d, "fetch", `${s}.json`));
   const curOf = (script: string, rk: string, field: string) => { const x = envOf(script)?.evidence?.find((e) => e.field === field && e.record_key === rk); return typeof x?.value === "number" ? x.value : null; };
@@ -1036,12 +1092,12 @@ export function judgeThermoHistory(d: string): JudgeResult {
     }
   }
   // 数字绑定:章节每个数字绑到本段引用的温度计 / 历史证据(复用基线判定的口径,按段落)
-  const thermoAll = ev.filter((e) => /^(tw_monthly_|tw_chain_|gpu_)/.test(e.field));
+  const thermoAll = ev.filter((e) => /^(tw_monthly_|tw_chain_|gpu_|commodity_futures_|dram_spot_)/.test(e.field));
   const allIds = new Set(thermoAll.map((e) => e.id)); const allVal = new Map(thermoAll.map((e) => [e.id, e.value]));
   let total = 0; const unbound: string[] = [];
   for (const line of paras) {
     const cited = (line.match(/ev-[0-9a-f]{6,}/g) ?? []).filter((id) => allIds.has(id));
-    for (const c of claimTokens(line)) { total++; if (!cited.some((id) => { const v = Number(allVal.get(id)); return Number.isFinite(v) && (Math.abs(v - c.n) <= 0.011 || Math.abs(v - c.n) <= Math.abs(v) * 0.005); })) unbound.push(`${c.raw}@${line.slice(0, 40)}`); }
+    for (const c of claimTokens(line, runSymbol(d, ev))) { total++; if (!cited.some((id) => { const v = Number(allVal.get(id)); return Number.isFinite(v) && (Math.abs(v - c.n) <= 0.011 || Math.abs(v - c.n) <= Math.abs(v) * 0.005); })) unbound.push(`${c.raw}@${line.slice(0, 40)}`); }
   }
   const led = m?.fetch_ledger ?? {};
   const ledDisk = readJsonIfExists<Record<string, { status: string; synthetic_overlay?: string }>>(path.join(d, "fetch", "_ledger.json")) ?? {};

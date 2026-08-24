@@ -2491,6 +2491,68 @@
         "tickers": "NVDA"
       },
       "notes": "文案带 * / expected = 交易所与 Zacks 预估日,不是公司确认日,证据 note 必须写明;逐 ticker 隔离失败;解析不出日期=结构变了必须抛;证据 market=US / record_key=ticker"
+    },
+    {
+      "id": "cn_commodity_futures",
+      "title": "产业温度计 · 上游大宗期货(新浪连续合约:沪铜 / 沪锡 / 沪铝 / 沪镍 / 工业硅)",
+      "layer": "13 产业温度计",
+      "market": [
+        "CN"
+      ],
+      "source": "sina_futures",
+      "compliance": "public-api-free(akshare futures_zh_daily_sina,无 key)",
+      "module": "commodity",
+      "function": "cn_commodity_futures",
+      "mapper": "cn_commodity_futures_map",
+      "mapper_module": "mappers_commodity",
+      "endpoint_label": "akshare futures_zh_daily_sina",
+      "symbol_kind": "none",
+      "symbol_param": "code",
+      "stages": {
+        "risk": "optional"
+      },
+      "industry_tags": [
+        "ai_compute"
+      ],
+      "enabled": true,
+      "libs": [
+        "akshare"
+      ],
+      "args": {
+        "symbols": "CU0,SN0,AL0,NI0,SI0"
+      },
+      "history_fields": [
+        "commodity_futures_close"
+      ],
+      "notes": "全市场证据 → symbol=MARKET / record_key=品种代码;期货价不是本公司采购价(护栏原样进 note);工业硅需求由光伏主导对半导体是弱信号;资料超 10 天未更新标 stale 并降 partial;逐品种隔离失败,全失败才抛;DataFrame 非传输层原文 → record_raw(kind=extracted)"
+    },
+    {
+      "id": "dram_spot_thermo",
+      "title": "产业温度计 · DRAM / NAND 现货均价(GitHub 社区仓转录的 DRAMeXchange)",
+      "layer": "13 产业温度计",
+      "market": [
+        "CN"
+      ],
+      "source": "github-community",
+      "compliance": "public-repo-free(raw.githubusercontent.com,无 key)",
+      "module": "commodity",
+      "function": "dram_spot_thermo",
+      "mapper": "dram_spot_thermo_map",
+      "mapper_module": "mappers_commodity",
+      "endpoint_label": "raw.githubusercontent.com dram-prices / ddr4-pricing-log",
+      "symbol_kind": "none",
+      "symbol_param": "code",
+      "stages": {
+        "risk": "optional"
+      },
+      "industry_tags": [
+        "storage_memory"
+      ],
+      "enabled": true,
+      "history_fields": [
+        "dram_spot_avg"
+      ],
+      "notes": "🔴 社区转录的 DRAMeXchange 存档不是官方一手(可能有转录误差与停更),护栏必须原样带出;DRAM 现货是 HBM 的影子指标不是 HBM 价格(HBM 走年度长约无公开现货价);ddr5 序列无 product 字段 → 规格如实写\"未在数据中标明\";全市场证据 symbol=MARKET / record_key=品类;超 14 天标 stale 降 partial"
     }
   ]
 }

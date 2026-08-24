@@ -234,3 +234,116 @@ test("数据日历规则:台系月营收下一档 = 最新资料期 +1 月,期�
   fs.rmSync(path.join(d, "fetch", "tw_monthly_revenue.json"));
   assert.deepEqual(industryNextDateLines(d), []);
 });
+
+test("大宗温度计:storage_memory 标签只挂 DRAM,光模块股不被 DRAM 污染;期货挂 ai_compute;两标签同时命中时端点并集", () => {
+  const table = loadIndustryTags(repoRoot)!;
+  assert.ok(table.tags.storage_memory && table.tags.ai_compute.thermometers.includes("cn_commodity_futures"));
+  const eps = { cn_commodity_futures: { industry_tags: ["ai_compute"] }, dram_spot_thermo: { industry_tags: ["storage_memory"] }, tw_monthly_revenue: { industry_tags: ["ai_compute"] }, fetch_quote: {} };
+  const all = Object.keys(eps);
+  // 中际旭创式(光模块 / CPO / 算力)→ 只 ai_compute:拿期货,不拿 DRAM
+  const optical = detectIndustryTags(fakeRun(["通信设备"], ["730204"], ["光模块", "CPO概念", "算力概念"]), table);
+  assert.deepEqual(optical.tags, ["ai_compute"]);
+  const g1 = applyIndustryGate(all, eps, optical.tags);
+  assert.ok(g1.included.includes("cn_commodity_futures") && g1.included.includes("fetch_quote"));
+  assert.ok(!g1.included.includes("dram_spot_thermo"), "光模块标的不该挂 DRAM 温度计");
+  assert.deepEqual(g1.skipped.map((s) => s.id), ["dram_spot_thermo"]);
+  // 存储股(DRAM / 存储芯片)→ storage_memory:拿 DRAM
+  const storage = detectIndustryTags(fakeRun(["半导体"], ["270600"], ["存储芯片", "DRAM"]), table);
+  assert.ok(storage.tags.includes("storage_memory"));
+  const g2 = applyIndustryGate(all, eps, storage.tags);
+  assert.ok(g2.included.includes("dram_spot_thermo"));
+  // 两个标签都命中(既做算力又做存储)→ 端点取并集
+  const both = detectIndustryTags(fakeRun(["半导体"], ["270600"], ["HBM", "存储芯片", "算力"]), table);
+  assert.deepEqual(both.tags.sort(), ["ai_compute", "storage_memory"]);
+  const g3 = applyIndustryGate(all, eps, both.tags);
+  assert.ok(g3.included.includes("dram_spot_thermo") && g3.included.includes("cn_commodity_futures") && g3.skipped.length === 0);
+  // 提示词块:两个标签的护栏都在,且 DRAM 护栏点明"不是 HBM 价格"
+  const d = fakeRun(["半导体"], ["270600"], ["HBM", "存储芯片", "算力"]);
+  writeIndustryFile(d, table, both, g3);
+  const block = industryPromptBlock(d);
+  assert.ok(block.includes("不是 HBM 价格") && block.includes("采购价") && block.includes("dram_spot_thermo"));
+});
+
+test("commodity-r1:大宗护栏三条件——只写「全市场定价」/「官方存档」/ 只写影子指标 都判失败;绕过语「也是本公司成本」被抓;合规写法通过", async () => {
+  const { judgeIndustryThermometer } = await import("../src/hardtest.ts");
+  const d = fs.mkdtempSync(path.join(os.tmpdir(), "vra-cmd-judge-"));
+  fs.mkdirSync(path.join(d, "stages")); fs.mkdirSync(path.join(d, "fetch"));
+  const E = (id: string, field: string, rk: string, value: number) => ({ id, field, record_key: rk, value, unit: field.endsWith("_pct") ? "%" : "元/吨", currency: "n/a", period: "2026-08-21", as_of: "2026-08-24", source: "s", symbol: "MARKET", market: "CN", note: "x" });
+  const ev = [E("ev-c1c1c1c1c1c1", "commodity_futures_close", "CU0", 107520), E("ev-d1d1d1d1d1d1", "dram_spot_avg", "DDR5", 54.1),
+    E("ev-a1a1a1a1a1a1", "tw_monthly_revenue", "2383", 192.07), E("ev-b1b1b1b1b1b1", "gpu_spot_median_usd_per_gpu_hr", "B200", 7.25)];
+  writeJson(path.join(d, "evidence.json"), ev);
+  // 判定从**端点信封**取证据 id(commodity-r2),fixture 要写齐每个挂载端点的信封
+  writeJson(path.join(d, "fetch", "cn_commodity_futures.json"), { evidence: [ev[0]] });
+  writeJson(path.join(d, "fetch", "dram_spot_thermo.json"), { evidence: [ev[1]] });
+  writeJson(path.join(d, "fetch", "tw_monthly_revenue.json"), { evidence: [ev[2]] });
+  writeJson(path.join(d, "fetch", "gpu_rent_thermometer.json"), { evidence: [ev[3]] });
+  writeJson(path.join(d, "fetch", "_industry.json"), { tags: ["ai_compute", "storage_memory"], thermometers: { ai_compute: ["tw_monthly_revenue", "gpu_rent_thermometer", "cn_commodity_futures"], storage_memory: ["dram_spot_thermo"] } });
+  writeJson(path.join(d, "stages", "risk.json"), { extra_findings: [{ topic: "产业温度计", summary: "x", evidence_ids: ev.map((e) => e.id) }] });
+  writeJson(path.join(d, "manifest.json"), { status: "complete", exit_code: 0, industry_tags: { tags: ["ai_compute", "storage_memory"], matched: {}, skipped: [], signals: 5 }, fetch_ledger: { tw_monthly_revenue: { status: "ok" }, gpu_rent_thermometer: { status: "ok" }, cn_commodity_futures: { status: "ok" }, dram_spot_thermo: { status: "ok" } }, gate: { ok: true, hits: [] }, stages: [] });
+  const TW = "台光月营收 192.07 亿新台币;须与金像电差分后归因,不能单独归因 [ev-a1a1a1a1a1a1]";
+  const GPU = "B200 现货中位 7.25 美元/卡时;3 美元/卡时是设备折旧参考线,不是完整经济保本线 [ev-b1b1b1b1b1b1]";
+  const rep = (fut: string, dram: string) => `# 报告\n\n## 产业温度计\n\n- ${TW}\n- ${GPU}\n- ${fut}\n- ${dram}\n\n## 裁决点\n\n- x\n`;
+  const guardCheck = () => judgeIndustryThermometer(d).checks.find((c) => /护栏句与数字同行/.test(c.name))!;
+  const okFut = "沪铜 107520 元/吨,这是全市场定价,不是本公司采购价 [ev-c1c1c1c1c1c1]";
+  const okDram = "DDR5 现货均价 54.1 美元/颗,来自社区转录的存档非官方一手,是 HBM 的影子指标、不是 HBM 价格 [ev-d1d1d1d1d1d1]";
+  fs.writeFileSync(path.join(d, "report.md"), rep(okFut, okDram));
+  assert.ok(guardCheck().pass, guardCheck().detail);
+  for (const [fut, dram, why] of [
+    ["沪铜 107520 元/吨,全市场定价 [ev-c1c1c1c1c1c1]", okDram, "期货只写全市场定价、没否认是采购价"],
+    ["沪铜 107520 元/吨,全市场定价,也是本公司成本 [ev-c1c1c1c1c1c1]", okDram, "期货绕过语:也是本公司成本"],
+    ["沪铜 107520 元/吨,按此价采购,不是本公司采购价的全市场定价 [ev-c1c1c1c1c1c1]", okDram, "期货反向:按此价采购"],
+    [okFut, "DDR5 54.1 美元/颗,这是官方存档,DRAM 是 HBM 的影子指标 [ev-d1d1d1d1d1d1]", "DRAM 官方存档 + 没否认是 HBM 价格"],
+    [okFut, "DDR5 54.1 美元/颗,社区转录非官方一手,是 HBM 的影子指标 [ev-d1d1d1d1d1d1]", "DRAM 缺「不是 HBM 价格」"],
+    [okFut, "DDR5 54.1 美元/颗,社区转录非官方一手,不是 HBM 价格 [ev-d1d1d1d1d1d1]", "DRAM 缺「影子指标」"],
+  ] as const) {
+    fs.writeFileSync(path.join(d, "report.md"), rep(fut, dram));
+    assert.ok(!guardCheck().pass, `应判失败但通过了:${why}`);
+  }
+  // 动态强制:挂载并取到数的端点被整段省略 → 判失败(Codex commodity-r1 P1-1)
+  fs.writeFileSync(path.join(d, "report.md"), `# 报告\n\n## 产业温度计\n\n- ${TW}\n- ${GPU}\n\n## 裁决点\n\n- x\n`);
+  const omitted = judgeIndustryThermometer(d).checks.find((c) => /每个\*\*温度计|每个.*温度计端点都在报告章节被引用/.test(c.name))!;
+  assert.ok(!omitted.pass && /cn_commodity_futures/.test(omitted.detail) && /dram_spot_thermo/.test(omitted.detail), omitted.detail);
+  fs.writeFileSync(path.join(d, "report.md"), rep(okFut, okDram));
+  assert.ok(judgeIndustryThermometer(d).checks.find((c) => /温度计端点都在报告章节被引用/.test(c.name))!.pass);
+});
+
+test("commodity-r2:挂载端点的证据 id 直接取自信封(未知端点不再静默豁免);取数失败的挂载端点必须在 risk.gaps 出声", async () => {
+  const { judgeIndustryThermometer } = await import("../src/hardtest.ts");
+  const d = fs.mkdtempSync(path.join(os.tmpdir(), "vra-cmd-dyn-"));
+  fs.mkdirSync(path.join(d, "stages")); fs.mkdirSync(path.join(d, "fetch"));
+  const E = (id: string, field: string, rk: string, value: number, unit = "元/吨") => ({ id, field, record_key: rk, value, unit, currency: "n/a", period: "2026-08-21", as_of: "2026-08-24", source: "s", symbol: "MARKET", market: "CN", note: "x" });
+  const tw = E("ev-a1a1a1a1a1a1", "tw_monthly_revenue", "2383", 192.07, "亿新台币");
+  const gpu = E("ev-b1b1b1b1b1b1", "gpu_spot_median_usd_per_gpu_hr", "B200", 7.25, "美元/卡时");
+  // 全新端点:字段前缀不在任何写死的映射里(旧实现会静默豁免)
+  const nov = E("ev-e1e1e1e1e1e1", "ssd_channel_price", "TLC-512G", 33.3, "美元");
+  const mk = (ledger: Record<string, { status: string }>, gaps: { operation: string }[], report: string) => {
+    writeJson(path.join(d, "evidence.json"), [tw, gpu, nov]);
+    writeJson(path.join(d, "fetch", "tw_monthly_revenue.json"), { evidence: [tw] });
+    writeJson(path.join(d, "fetch", "gpu_rent_thermometer.json"), { evidence: [gpu] });
+    writeJson(path.join(d, "fetch", "ssd_channel_thermo.json"), { evidence: [nov] });
+    writeJson(path.join(d, "fetch", "_industry.json"), { tags: ["ai_compute"], thermometers: { ai_compute: ["tw_monthly_revenue", "gpu_rent_thermometer", "ssd_channel_thermo"] } });
+    writeJson(path.join(d, "stages", "risk.json"), { extra_findings: [{ topic: "产业温度计", summary: "x", evidence_ids: [tw.id, gpu.id] }], gaps });
+    writeJson(path.join(d, "manifest.json"), { status: "complete", exit_code: 0, industry_tags: { tags: ["ai_compute"], matched: {}, skipped: [], signals: 5 }, fetch_ledger: ledger, gate: { ok: true, hits: [] }, stages: [] });
+    fs.writeFileSync(path.join(d, "report.md"), report);
+  };
+  const TWLINE = "台光月营收 192.07 亿新台币;须与金像电差分后归因,不能单独归因 [ev-a1a1a1a1a1a1]";
+  const GPULINE = "B200 现货中位 7.25 美元/卡时;3 美元/卡时是设备折旧参考线,不是完整经济保本线 [ev-b1b1b1b1b1b1]";
+  const base = (extra = "") => `# 报告\n\n## 产业温度计\n\n- ${TWLINE}\n- ${GPULINE}${extra}\n\n## 裁决点\n\n- x\n`;
+  const chk = (re: RegExp) => judgeIndustryThermometer(d).checks.find((c) => re.test(c.name))!;
+  const ok3 = { tw_monthly_revenue: { status: "ok" }, gpu_rent_thermometer: { status: "ok" }, ssd_channel_thermo: { status: "ok" } };
+  // ① 新端点取到数却被报告省略 → 必须判失败(不靠字段前缀映射)
+  mk(ok3, [], base());
+  const c1 = chk(/都在报告章节被引用/);
+  assert.ok(!c1.pass && /ssd_channel_thermo/.test(c1.detail), c1.detail);
+  // ② 引用了就通过
+  mk(ok3, [], base("\n- 渠道 SSD 报价 33.3 美元 [ev-e1e1e1e1e1e1]"));
+  assert.ok(chk(/都在报告章节被引用/).pass);
+  // ③ 挂载但取数失败、报告与 gaps 都不提 → 判失败
+  const failed = { tw_monthly_revenue: { status: "ok" }, gpu_rent_thermometer: { status: "ok" }, ssd_channel_thermo: { status: "failed" } };
+  mk(failed, [], base());
+  const c3 = chk(/取数失败.*risk\.gaps/);
+  assert.ok(!c3.pass && /ssd_channel_thermo/.test(c3.detail), c3.detail);
+  // ④ 失败但在 gaps 出声 → 通过,且不再要求报告引用
+  mk(failed, [{ operation: "ssd_channel_thermo" }], base());
+  assert.ok(chk(/取数失败.*risk\.gaps/).pass && chk(/都在报告章节被引用/).pass);
+});

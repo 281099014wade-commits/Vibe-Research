@@ -60,7 +60,11 @@ test("判定 2 冲突:注入事件 + 识别 + risk 同 period 覆盖 + 报告 �
 });
 
 test("数字绑定:同一行多个数字各自须匹配引用值;无关 id 不算;日期 / FY / 小整数 / ×4 不计", () => {
-  assert.deepEqual(claimNumbers("- 2026-06-30 扣非 13091597476.79 元,FY2026 EPS 27.65,×4,第 3 次,2 条,300308"), [13091597476.79, 27.65]);
+  // 6 位数:代码语境 / 等于本次标的代码 → 剥;裸的、又不是本标的的 6 位数是真主张(Codex commodity-r3:单位白名单永远补不全)
+  assert.deepEqual(claimNumbers("- 2026-06-30 扣非 13091597476.79 元,FY2026 EPS 27.65,×4,第 3 次,2 条,300308", "300308"), [13091597476.79, 27.65]);
+  assert.deepEqual(claimNumbers("中际旭创(300308)与 002463"), [2463 * 0 + 2463 === 2463 ? 2463 : 0].filter(() => false).length ? [] : [2463], "括号内剥;别家代码 002463 不带前导零解析为 2463 视为主张");
+  assert.deepEqual(claimNumbers("销量 123456 辆,装机 123456 千瓦"), [123456, 123456], "带任意单位的 6 位数都是真主张");
+  assert.deepEqual(claimNumbers("代码 300308 于今日"), [], "代码语境剥掉");
   assert.deepEqual(claimNumbers("| 扣非净利润 TTM | 19826269128.43 元 | 截至 2026-06-30 |"), [19826269128.43]); // 长数字不能被年份 / 代码规则咬掉
   assert.deepEqual(claimNumbers("| PE_TTM最新值 | 73.788791 | 倍 | baostock |"), [73.788791]);
   assert.deepEqual(claimNumbers("| 证监会行业 | C39计算机、通信和其他电子设备制造业 | text |"), []);
