@@ -8,6 +8,7 @@
  *      [--no-hooks](不安装 Stop / PreToolUse 钩子;默认安装到产品 CODEX_HOME)
  *      [--endpoints full|core](full = 注册表全部启用端点(默认);core = 仅 Phase 0 的 8 个 legacy 脚本)
  *      [--knowledge on|off](默认 on:召回 .local/knowledge 里该标的的档案注入提示词)[--no-archive](不生成 viewer / 附录、不归档知识层)
+ *      [--progress on|off](默认 on:把阶段进度与各阶段 summary 实时打到 **stderr**,首次可读产出 ~80 秒;stdout 的 JSON 契约不变)
  *      [--provider <id>](providers/<id>.json;默认 openai;非 openai 只能 api_key,未显式指定 auth 时自动选模板唯一支持的模式;也可用环境变量 VRA_PROVIDER)
  *      [--auth api_key|chatgpt_login](显式指定认证方式,优先级最高;也可用环境变量 VRA_PROVIDER_AUTH)
  * 退出码:0 complete / 2 incomplete|stale / 3 failed 或编排异常。
@@ -18,6 +19,7 @@ import { fileURLToPath } from "node:url";
 
 import { makeConfig, type RunConfig, type Scenario, type Stage } from "./config.ts";
 import { runFetchScripts } from "./fetchrun.ts";
+import { ProgressReporter } from "./progress.ts";
 import { runResearch } from "./orchestrate.ts";
 import { loadProductConfig } from "./productConfig.ts";
 import { CodexRunner, sdkCodexVersion } from "./runner.ts";
@@ -50,7 +52,7 @@ function parseScope(v: string | undefined): "core" | "full" {
   throw new Error(`--endpoints 只能是 full 或 core,收到 ${v}`);
 }
 
-export function configFromArgs(args: Record<string, string | boolean>, env: NodeJS.ProcessEnv = process.env): { cfg: RunConfig; stages?: Stage[]; sources: string[] } {
+export function configFromArgs(args: Record<string, string | boolean>, env: NodeJS.ProcessEnv = process.env): { cfg: RunConfig; stages?: Stage[]; sources: string[]; progress: boolean } {
   if (!str(args.symbol)) throw new Error("缺少 --symbol");
   let scenario: Scenario | null = null;
   if (str(args.scenario)) scenario = JSON.parse(fs.readFileSync(str(args.scenario)!, "utf8")) as Scenario;
@@ -89,15 +91,22 @@ export function configFromArgs(args: Record<string, string | boolean>, env: Node
   if (str(args.stages)) {
     stages = str(args.stages)!.split(",").map((s) => s.trim()).filter(Boolean).map((s) => { if (!isStage(s)) throw new Error(`未知阶段 ${s}`); return s; });
   }
-  return { cfg, stages, sources: pc.sources };
+  return { cfg, stages, sources: pc.sources, progress: str(args.progress) !== "off" };
 }
 
 async function main(): Promise<number> {
-  let cfg: RunConfig, stages: Stage[] | undefined, sources: string[];
-  try { ({ cfg, stages, sources } = configFromArgs(parseArgs(process.argv.slice(2)))); }
+  let cfg: RunConfig, stages: Stage[] | undefined, sources: string[], progress: boolean;
+  try { ({ cfg, stages, sources, progress } = configFromArgs(parseArgs(process.argv.slice(2)))); }
   catch (e) { console.error(`参数 / 配置错误:${e instanceof Error ? e.message : String(e)}`); return 3; }
   console.error(`[orchestrator] run ${cfg.runId} → ${cfg.runDir}\n[orchestrator] config sources: ${sources.join(" ← ")}; CODEX_HOME=${cfg.codexHome}; engine=${cfg.codexPath ?? "sdk-bundled"}; provider=${cfg.provider.name}/${cfg.provider.auth}`);
-  const runner = new CodexRunner(cfg, path.join(cfg.runDir, "events.jsonl"));
+  // 进度只写 stderr:六阶段要跑十几分钟,没有它用户全程看不到任何内容(见 progress.ts 顶部)。
+  // **连构造也要保护**:显示层任何环节出问题都只是"没有进度显示",绝不能让一次真实研究起不来(Codex progress-r1 P2)。
+  let reporter: ProgressReporter | null = null;
+  if (progress) {
+    try { reporter = new ProgressReporter({ runDir: cfg.runDir }); }
+    catch (e) { console.error(`[orchestrator] 进度显示未启用(不影响研究):${e instanceof Error ? e.message : String(e)}`); }
+  }
+  const runner = new CodexRunner(cfg, path.join(cfg.runDir, "events.jsonl"), undefined, reporter ? (ev) => reporter.onEvent(ev) : undefined);
   const res = await runResearch(cfg, { runner, fetchRunner: runFetchScripts, verify: verifyCalcs, sdkVersion: () => sdkCodexVersion(cfg.codexPath) }, stages);
   console.log(JSON.stringify({ run_id: cfg.runId, run_dir: cfg.runDir, status: res.status, exit_code: res.exitCode,
     stages: res.manifest.stages.map((s) => ({ stage: s.stage, status: s.status, attempts: s.attempts, validator_ok: s.validator_ok })) }, null, 2));

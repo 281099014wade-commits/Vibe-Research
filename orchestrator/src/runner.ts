@@ -83,11 +83,16 @@ export class CodexRunner implements AgentRunner {
   /** 实际传给 SDK 的选项(测试可断言:含工具环境策略 / 显式 CODEX_HOME / 引擎路径) */
   readonly codexOptions: CodexOptions;
 
-  constructor(cfg: RunConfig, eventsPath: string, codexFactory: (opts: CodexOptions) => Codex = (o) => new Codex(o)) {
+  /** 事件旁路观察者(进度渲染用)。**只观察不参与** —— 它抛错不得影响运行,见 log()。 */
+  private readonly observer: ((ev: Record<string, unknown>) => void) | null;
+
+  constructor(cfg: RunConfig, eventsPath: string, codexFactory: (opts: CodexOptions) => Codex = (o) => new Codex(o),
+              observer?: (ev: Record<string, unknown>) => void) {
     this.cfg = cfg;
     this.events = new EventsLog(eventsPath, secretsFor(cfg));   // 已知密钥值落盘前脱敏(纵深)
     this.codexOptions = codexOptionsFor(cfg);
     this.codex = codexFactory(this.codexOptions);
+    this.observer = observer ?? null;
   }
 
   eventsDigest(): string | null { return this.events.digest(); }
@@ -112,7 +117,10 @@ export class CodexRunner implements AgentRunner {
 
   log(stage: Stage | "orchestrator", type: string, payload: Record<string, unknown> = {}): void {
     this.seq += 1;
-    this.events.append({ ts: nowIso(), run_id: this.cfg.runId, seq: this.seq, stage, type, ...payload });
+    const ev = { ts: nowIso(), run_id: this.cfg.runId, seq: this.seq, stage, type, ...payload };
+    this.events.append(ev);
+    // 落盘在前、旁路在后:观察者出任何问题都不能影响事件账本的完整性
+    if (this.observer) { try { this.observer(ev); } catch { /* 显示层永不影响运行 */ } }
   }
 
   async runTurn(stage: Stage, attempt: number, prompt: string, outputSchema?: unknown): Promise<TurnOutcome> {
