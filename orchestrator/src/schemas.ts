@@ -214,6 +214,11 @@ export const manifestSchema = {
     endpoint_scope: { type: "string", enum: ["core", "full"] }, registry_version: { type: ["string", "null"] },
     knowledge_recalled: { type: ["object", "null"], additionalProperties: false, required: ["path", "as_of", "status", "truncated"], properties: { path: { type: "string" }, as_of: { type: "string" }, status: { type: "string" }, truncated: { type: "boolean" } } },
     test_scenario: { type: "boolean" },
+    // 夹具播种运行:非 null 即**不是**一次完整的真实研究(见 fixture.ts)
+    seeded_from: { type: ["object", "null"], additionalProperties: false,
+      required: ["fixture_data_day", "source_run_id", "stages", "stale"],
+      properties: { fixture_data_day: { type: "string" }, source_run_id: { type: "string" },
+        stages: { type: "array", items: { type: "string" } }, stale: { type: "boolean" } } },
     chokepoints: { type: "object", additionalProperties: false, required: ["scanned", "hits", "by_category"], properties: { scanned: { type: "integer" }, hits: { type: "integer" }, by_category: { type: "object", additionalProperties: { type: "integer" } } } },
     industry_tags: { type: "object", additionalProperties: false, required: ["tags", "matched", "skipped", "signals"], properties: { tags: { type: "array", items: { type: "string" } }, matched: { type: "object", additionalProperties: { type: "array", items: { type: "string" } } }, skipped: { type: "array", items: { type: "string" } }, signals: { type: "integer" } } },
     knowledge_archived: { type: ["object", "null"], additionalProperties: false, required: ["latest", "run_file", "gate_removed"], properties: { latest: { type: "string" }, run_file: { type: "string" }, gate_removed: { type: "integer" } } },

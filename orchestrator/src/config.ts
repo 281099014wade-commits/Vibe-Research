@@ -93,6 +93,10 @@ export interface RunConfig {
   hooksEnabled: boolean;
   /** 运行目录已存在且非空时是否清空重来 */
   overwrite: boolean;
+  /** 硬测试数据夹具目录:播种前几个阶段的产物并跳过它们(见 fixture.ts)。**播种运行一律按测试运行隔离** */
+  seedFrom?: string;
+  /** 允许使用非当日的夹具(默认拒绝:财务 / 估值逐日变化,跨日复用会让硬测试因错误的原因通过或失败) */
+  allowStaleFixture?: boolean;
   scenario: Scenario | null;
   /** 端点范围:core = 仅 legacy 8 脚本(Phase 0 行为);full = 注册表全部启用且市场匹配的端点(Phase 1 M1) */
   endpointScope: ScopeKind;
@@ -220,6 +224,8 @@ export function makeConfig(partial: Partial<RunConfig> & { symbol: string; repoR
     noAgent: partial.noAgent ?? false,
     hooksEnabled: partial.hooksEnabled ?? true,
     overwrite: partial.overwrite ?? false,
+    seedFrom: partial.seedFrom,
+    allowStaleFixture: partial.allowStaleFixture ?? false,
     scenario: partial.scenario ?? null,
     endpointScope,
     stagePlan,

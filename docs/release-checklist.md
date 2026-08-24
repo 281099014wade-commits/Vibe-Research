@@ -16,7 +16,9 @@
 
 1. `scripts/doctor --net` 全绿(含密钥扫描 ok);
 2. `(cd orchestrator && npm run typecheck && npm test)`、`python -m pytest calc/tests -q`、`python -m pytest .agents/skills/data-access/scripts/tests -q` 全过;
-3. 一次真实研究运行 complete(`node orchestrator/src/run.ts --symbol 300308 --market SZ --python <venv>/bin/python < /dev/null`);
+3. 一次真实研究运行 complete(🔴 **必须是完整六阶段、不带 `--seed-from` 的运行** —— 硬测试夹具
+   (`--fixture`)会跳过前四阶段、产物按测试运行隔离,**不能替代这一步**;夹具运行的 manifest 带
+   `seeded_from` 且 `test_scenario: true`,一眼可辨)(`node orchestrator/src/run.ts --symbol 300308 --market SZ --python <venv>/bin/python < /dev/null`);
 4. `codex review`(或 `codex exec` 审查提示)→ 逐条核实(会误报)→ 修 → 复审至 "No actionable regressions";
 5. 确认 `.gitignore` 含 `.local/`、仓库内无 `.local/` 内容、无密钥(doctor 密钥扫描 + 人工过一遍 `git status`);
 6. 英文 README 两遍翻译审查(diff 对照 + 纯英文只读);

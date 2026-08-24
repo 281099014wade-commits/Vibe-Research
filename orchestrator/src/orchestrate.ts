@@ -9,9 +9,10 @@ import fs from "node:fs";
 import path from "node:path";
 
 import { STAGES, STATUS_PRIORITY, type RunConfig, type RunStatus, type Stage } from "./config.ts";
-import { ledgerSummary, type FetchExecutor, type Ledger } from "./fetchrun.ts";
+import { ledgerSummary, loadLedgerFromDisk, type FetchExecutor, type Ledger } from "./fetchrun.ts";
 import { PLAN_REL, planFileOf } from "./registry.ts";
 import { archiveRun, recallKnowledge, shouldRecall } from "./knowledge.ts";
+import { FixtureError, fixtureFreshness, readFixture, seedRunDir, verifyFixture, type FixtureManifest } from "./fixture.ts";
 import { appendThermoLedger } from "./thermo_history.ts";
 import { INDUSTRY_FILE_REL, applyIndustryGate, detectIndustryTags, loadIndustryTags, writeIndustryFile } from "./industry.ts";
 import { CHOKE_FILE_REL, loadChokeTable, scanChokepoints, writeChokeFile } from "./chokepoint.ts";
@@ -67,11 +68,76 @@ export function prepareRunDir(cfg: RunConfig): void {
     throw new Error(`Phase 0 宪法必须是产品根的 AGENTS.md(${discovered}),因为 Codex 自动加载的就是它;配置为 ${cfg.constitutionPath} 不会被引擎加载(自定义宪法路径需 Phase 1 另造加载机制)`);
   const root = path.resolve(cfg.repoRoot);
   if (!rd.startsWith(root + path.sep)) throw new Error(`运行目录 ${rd} 不在产品根 ${root} 之内:Codex 将发现不到 AGENTS.md / .agents/skills(Phase 0 限制;Phase 1 launcher 需设 project_root_markers 或把 data 放在产品根内)`);
-  if (fs.existsSync(rd) && fs.readdirSync(rd).length > 0) {
-    if (!cfg.overwrite) throw new Error(`运行目录已存在且非空:${rd}(复用 run-id 会混入旧证据;换 run-id 或加 --overwrite)`);
-    fs.rmSync(rd, { recursive: true, force: true });
+  // 🔴 夹具的校验放在**清空之前**:夹具坏了 / 过期 / 标的不符时,不该先把旧运行目录毁掉再失败
+  //    (Codex fixture-r1 P2)。这里只校验不落盘,播种在建目录之后。
+  // 顺序:①不改磁盘的 overwrite 门控 → ②夹具校验(也不改磁盘)→ ③清空 → ④建目录 → ⑤播种。
+  // 前两步都不动磁盘,所以夹具坏 / 过期 / 口径不符时旧运行目录**原封不动**(Codex fixture-r1 P2 / r2 P3)。
+  const dirBusy = fs.existsSync(rd) && fs.readdirSync(rd).length > 0;
+  if (dirBusy && !cfg.overwrite) throw new Error(`运行目录已存在且非空:${rd}(复用 run-id 会混入旧证据;换 run-id 或加 --overwrite)`);
+  if (cfg.seedFrom) {
+    // 夹具若就在运行目录里(或反之),下一步的清空会把刚校验通过的夹具本身删掉(Codex fixture-r3 P2)
+    const fx = path.resolve(cfg.seedFrom), rel = path.relative(fx, rd);
+    if (fx === rd || !rel.startsWith("..") || !path.relative(rd, fx).startsWith("..")) {
+      throw new FixtureError(`夹具目录与运行目录不得相同或互相包含:夹具 ${fx} / 运行 ${rd}`);
+    }
   }
+  const fixture = cfg.seedFrom ? checkFixture(cfg) : null;
+  if (dirBusy) fs.rmSync(rd, { recursive: true, force: true });
   ensureDirs(rd, ["raw", "fetch", "calcs", "stages"]);
+  if (fixture) {
+    // 播种中途失败会留下"半个运行目录",而旧目录此时已经删掉了(不可恢复)——
+    // 至少不要把半成品留在那里冒充一次运行(Codex fixture-r2 P2)。
+    try { seedRunDir(cfg.seedFrom as string, rd, fixture); }
+    catch (e) {
+      fs.rmSync(rd, { recursive: true, force: true });
+      throw new FixtureError(`播种失败,已清除半成品运行目录 ${rd}${dirBusy ? "(注意:同名的旧运行目录已在此之前被 --overwrite 清除,无法恢复)" : ""}:${e instanceof Error ? e.message : String(e)}`);
+    }
+  }
+}
+
+/**
+ * 用夹具播种运行目录(只在 cfg.seedFrom 时)。**校验在前、播种在后**:
+ * 完整性(逐文件哈希 + 树哈希 + 不许有清单外的多余文件)与新鲜度(同一数据日)任一不过就抛,
+ * 绝不"降级继续" —— 拿上周的估值配今天的风险数据,硬测试会因错误的原因通过或失败。
+ */
+/** 当前 calc 库版本(与 runResearchInner 里取法一致;取不到则 "unknown") */
+function calcVersionOf(cfg: RunConfig): string {
+  try { return JSON.parse(sh(cfg.python, [path.join(cfg.repoRoot, cfg.calcCliRel), "list"], cfg.repoRoot)).calc_version ?? "unknown"; }
+  catch { return "unknown"; }
+}
+
+/** @param calcVersion 显式给出当前 calc 版本(测试用);不给就现探 */
+export function checkFixture(cfg: RunConfig, calcVersion?: string): FixtureManifest {
+  const m = verifyFixture(cfg.seedFrom as string);
+  if (m.symbol !== cfg.symbol || m.market !== cfg.market) {
+    throw new FixtureError(`夹具是 ${m.symbol}.${m.market} 的,本次运行是 ${cfg.symbol}.${cfg.market}`);
+  }
+  // 口径指纹:任一不同,夹具里的前四阶段产物就与本次运行不是一回事(取了不同端点 / 不同 calc 形状)
+  const mism: string[] = [];
+  // 三项指纹同一口径:**任一边为空或 unknown 都判不一致** —— "两边都不知道"证明不了口径相同
+  // (Codex fixture-r4 P1:早先只对 calc 这么做,registry / endpoint 仍允许空等于空)
+  const cmp = (name: string, mine: string, theirs: string) => {
+    const bad = (x: string) => !x || x === "unknown";
+    if (bad(theirs)) mism.push(`本次 ${name} 未知(${theirs || "空"}),无法证明与夹具口径一致`);
+    else if (bad(mine)) mism.push(`夹具没有记录 ${name}`);
+    else if (mine !== theirs) mism.push(`${name} ${mine} ≠ ${theirs}`);
+  };
+  cmp("registry", m.fingerprint.registry_version, String(cfg.registryVersion ?? ""));
+  cmp("endpoint scope", m.fingerprint.endpoint_scope, String(cfg.endpointScope ?? ""));
+  cmp("calc 版本", m.fingerprint.calc_version, calcVersion ?? calcVersionOf(cfg));   // 只探一次
+  if (mism.length) throw new FixtureError(`夹具口径与本次运行不一致:${mism.join(";")};重建夹具`);
+  const fresh = fixtureFreshness(m);
+  if (!fresh.fresh && !cfg.allowStaleFixture) {
+    throw new FixtureError(`夹具数据日 ${m.data_day} 不是今天(${fresh.today}):财务 / 估值逐日变化,跨日复用会让硬测试因错误的原因通过或失败;重建夹具,或显式加 --allow-stale-fixture 承担这个代价`);
+  }
+  return m;
+}
+
+/** 校验 + 播种(测试与外部调用方用;正式路径见 prepareRunDir) */
+export function seedFixtureInto(cfg: RunConfig, runDir: string, calcVersion?: string): FixtureManifest {
+  const m = checkFixture(cfg, calcVersion);
+  seedRunDir(cfg.seedFrom as string, runDir, m);
+  return m;
 }
 
 export async function runResearch(cfg: RunConfig, deps: Deps, onlyStages?: Stage[]): Promise<RunResult> {
@@ -99,7 +165,12 @@ async function runResearchInner(cfg: RunConfig, deps: Deps, onlyStages?: Stage[]
   try { calcVersion = JSON.parse(sh(cfg.python, [path.join(cfg.repoRoot, cfg.calcCliRel), "list"], cfg.repoRoot)).calc_version ?? "unknown"; } catch { /* unknown */ }
   const headOk = spawnSync("git", ["rev-parse", "--verify", "-q", "HEAD"], { cwd: cfg.repoRoot, encoding: "utf8" }).status === 0;
   const repoVersion = headOk ? sh("git", ["rev-parse", "HEAD"], cfg.repoRoot) : "uncommitted(无提交)";
-  const stagesToRun = STAGES.filter((s) => !onlyStages || onlyStages.includes(s));
+  // 夹具已经"跑过"的阶段自动跳过;若调用方显式点名要跑其中之一,说明意图冲突,直接报错而不是默默二选一
+  const seededStages = cfg.seedFrom ? readFixture(cfg.seedFrom).stages : [];
+  if (onlyStages?.some((s) => seededStages.includes(s))) {
+    throw new FixtureError(`--stages 里含夹具已播种的阶段(${onlyStages.filter((s) => seededStages.includes(s)).join(", ")}):要重跑它就别用夹具`);
+  }
+  const stagesToRun = STAGES.filter((s) => (!onlyStages || onlyStages.includes(s)) && !seededStages.includes(s));
   const partial = stagesToRun.length !== STAGES.length;
   const configHash = sha256Text(JSON.stringify({ ...cfg, runDir: undefined, repoRoot: undefined })).slice(0, 16);
 
@@ -112,6 +183,9 @@ async function runResearchInner(cfg: RunConfig, deps: Deps, onlyStages?: Stage[]
     hooks: { enabled: cfg.hooksEnabled, installed: false, hooks_json: null, invocations: 0, stop_blocks: 0, stop_terminations: 0, pre_tool_use_blocks: 0, errors: 0, log_trust: "diagnostic_untrusted" },
     calc_version: calcVersion, repo_version: repoVersion, config_hash: configHash, raw_hashes: {}, execution_scope: [...stagesToRun], partial_run: partial,
     thread_id: null, fetch_ledger: {}, evidence_count: 0, calculation_count: 0, evidence_conflicts: [], gate: { ok: true, hits: [] }, exit_code: 2,
+    // 🔴 隔离标记**在 manifest 一创建时就置位**,而不是等收尾 —— 运行中途崩了,磁盘上的 manifest
+    //    也必须一眼看得出这是播种运行,否则它会像一次普通研究(Codex fixture-r2 P2)。收尾处只做补全。
+    ...(cfg.seedFrom ? { test_scenario: true } : {}),
     endpoint_scope: cfg.endpointScope, registry_version: cfg.registryVersion,
   };
   /** 编排器自有产物的 sha256(conflicts.json / manifest.json),与 runner 的 events 摘要一起构成"受保护产物"认证 */
@@ -178,6 +252,21 @@ async function runResearchInner(cfg: RunConfig, deps: Deps, onlyStages?: Stage[]
   const statusSoFar: Record<string, string> = {};
   /** 权威账本:只存在于编排器内存;磁盘上的 _ledger.json 仅供审计,validator 从不读它 */
   const ledger: Ledger = {};
+  // 夹具运行:被跳过的那几个阶段没有机会往内存账本里写,必须把夹具里那部分补回来,
+  // 否则它们的证据会被 validator 判成"没有账本条目"。这里用的是 loadLedgerFromDisk ——
+  // 产品既有的受限通道(原用于审计 / --no-agent 复核),而**播种运行本身已按测试运行隔离**
+  // (test_scenario=true、不进知识层),所以不削弱"正式运行只信内存账本"这条不变量。
+  if (cfg.seedFrom) {
+    // 🔴 先把隔离标记**落盘**,再做可能抛错的账本加载(Codex fixture-r3 P2):
+    //    否则"运行目录里已经有播种证据、磁盘 manifest 却还看不出这是播种运行"的窗口是真实存在的。
+    const fm = readFixture(cfg.seedFrom);
+    manifest.seeded_from = { fixture_data_day: fm.data_day, source_run_id: fm.source_run_id, stages: seededStages, stale: !fixtureFreshness(fm).fresh };
+    manifest.test_scenario = true;
+    persistManifest();
+    const seededLedger = loadLedgerFromDisk(cfg.runDir);
+    Object.assign(ledger, seededLedger);
+    runner.log("orchestrator", "fixture.seeded", { ...manifest.seeded_from, ledger_entries: Object.keys(seededLedger).length });
+  }
   /** 阶段计划(注册表推导):validator 用内存计划;fetch/_plan.json 仅供审计与 --no-agent 复核 */
   const planOf = { plan: cfg.stagePlan, critical: cfg.criticalScripts, endpoints: cfg.endpoints };
   writeJson(path.join(cfg.runDir, PLAN_REL), planFileOf(cfg.endpointScope, cfg.registryVersion, cfg.stagePlan, cfg.criticalScripts, cfg.endpoints));
@@ -346,7 +435,8 @@ async function runResearchInner(cfg: RunConfig, deps: Deps, onlyStages?: Stage[]
   manifest.viewer = null;
   manifest.knowledge_archived = null;
   // 任何 scenario(硬测试旋钮:注入冲突 / 证据 / 帖子、超时、钩子故障…)都意味着产物含合成数据 → 绝不归档进知识层(否则伪造证据会被下次召回)
-  const isTestScenario = !!cfg.scenario && Object.values(cfg.scenario).some((v) => v !== undefined && v !== null && v !== false && !(Array.isArray(v) && v.length === 0));
+  // 播种运行的产物混了**别次运行**的阶段数据 → 与 scenario 运行同等隔离(不进知识层、不进温度计历史)
+  const isTestScenario = !!cfg.seedFrom || (!!cfg.scenario && Object.values(cfg.scenario).some((v) => v !== undefined && v !== null && v !== false && !(Array.isArray(v) && v.length === 0)));
   manifest.test_scenario = isTestScenario;
   if (cfg.knowledgeArchive) {
     const viewRun = loadRun(cfg.runDir, ledger, planOf);

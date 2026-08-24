@@ -9,6 +9,7 @@
  *      [--endpoints full|core](full = 注册表全部启用端点(默认);core = 仅 Phase 0 的 8 个 legacy 脚本)
  *      [--knowledge on|off](默认 on:召回 .local/knowledge 里该标的的档案注入提示词)[--no-archive](不生成 viewer / 附录、不归档知识层)
  *      [--progress on|off](默认 on:把阶段进度与各阶段 summary 实时打到 **stderr**,首次可读产出 ~80 秒;stdout 的 JSON 契约不变)
+ *      [--seed-from <夹具目录>] [--allow-stale-fixture](**仅硬测试用**:播种前几个阶段的产物并跳过它们,省约一半墙钟;播种运行按测试运行隔离,不进知识层,不能替代发布前的完整运行)
  *      [--provider <id>](providers/<id>.json;默认 openai;非 openai 只能 api_key,未显式指定 auth 时自动选模板唯一支持的模式;也可用环境变量 VRA_PROVIDER)
  *      [--auth api_key|chatgpt_login](显式指定认证方式,优先级最高;也可用环境变量 VRA_PROVIDER_AUTH)
  * 退出码:0 complete / 2 incomplete|stale / 3 failed 或编排异常。
@@ -86,6 +87,8 @@ export function configFromArgs(args: Record<string, string | boolean>, env: Node
     endpointScope: parseScope(str(args.endpoints)),
     knowledgeRecall: str(args.knowledge) === undefined ? true : str(args.knowledge) === "on",
     knowledgeArchive: args["no-archive"] !== true,
+    seedFrom: str(args["seed-from"]),
+    allowStaleFixture: args["allow-stale-fixture"] === true,
   });
   let stages: Stage[] | undefined;
   if (str(args.stages)) {

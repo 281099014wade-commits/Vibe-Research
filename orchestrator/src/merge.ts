@@ -162,6 +162,8 @@ export interface Manifest {
   thermo_archived?: { endpoints: string[]; appended: number; skipped: number; corrupt_moved: number } | null;
   /** 带 scenario(硬测试旋钮)的运行:产物含合成数据,不进知识层归档 */
   test_scenario?: boolean;
+  /** 夹具播种运行:哪几个阶段的产物来自别次运行(见 fixture.ts)。非 null 即**不是**一次完整的真实研究 */
+  seeded_from?: { fixture_data_day: string; source_run_id: string; stages: string[]; stale: boolean } | null;
   /** 产业温度计门控结果(第 13 层):命中的产业标签、依据、被跳过的端点 */
   industry_tags?: { tags: string[]; matched: Record<string, string[]>; skipped: string[]; signals: number };
   /** 卡口事件分类结果(确定性筛子):扫描条数 / 命中数 / 各类别计数 */
