@@ -167,13 +167,13 @@ test("policy-r1:judgePolicyAccess——护栏方向反写 / 绝对结论 / 文�
     { id: "ev-d2d2d2d2d2d2", field: "policy_bis_status", value: "not_mentioned", unit: "status", currency: "n/a", period: "2026-08-23", as_of: "2026-08-23", source: "s", symbol: "300308", market: "SZ", note: "x" },
     { id: "ev-e2e2e2e2e2e2", field: "policy_fcc_covered_by_name", value: "not_on_list", unit: "status", currency: "n/a", period: "2026-08-23", as_of: "2026-08-23", source: "s", symbol: "300308", market: "SZ", note: "x" },
     { id: "ev-e1e1e1e1e1e1", field: "policy_fcc_entries_count", value: 17, unit: "条", currency: "n/a", period: "2026-08-23", as_of: "2026-08-23", source: "s", symbol: "300308", market: "SZ", note: "x" },
-    { id: "ev-f1f1f1f1f1f1", field: "policy_cn_side_status", value: "not_connected", unit: "status", currency: "n/a", period: "2026-08-23", as_of: "2026-08-23", source: "s", symbol: "300308", market: "SZ", note: "x" },
+    { id: "ev-dd44dd44dd44", field: "policy_cn_side_status", value: "not_connected", unit: "status", currency: "n/a", period: "2026-08-23", as_of: "2026-08-23", source: "s", symbol: "300308", market: "SZ", note: "x" },
   ];
   writeJson(path.join(d, "evidence.json"), ev);
   writeJson(path.join(d, "stages", "risk.json"), { extra_findings: [{ topic: "管制与准入", summary: "x", evidence_ids: ["ev-b1b1b1b1b1b1"] }] });
   writeJson(path.join(d, "manifest.json"), { status: "complete", exit_code: 0, fetch_ledger: { policy_access: { status: "ok" } }, gate: { ok: true, hits: [] }, stages: [] });
   const rep = (body: string) => `# 报告\n\n## 结论摘要\n\n- x\n\n## 管制与准入\n\n${body}\n\n## 裁决点\n\n- x\n`;
-  const good = "- 1260H:on_list(通知 2026-06-10 · FR Doc 2026-11571 · 命中 Zhongji Innolight Co., Ltd.)[ev-b1b1b1b1b1b1][ev-c1c1c1c1c1c1];BIS:not_mentioned(原文确认提及 0 条)[ev-d2d2d2d2d2d2][ev-d1d1d1d1d1d1];FCC 点名:not_on_list [ev-e2e2e2e2e2e2],名单共 17 条 [ev-e1e1e1e1e1e1];中方侧:not_connected [ev-f1f1f1f1f1f1]。护栏:这根轴只当打折项、不重排名次;没被点名 ≠ 不受影响;被建议列入 ≠ 已列入,只认联邦公报原文;中方侧未接入,沉默不能证明不受管制;不能据此断言不存在管制风险。";
+  const good = "- 1260H:on_list(通知 2026-06-10 · FR Doc 2026-11571 · 命中 Zhongji Innolight Co., Ltd.)[ev-b1b1b1b1b1b1][ev-c1c1c1c1c1c1];BIS:not_mentioned(原文确认提及 0 条)[ev-d2d2d2d2d2d2][ev-d1d1d1d1d1d1];FCC 点名:not_on_list [ev-e2e2e2e2e2e2],名单共 17 条 [ev-e1e1e1e1e1e1];中方侧:not_connected [ev-dd44dd44dd44]。护栏:这根轴只当打折项、不重排名次;没被点名 ≠ 不受影响;被建议列入 ≠ 已列入,只认联邦公报原文;中方侧未接入,沉默不能证明不受管制;不能据此断言不存在管制风险。";
   fs.writeFileSync(path.join(d, "report.md"), rep(good));
   const r = judgePolicyAccess(d);
   assert.ok(r.checks.slice(1).every((c) => c.pass), JSON.stringify(r.checks.filter((c) => !c.pass)));
@@ -346,4 +346,79 @@ test("commodity-r2:挂载端点的证据 id 直接取自信封(未知端点不�
   // ④ 失败但在 gaps 出声 → 通过,且不再要求报告引用
   mk(failed, [{ operation: "ssd_channel_thermo" }], base());
   assert.ok(chk(/取数失败.*risk\.gaps/).pass && chk(/都在报告章节被引用/).pass);
+});
+
+test("headlines-r1:judgeHeadlines 不许空跑——有命中却无章节 / 引未命中 / 空话关系句 / 缺声明 都判失败;合规写法通过;时刻不算数字", async () => {
+  const { judgeHeadlines } = await import("../src/hardtest.ts");
+  const d = fs.mkdtempSync(path.join(os.tmpdir(), "vra-head-"));
+  fs.mkdirSync(path.join(d, "stages")); fs.mkdirSync(path.join(d, "fetch"));
+  const E = (id: string, field: string, value: unknown, note: string) => ({ id, field, value, unit: field === "headline_item" ? "text" : "条", currency: "n/a", period: "2026-08-24", as_of: "2026-08-24", source: "techmeme", symbol: "300308", market: "SZ", record_key: id, note });
+  const NOTE = (rel: string) => `published=2026-08-24T20:45:00+08:00;period_basis=published;source=NYT;relevance=${rel};link=https://x.com/1;untrusted_text=sanitized;读法:线索不是事实`;
+  const hit = E("ev-aa11aa11aa11", "headline_item", "Nvidia expands data center supply", NOTE("命中:Nvidia"));
+  const miss = E("ev-bb22bb22bb22", "headline_item", "Consumer gadget review roundup", NOTE("未命中产业关键词"));
+  const cnt = E("ev-cc33cc33cc33", "headline_count", 2, "窗口 48 小时;读法:线索不是事实");
+  const fact = { id: "ev-dd44dd44dd44", field: "revenue", value: 100, unit: "亿元", currency: "CNY", period: "2026-06-30", as_of: "2026-08-24", source: "em", symbol: "300308", market: "SZ", note: "x" };
+  const mk = (riskIds: string[], report: string) => {
+    writeJson(path.join(d, "evidence.json"), [hit, miss, cnt, fact]);
+    writeJson(path.join(d, "fetch", "techmeme_headlines.json"), { evidence: [hit, miss, cnt] });
+    writeJson(path.join(d, "stages", "risk.json"), { extra_findings: riskIds.length ? [{ topic: "海外头条", summary: "x", evidence_ids: riskIds }] : [] });
+    writeJson(path.join(d, "manifest.json"), { symbol: "300308", status: "complete", exit_code: 0, fetch_ledger: { techmeme_headlines: { status: "ok" } }, gate: { ok: true, hits: [] }, stages: [] });
+    fs.writeFileSync(path.join(d, "report.md"), report);
+  };
+  const good = `# 报告\n\n## 海外头条\n\n- 2026-08-24 20:45(北京)· NYT · 英伟达扩产数据中心供应 [ev-aa11aa11aa11]\n- 与本报告的关系:与营收印证 [ev-dd44dd44dd44]\n- 以上为海外科技头条线索,非事实\n\n## 裁决点\n\n- x\n`;
+  const chk = (re: RegExp) => judgeHeadlines(d).checks.find((c) => re.test(c.name))!;
+  mk(["ev-aa11aa11aa11"], good);
+  assert.ok(judgeHeadlines(d).pass, judgeHeadlines(d).checks.filter((c) => !c.pass).map((c) => `${c.name}:${c.detail}`).join(" | "));
+  // 有命中却完全没章节 → 失败(原实现可空跑)
+  mk(["ev-aa11aa11aa11"], `# 报告\n\n## 裁决点\n\n- x\n`);
+  assert.ok(!chk(/有命中条目时/).pass);
+  // 引了未命中条目 → 失败
+  mk(["ev-aa11aa11aa11"], good.replace("[ev-aa11aa11aa11]", "[ev-aa11aa11aa11] [ev-bb22bb22bb22]"));
+  assert.ok(!chk(/全部是「命中」条目/).pass);
+  // 关系句是空话(不引非头条 id)→ 失败
+  mk(["ev-aa11aa11aa11"], good.replace("- 与本报告的关系:与营收印证 [ev-dd44dd44dd44]", "- 线索关系"));
+  assert.ok(!chk(/关系句必须引用非头条/).pass);
+  // 缺"非事实"声明 → 失败
+  mk(["ev-aa11aa11aa11"], good.replace("- 以上为海外科技头条线索,非事实", "- 以上为线索"));
+  assert.ok(!chk(/关系句必须引用非头条/).pass);
+  // 行内写了标题里的数字 → 失败;但时刻(20:45)不算数字
+  mk(["ev-aa11aa11aa11"], good.replace("英伟达扩产数据中心供应", "英伟达扩产数据中心供应,涉及 1.8 亿美元"));
+  assert.ok(!chk(/不写数字/).pass);
+  // 贴链接 → 失败
+  mk(["ev-aa11aa11aa11"], good.replace("[ev-aa11aa11aa11]", "https://nyt.com/x [ev-aa11aa11aa11]"));
+  assert.ok(!chk(/不贴链接/).pass);
+});
+
+test("headlines-r2:零命中留痕不可空过(无章节 / 空 findings / 只写无关话 都判失败);时刻只在有日期的行豁免", async () => {
+  const { judgeHeadlines, claimTokens } = await import("../src/hardtest.ts");
+  const d = fs.mkdtempSync(path.join(os.tmpdir(), "vra-head0-"));
+  fs.mkdirSync(path.join(d, "stages")); fs.mkdirSync(path.join(d, "fetch"));
+  const NOTE = "published=2026-08-24T20:45:00+08:00;period_basis=published;source=NYT;relevance=未命中产业关键词;link=https://x.com/1;untrusted_text=sanitized";
+  const miss = { id: "ev-bb22bb22bb22", field: "headline_item", value: "Consumer gadget roundup", unit: "text", currency: "n/a", period: "2026-08-24", as_of: "2026-08-24", source: "techmeme", symbol: "300308", market: "SZ", record_key: "u:1", note: NOTE };
+  const cnt = { ...miss, id: "ev-cc33cc33cc33", field: "headline_count", value: 5, unit: "条", note: "窗口 48 小时;命中 0 条" };
+  const mk = (findings: unknown[], report: string) => {
+    writeJson(path.join(d, "evidence.json"), [miss, cnt]);
+    writeJson(path.join(d, "fetch", "techmeme_headlines.json"), { evidence: [miss, cnt] });
+    writeJson(path.join(d, "stages", "risk.json"), { extra_findings: findings });
+    writeJson(path.join(d, "manifest.json"), { symbol: "300308", status: "complete", exit_code: 0, fetch_ledger: { techmeme_headlines: { status: "ok" } }, gate: { ok: true, hits: [] }, stages: [] });
+    fs.writeFileSync(path.join(d, "report.md"), report);
+  };
+  const zc = (re: RegExp) => judgeHeadlines(d).checks.find((c) => re.test(c.name))!;
+  // 完全没章节 + 没 findings → 失败(原实现直接放行)
+  mk([], `# 报告\n\n## 裁决点\n\n- x\n`);
+  assert.ok(!zc(/零命中时也要留痕/).pass);
+  // 空 findings(topic 在但 evidence_ids 为空)→ 失败
+  mk([{ topic: "海外头条", summary: "x", evidence_ids: [] }], `# 报告\n\n## 海外头条\n\n- 暂无其他内容\n\n## 裁决点\n\n- x\n`);
+  assert.ok(!zc(/零命中时也要留痕/).pass);
+  // 章节写明"窗口内无命中"并引计数证据 → 通过
+  mk([], `# 报告\n\n## 海外头条\n\n- 窗口内无命中的海外头条 [ev-cc33cc33cc33]\n\n## 裁决点\n\n- x\n`);
+  assert.ok(zc(/零命中时也要留痕/).pass, zc(/零命中时也要留痕/).detail);
+  // risk 引计数证据也算留痕
+  mk([{ topic: "海外头条", summary: "窗口内无命中", evidence_ids: ["ev-cc33cc33cc33"] }], `# 报告\n\n## 裁决点\n\n- x\n`);
+  assert.ok(zc(/零命中时也要留痕/).pass);
+  // 时刻豁免只在有日期的行:带日期的行 20:45 不算数字;不带日期的"配比 3:10"仍是主张
+  assert.deepEqual(claimTokens("2026-08-24 20:45(北京)· NYT · 英伟达扩产").map((x) => x.n), []);
+  // 3:10 两个数都 ≤20,本来就被小整数当计数规则跳过(无实际危害);用会被计入的比值验证时刻规则没误剥
+  assert.deepEqual(claimTokens("材料配比为 35:65").map((x) => x.n), [35, 65]);
+  assert.deepEqual(claimTokens("2026-08-24 20:45 发布,配比 35:65").map((x) => x.n), [35, 65], "有日期的行只豁免时刻,不豁免比值");
 });

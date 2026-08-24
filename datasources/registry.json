@@ -2553,6 +2553,36 @@
         "dram_spot_avg"
       ],
       "notes": "🔴 社区转录的 DRAMeXchange 存档不是官方一手(可能有转录误差与停更),护栏必须原样带出;DRAM 现货是 HBM 的影子指标不是 HBM 价格(HBM 走年度长约无公开现货价);ddr5 序列无 product 字段 → 规格如实写\"未在数据中标明\";全市场证据 symbol=MARKET / record_key=品类;超 14 天标 stale 降 partial"
+    },
+    {
+      "id": "techmeme_headlines",
+      "title": "海外科技头条 · Techmeme river 时间流(按产业标签标注相关性)",
+      "layer": "16 海外头条",
+      "market": [
+        "CN"
+      ],
+      "source": "techmeme",
+      "compliance": "public-free(www.techmeme.com/river,无 key)",
+      "module": "headlines",
+      "function": "techmeme_headlines",
+      "mapper": "techmeme_headlines_map",
+      "mapper_module": "mappers_headlines",
+      "endpoint_label": "techmeme.com/river(回退 feed.xml)",
+      "symbol_kind": "none",
+      "symbol_param": "code",
+      "stages": {
+        "risk": "optional"
+      },
+      "industry_tags": [
+        "ai_compute",
+        "storage_memory"
+      ],
+      "pass_out_dir": true,
+      "enabled": true,
+      "args": {
+        "window_hours": 48
+      },
+      "notes": "🔴 不可信文本:标题里的数字不得写成事实,动作措辞经 textsafe 脱敏,链接只进附录;相关性来自 industry_tags.json 的 headline_keywords(不硬编码个人关键词表),关键词为空 = 未标注(unscored)≠ 不相关;river 解析 0 条 = 结构变了 → 回退 RSS 但必须出声(只有约 15 条,窗口不完整);无时间戳条目丢弃不猜;窗口内零条是真实状态(凌晨 / 假日)标 partial 不算故障"
     }
   ]
 }

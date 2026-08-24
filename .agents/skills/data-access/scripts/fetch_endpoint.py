@@ -127,6 +127,10 @@ def main() -> None:
                 call_args["market"] = market
             if ep.get("pass_timeout"):
                 call_args["timeout"] = a.timeout
+            if ep.get("pass_out_dir"):
+                # 少数端点要读**编排器在本次运行里写好的**产物(如产业门控结果 fetch/_industry.json)来决定筛选口径。
+                # 只读、且只读编排器自己的确定性产物;端点必须在注册表显式声明 pass_out_dir。
+                call_args["out_dir"] = a.out_dir
             result = fn(**call_args)
             ctx["raw_ref"] = cap.last_raw_ref
             ctx["raws"] = cap.raws
