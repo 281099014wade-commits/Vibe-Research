@@ -35,6 +35,7 @@ export const TOPIC_SECTION: Record<string, string> = {
   管制与准入: "管制与准入",
   海外头条: "海外头条",
   招聘信号: "招聘信号",
+  宏观概率: "宏观概率",
 };
 
 /**

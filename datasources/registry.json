@@ -2613,6 +2613,33 @@
         "hiring_open_roles"
       ],
       "notes": "锚点清单在 industry_tags.json 的 hiring_anchors(与温度计同一处配置);⛔ Workday 系(NVIDIA/Coherent/Lumentum/Marvell/Micron)需 host+tenant+site 非零配置,不收、如实写未接入;岗位数是招聘意图不是产能,只在同一公司内部比变化;全市场证据 symbol=MARKET / record_key=ats:slug;逐家隔离失败,全失败才抛;解析不出 jobs 数组=结构变了必须抛"
+    },
+    {
+      "id": "macro_probability",
+      "title": "宏观概率 · 预测市场对宏观事件的定价概率(Kalshi + Polymarket,零鉴权)",
+      "layer": "18 宏观概率",
+      "market": [
+        "CN",
+        "US",
+        "HK"
+      ],
+      "source": "prediction-markets(kalshi+polymarket)",
+      "compliance": "public-api-free(api.elections.kalshi.com / gamma-api.polymarket.com,无 key;只读公开行情,不下单不涉资金)",
+      "module": "probability",
+      "function": "macro_probability",
+      "mapper": "macro_probability_map",
+      "mapper_module": "mappers_probability",
+      "endpoint_label": "kalshi events + polymarket gamma markets",
+      "symbol_kind": "none",
+      "symbol_param": "code",
+      "stages": {
+        "risk": "optional"
+      },
+      "enabled": true,
+      "history_fields": [
+        "macro_probability"
+      ],
+      "notes": "移植自 simonlin1212/GlobalPercent 的模块分类器与取数形态。只收 6 个核心模块(货币政策 / 宏观经济 / 地缘政治 / 政治选举 / 股指大宗 / AI科技),参考类(加密 / 体育 / 娱乐 / 其他)丢弃;每模块取前 3(排序键 = max(24h 成交量, 未平仓量) —— 月度宏观合约典型是持仓大、当日安静,只看当日量会被冷门合约挤掉)。**近端允许安静、远期必须有 24h 成交量** —— 纯日期窗口会误杀有意义的远期宏观合约(实测「Recession in 2027?」有真实成交却结算在 500 多天后),纯流动性又留不住 2099 年的僵尸盘。⚠️ 这是**市场当前的定价预期,不是事实也不是预测**,概率随时在变、只在 as_of 那一刻成立;低成交量合约噪音极大。⚠️ Kalshi 的成交量字段是 volume_24h_fp / volume_fp(不是 volume_24h),且服务端**忽略 category 查询参数**,只能翻页后本地分类。"
     }
   ]
 }
