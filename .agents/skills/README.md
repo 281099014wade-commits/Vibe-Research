@@ -5,7 +5,7 @@ Codex 项目级 skill 的真实发现路径是 `.agents/skills/<名>/SKILL.md`(�
 
 | skill | 状态 | 内容 |
 |---|---|---|
-| data-access | 已实现并过审(Phase 0 + Phase 1 M1) | 8 个 legacy 脚本(行情 / 画像 / 财务累计值 / 一致预期 / PE 历史 / 公告 / K 线 / 交易日历)+ `fetch_endpoint.py` 通用取数器 × `datasources/registry.json` 104 端点(`sources/` 20 个源模块 + mapper);内置备源、限流、原始落盘、契约 evidence;取数层零派生计算(SKILL.md §7) |
+| data-access | 已实现并过审(Phase 0 + Phase 1 M1) | 8 个 legacy 脚本(行情 / 画像 / 财务累计值 / 一致预期 / PE 历史 / 公告 / K 线 / 交易日历)+ `fetch_endpoint.py` 通用取数器 × `datasources/registry.json` 115 端点 / 29 层(`sources/` 28 个源模块 + mapper);内置备源、限流、原始落盘、契约 evidence;取数层零派生计算(SKILL.md §7) |
 | company-research | 已实现并过审(Phase 0 + Phase 1 M2) | 个股研究六阶段 SOP:每阶段取数 / calc 函数 / Gate / 产物;report 骨架;§6 扩展数据使用规则(extra_findings / 知识档案裁决 / 指标与筹码经 calc) |
 | valuation | 已实现(2026-08-22) | 成长股估值口径:扣非×4 PE / 前瞻 PE / TTM 分位 / PEG(扣非×4 ÷ 前瞻 CAGR)/ 前瞻 vs TTM 交叉验证 / 一致预期分歧 / 四锚消化年数与 30 倍锚三铁律 / 判读与常见错误;数字一律经 calc,不给价格锚 |
 | earnings-analysis | 已实现(2026-08-22) | 财报拆解:累计 → 单季 → TTM / 同比 / 环比口径地图,扣非 vs 归母,季节性与报告期对齐,三表交叉,比率经 calc `ratio`(0.3.1),质量检查与判读模板 |

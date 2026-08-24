@@ -11,6 +11,7 @@ import { CRITICAL_SCRIPTS, HOME_PREFIXES, REPORT_SECTIONS, STAGE_CALCS, STAGE_SC
 import { loadLedgerFromDisk, type Ledger } from "./fetchrun.ts";
 import { PLAN_REL, type EndpointDef, type PlanFile, type StagePlan } from "./registry.ts";
 import { complianceGate, missingSections, referencedIds, reportStatusToken } from "./gate.ts";
+import { extraSectionErrors, requiredExtraSections } from "./report_sections.ts";
 import { listFiles, readJsonIfExists, sha256File } from "./fsutil.ts";
 import { detectSourceConflicts, loadCalcs, loadFetch, mergeEvidence, type CalcRecord, type EvidenceItem, type FetchEnvelope, type SourceConflict } from "./merge.ts";
 import { validateCalcRecord, validateEvidenceItem, validateFetchEnvelope, validateStageOutput } from "./schemas.ts";
@@ -440,6 +441,9 @@ export function validateReport(run: RunView, expectedStatus?: RunStatus): Valida
   if (!run.report) return ok(["缺少 report.md"]);
   const miss = missingSections(run.report, REPORT_SECTIONS);
   if (miss.length) errors.push(`report.md 缺少章节:${miss.join(" / ")}`);
+  // 扩展章节:risk 阶段落了哪些 topic 是既成事实 → 报告必须写出对应章节并引其证据。
+  // 原来这条纪律只在提示词里,实测会被静默丢掉(见 report_sections.ts 顶部)。
+  errors.push(...extraSectionErrors(run.report, requiredExtraSections(run.stage("risk"))));
   const refs = referencedIds(run.report);
   for (const id of refs.evidence) if (!run.evidenceIds.has(id)) errors.push(`report.md 引用了不存在的 evidence ${id}`);
   for (const id of refs.calculation) if (!run.calcIds.has(id)) errors.push(`report.md 引用了不存在的 calculation ${id}`);

@@ -1,5 +1,5 @@
 {
-  "_doc": "产业标签表(第 13 层产业温度计的挂载依据)。编排器在 risk 阶段取数前,用 profile 阶段已拉到的行业 / 概念归属(fetch_profile.industry_em / industry_csrc、sw_industry 代码、em_concept_blocks.board_membership)判定:命中任一 **strong_keywords**,或(命中 weak_keywords 且申万代码命中 sw_prefixes)→ 挂载该 tag 的 thermometers。纯 ASCII 关键词(GPU / CPO / PCB…)按词边界匹配,中文按子串。没命中任何 tag 的公司不拉任何温度计(不是故障,是不相关)。每个 tag 的 guard 会原样进 risk 提示词。 headline_keywords = 第 16 层海外头条的相关性关键词(纯 ASCII 按词边界、中文按子串);headline_context_keywords 是泛词(OpenAI / capex / networking…)**必须与 headline_anchor_keywords 共现**才算相关(单独命中会把普通科技新闻误判成算力线索);缺该字段的标签不贡献关键词,一个都没有时头条不做相关性标注(unscored),绝不退回\"全都相关\"。",
+  "_doc": "产业标签表(第 13 层产业温度计的挂载依据)。编排器在 risk 阶段取数前,用 profile 阶段已拉到的行业 / 概念归属(fetch_profile.industry_em / industry_csrc、sw_industry 代码、em_concept_blocks.board_membership)判定:命中任一 **strong_keywords**,或(命中 weak_keywords 且申万代码命中 sw_prefixes)→ 挂载该 tag 的 thermometers。纯 ASCII 关键词(GPU / CPO / PCB…)按词边界匹配,中文按子串。没命中任何 tag 的公司不拉任何温度计(不是故障,是不相关)。每个 tag 的 guard 会原样进 risk 提示词。 headline_keywords = 第 16 层海外头条的相关性关键词(纯 ASCII 按词边界、中文按子串);headline_context_keywords 是泛词(OpenAI / capex / networking…)**必须与 headline_anchor_keywords 共现**才算相关(单独命中会把普通科技新闻误判成算力线索);缺该字段的标签不贡献关键词,一个都没有时头条不做相关性标注(unscored),绝不退回\"全都相关\"。 hiring_anchors = 第 17 层招聘信号的锚点公司(ats+slug+name+role);只收零鉴权的 Greenhouse / Ashby,Workday 系需三段配置不收,缺就如实写未接入(≠ 零岗位)。",
   "tags": {
     "ai_compute": {
       "title": "AI 算力硬件链(光模块 / PCB / CCL / 服务器 / 算力芯片 / 液冷 / 交换机)",
@@ -100,6 +100,44 @@
         "foundry",
         "AI model",
         "supply"
+      ],
+      "hiring_anchors": [
+        {
+          "name": "Lightmatter",
+          "ats": "greenhouse",
+          "slug": "lightmatter",
+          "role": "硅光 / 光互连"
+        },
+        {
+          "name": "Astera Labs",
+          "ats": "greenhouse",
+          "slug": "asteralabs",
+          "role": "互连芯片(PCIe / CXL)"
+        },
+        {
+          "name": "Cerebras",
+          "ats": "ashby",
+          "slug": "cerebras",
+          "role": "算力芯片"
+        },
+        {
+          "name": "OpenAI",
+          "ats": "ashby",
+          "slug": "openai",
+          "role": "需求侧(模型厂)"
+        },
+        {
+          "name": "xAI",
+          "ats": "greenhouse",
+          "slug": "xai",
+          "role": "需求侧(模型厂)"
+        },
+        {
+          "name": "Anthropic",
+          "ats": "greenhouse",
+          "slug": "anthropic",
+          "role": "需求侧(模型厂)"
+        }
       ]
     },
     "storage_memory": {

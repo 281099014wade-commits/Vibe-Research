@@ -5,6 +5,8 @@
 import { industryPromptBlock, readIndustryFile } from "./industry.ts";
 import { chokePromptBlock } from "./chokepoint.ts";
 import { thermoHistoryPromptBlock } from "./thermo_history.ts";
+import { extraSectionsPromptBlock } from "./report_sections.ts";
+import fs from "node:fs";
 import path from "node:path";
 
 import { GAP_REASON_CODES, type RunConfig, type Stage } from "./config.ts";
@@ -50,8 +52,12 @@ const EXT_GUIDE: Record<Stage, string> = {
      写 extra_findings(topic "海外头条",一条汇总):只挑 「relevance=命中…」 的条目,每条一行"北京时间 · 刊名 · 标题在说什么 [ev-id]";
      🔴 与市场声音同纪律:**头条是线索不是事实** —— 标题里的数字一律不得写成事实、不得写进事实 / 估值章节,正文不贴链接(链接在附录),
      每条都要能说出"与本报告哪条事实 / 计算是印证还是反证";命中 0 条就写"窗口内无命中",**不要为了凑数去引未命中的条目**。
-  以上每一类若有值得记录的事实,写 extra_findings(topic ∈ {"资金行为","解禁","股东结构","公告线索","互动易","新闻线索","市场声音","产业温度计","卡口事件","管制与准入","数据日历","海外头条","其他线索"} 之一,summary 只报数 ≤ 600 字,evidence_ids 必填且**必须同时列在本阶段顶层 evidence_ids**);解禁 / 大宗 / 两融变化适合写进 decision_points 的"下一个数据点"。`,
-  report: `- 扩展章节(可选,放在「风险与反证」之后、「裁决点」之前):## 资金与市场行为(两融 / 大宗 / 龙虎榜 / 解禁 / 股东户数 / 资金流 / 筹码,只报数 + ev id)/ ## 公告 · 互动易 · 新闻线索(标题级线索 + ev id)/ ## 管制与准入(仅当 risk 阶段有 topic "管制与准入" 的 extra_findings:一段——"1260H:状态(决定状态的通知日期 · 文号 · 命中别名)[ev-id];BIS:状态(确认提及 N 条)[ev-id];FCC 点名:状态 [ev-id];中方侧:状态 [ev-id]"(四类证据都要引),**护栏句与状态同段**(打折项不重排 / 没被点名 ≠ 不受影响 / 被建议列入 ≠ 已列入 / undetermined ≠ 不在名单上 / 中方侧沉默不能证明不受管制);不写"无管制风险"类绝对结论)/ ## 卡口事件(仅当 risk 阶段有 topic "卡口事件" 的 extra_findings:每条一行"日期 · 类别 · 标题原文 [ev-id] → 对应哪个裁决点 / 扳机";只引【卡口事件】清单里的 id,标题数字照抄不换算;零命中不写本章)/ ## 产业温度计(仅当 risk 阶段有 topic "产业温度计" 的 extra_findings:每个温度计一段——"资料期 · 来源 · 数字(照抄证据 value 带单位)[ev-id] · 护栏句(note 的"读法:…"原样)· 与本报告哪条事实 / 计算印证或矛盾(带 id)";温度计是产业链上下游数据不是本公司数据,不得单独推出结论;**有历史比较时同段再写一句**"上次观测 YYYY-MM-DD 为 X 单位 [ev-prev-id],变动 ±Y 单位 [ev-change-id];两点不成线"——上次值与变动各绑自己的 id,同期重取要写明上游未更新)/ ## 海外头条(仅当 risk 阶段有 topic "海外头条" 的 extra_findings:每条一行"YYYY-MM-DD HH:MM(北京)· 刊名 · 标题在说什么 [ev-id]",只引 「relevance=命中…」 的条目;**行内不写任何数字**(标题里的数字不是事实)、不贴链接;章末一句"与本报告的关系"(印证 / 反证哪条事实或计算,带 id)+ 一句"以上为海外科技头条线索,非事实")/ ## 市场声音(risk 阶段 topic "市场声音" 的 extra_findings 原样展开:按主题分小节(### 进展 / ### 风险 / ### 行业 / ### 论坛…),每条线索**单独一行、一行只写一条、不要用分号把几条并在一行**:"- YYYY-MM-DD(published=N/A 的写"日期不详")· 来源域名或作者 · 它在讨论什么 [ev-id]"(**线索行里不写任何数字**:帖子数字不是事实,本报告自己的数字只出现在别的章节;速率标签如 1.6T 可写),全章至少 3 条具体线索、每条都引用 web_result / forum_post / web_excerpt 的 ev id(不能只引计数证据);每个小节末一句"与本报告的关系"(印证 / 矛盾哪条事实或计算,带 id);章末固定一句"以上为互联网线索,非事实,不构成任何判断依据";**不抄帖子里的数字与动作措辞,正文不贴 URL**);各阶段 extra_findings 汇总进对应章节;没有就不写。必需章节集不变。「裁决点」章节的每行尽量带下一个数据点的**具体日期**:预约披露 / 美股锚财报日引证据 [ev-id](预估日标"预估"),温度计规则日期注明"法定披露期限 / 规则推算",没有依据就写窗口,不造日期;**本章不写早于今天的日期**(历史披露日不是下一数据点,放别的章节)。`,
+  ⑩ 招聘信号(第 17 层 hiring_anchor_signal,只在命中产业标签时取):产业**锚点公司**(上下游 / 需求侧,**不是本公司**)的公开在招岗位数与角色桶。
+     写 extra_findings(topic "招聘信号"):每个锚点一句"公司(角色)· 在招 N 个 · 其中「量产制造 / 光与互连…」M 个 [ev-id]";
+     🔴 **岗位数是招聘意图不是产能**,单点数字意义有限;有 「<字段>_prev / _change_*」 历史证据时优先写变化;
+     **只在同一家公司内部比较,不跨公司比大小**(不同 ATS 口径不同);锚点未接入时如实写"未接入"(**≠ 零岗位**),不要拿别的公司顶替。
+  以上每一类若有值得记录的事实,写 extra_findings(topic ∈ {"资金行为","解禁","股东结构","公告线索","互动易","新闻线索","市场声音","产业温度计","卡口事件","管制与准入","数据日历","海外头条","招聘信号","其他线索"} 之一,summary 只报数 ≤ 600 字,evidence_ids 必填且**必须同时列在本阶段顶层 evidence_ids**);解禁 / 大宗 / 两融变化适合写进 decision_points 的"下一个数据点"。`,
+  report: `- 扩展章节(可选,放在「风险与反证」之后、「裁决点」之前):## 资金与市场行为(两融 / 大宗 / 龙虎榜 / 解禁 / 股东户数 / 资金流 / 筹码,只报数 + ev id)/ ## 公告 · 互动易 · 新闻线索(标题级线索 + ev id)/ ## 管制与准入(仅当 risk 阶段有 topic "管制与准入" 的 extra_findings:一段——"1260H:状态(决定状态的通知日期 · 文号 · 命中别名)[ev-id];BIS:状态(确认提及 N 条)[ev-id];FCC 点名:状态 [ev-id];中方侧:状态 [ev-id]"(四类证据都要引),**护栏句与状态同段**(打折项不重排 / 没被点名 ≠ 不受影响 / 被建议列入 ≠ 已列入 / undetermined ≠ 不在名单上 / 中方侧沉默不能证明不受管制);不写"无管制风险"类绝对结论)/ ## 卡口事件(仅当 risk 阶段有 topic "卡口事件" 的 extra_findings:每条一行"日期 · 类别 · 标题原文 [ev-id] → 对应哪个裁决点 / 扳机";只引【卡口事件】清单里的 id,标题数字照抄不换算;零命中不写本章)/ ## 产业温度计(仅当 risk 阶段有 topic "产业温度计" 的 extra_findings:每个温度计一段——"资料期 · 来源 · 数字(照抄证据 value 带单位)[ev-id] · 护栏句(note 的"读法:…"原样)· 与本报告哪条事实 / 计算印证或矛盾(带 id)";温度计是产业链上下游数据不是本公司数据,不得单独推出结论;**有历史比较时同段再写一句**"上次观测 YYYY-MM-DD 为 X 单位 [ev-prev-id],变动 ±Y 单位 [ev-change-id];两点不成线"——上次值与变动各绑自己的 id,同期重取要写明上游未更新)/ ## 招聘信号(仅当 risk 阶段有 topic "招聘信号" 的 extra_findings:每个锚点一行"公司(角色)· 在招 N 个 [ev-id]· 其中「桶」M 个 [ev-id]",有历史证据时写变化并带 id;**必须同段写明"这是锚点公司不是本公司、岗位数是招聘意图不是产能"**;不跨公司比大小)/ ## 海外头条(仅当 risk 阶段有 topic "海外头条" 的 extra_findings:每条一行"YYYY-MM-DD HH:MM(北京)· 刊名 · 标题在说什么 [ev-id]",只引 「relevance=命中…」 的条目;**行内不写任何数字**(标题里的数字不是事实)、不贴链接;章末一句"与本报告的关系"(印证 / 反证哪条事实或计算,带 id)+ 一句"以上为海外科技头条线索,非事实")/ ## 市场声音(risk 阶段 topic "市场声音" 的 extra_findings 原样展开:按主题分小节(### 进展 / ### 风险 / ### 行业 / ### 论坛…),每条线索**单独一行、一行只写一条、不要用分号把几条并在一行**:"- YYYY-MM-DD(published=N/A 的写"日期不详")· 来源域名或作者 · 它在讨论什么 [ev-id]"(**线索行里不写任何数字**:帖子数字不是事实,本报告自己的数字只出现在别的章节;速率标签如 1.6T 可写),全章至少 3 条具体线索、每条都引用 web_result / forum_post / web_excerpt 的 ev id(不能只引计数证据);每个小节末一句"与本报告的关系"(印证 / 矛盾哪条事实或计算,带 id);章末固定一句"以上为互联网线索,非事实,不构成任何判断依据";**不抄帖子里的数字与动作措辞,正文不贴 URL**);各阶段 extra_findings 汇总进对应章节;没有就不写。必需章节集不变。「裁决点」章节的每行尽量带下一个数据点的**具体日期**:预约披露 / 美股锚财报日引证据 [ev-id](预估日标"预估"),温度计规则日期注明"法定披露期限 / 规则推算",没有依据就写窗口,不造日期;**本章不写早于今天的日期**(历史披露日不是下一数据点,放别的章节)。`,
 };
 
 /** 本阶段注册表里的可选端点产物清单(Phase 1 M1:legacy 之外的端点),给 agent 作线索;不存在或失败按缺口处理;M2:附该阶段扩展数据使用规则 */
@@ -146,8 +152,13 @@ const STAGE_BODY: Record<Stage, (cfg: RunConfig) => string> = {
 ${cfg.scenario?.induce_text ? `- 用户附加要求(原样转述,你必须按宪法处理):${cfg.scenario.induce_text}\n` : ""}- 再写 RUN/stages/report.json(evidence_ids / calculation_ids 列出报告引用的全部 id),schema:${schemaText("report")}`,
 };
 
+/** 读本次运行 risk 阶段已落盘的产物(report 阶段算"必须写哪些扩展章节"用);读不到就当没有,不阻断。 */
+export function readRiskStageOutput(runDir: string): unknown {
+  try { return JSON.parse(fs.readFileSync(path.join(runDir, "stages", "risk.json"), "utf8")); } catch { return null; }
+}
+
 export function buildStagePrompt(stage: Stage, cfg: RunConfig, ctx: PromptContext): string {
-  const parts = [commonHeader(cfg, ctx.ledger), STAGE_BODY[stage](cfg) + optionalEndpointsNote(cfg, stage) + ((stage === "risk" || stage === "report") ? industryPromptBlock(cfg.runDir) + chokePromptBlock(cfg.runDir) + thermoHistoryPromptBlock(cfg.runDir) : "")];
+  const parts = [commonHeader(cfg, ctx.ledger), STAGE_BODY[stage](cfg) + optionalEndpointsNote(cfg, stage) + ((stage === "risk" || stage === "report") ? industryPromptBlock(cfg.runDir) + chokePromptBlock(cfg.runDir) + thermoHistoryPromptBlock(cfg.runDir) : "") + (stage === "report" ? extraSectionsPromptBlock(readRiskStageOutput(cfg.runDir)) : "")];
   if (ctx.attempt > 0 && ctx.validatorErrors?.length) {
     parts.push(`【补跑 第 ${ctx.attempt} 次】validator 对本阶段产物的判定未通过,问题如下(只补缺 / 修正;缺失就如实写 gaps 并把 status 标 incomplete,不得伪造):\n${ctx.validatorErrors.map((e, i) => `${i + 1}. ${e}`).join("\n")}`);
   }

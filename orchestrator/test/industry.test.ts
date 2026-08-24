@@ -422,3 +422,45 @@ test("headlines-r2:零命中留痕不可空过(无章节 / 空 findings / 只写
   assert.deepEqual(claimTokens("材料配比为 35:65").map((x) => x.n), [35, 65]);
   assert.deepEqual(claimTokens("2026-08-24 20:45 发布,配比 35:65").map((x) => x.n), [35, 65], "有日期的行只豁免时刻,不豁免比值");
 });
+
+test("招聘信号 judge:合规写法通过;缺护栏 / 反向表述(等于产能)/ 数字未绑定 / id 漏进事实章节 / 把未接入读成零岗位 都判失败", async () => {
+  const { judgeHiring } = await import("../src/hardtest.ts");
+  const d = fs.mkdtempSync(path.join(os.tmpdir(), "vra-hire-"));
+  fs.mkdirSync(path.join(d, "stages")); fs.mkdirSync(path.join(d, "fetch"));
+  const NOTE = "Lightmatter(硅光 / 光互连;greenhouse 公开 job board)当前公开在招岗位数;产业标签=ai_compute;读法:岗位数是招聘意图不是产能,受招聘节奏与 HR 批次影响,单点数字意义有限、看变化;这些是产业链锚点公司不是本公司数据;不同 ATS 口径不同,只在同一家公司内部比较,不跨公司比大小";
+  const tot = { id: "ev-aa11aa11aa11", field: "hiring_open_roles", value: 69, unit: "个", currency: "n/a", period: "2026-08-24", as_of: "2026-08-24", source: "ats-public", symbol: "MARKET", market: "US", record_key: "greenhouse:lightmatter", note: NOTE };
+  const bk = { ...tot, id: "ev-bb22bb22bb22", field: "hiring_role_bucket", value: 15, record_key: "greenhouse:lightmatter:光与互连" };
+  const mk = (report: string, evidence = [tot, bk]) => {
+    writeJson(path.join(d, "evidence.json"), evidence);
+    writeJson(path.join(d, "fetch", "hiring_anchor_signal.json"), { evidence });
+    writeJson(path.join(d, "stages", "risk.json"), { extra_findings: evidence.length ? [{ topic: "招聘信号", summary: "x", evidence_ids: [tot.id] }] : [] });
+    writeJson(path.join(d, "manifest.json"), { symbol: "300308", status: "complete", exit_code: 0, fetch_ledger: { hiring_anchor_signal: { status: evidence.length ? "ok" : "partial" } }, gate: { ok: true, hits: [] }, stages: [] });
+    fs.writeFileSync(path.join(d, "report.md"), report);
+  };
+  // 护栏分两级(见 hardtest.ts judgeHiring):逐段必须标明「不是本公司」;章节级须写明「招聘意图不是产能」与「不跨公司比」
+  const good = `# 报告\n\n## 招聘信号\n\n- Lightmatter(硅光/光互连锚点,不是本公司)在招 69 个 [ev-aa11aa11aa11],其中「光与互连」15 个 [ev-bb22bb22bb22]\n\n岗位数是招聘意图不是产能,看变化;不同 ATS 口径不同,只在同一家公司内部比较,不跨公司比大小\n\n## 裁决点\n\n- x\n`;
+  const chk = (re: RegExp) => judgeHiring(d).checks.find((c) => re.test(c.name))!;
+  mk(good);
+  assert.ok(judgeHiring(d).pass, judgeHiring(d).checks.filter((c) => !c.pass).map((c) => `${c.name}:${c.detail}`).join(" | "));
+  // 逐段缺「不是本公司」→ 逐段那条判失败(这条必须贴着数字:单独引用时最容易被当成本公司事实)
+  mk(good.replace("(硅光/光互连锚点,不是本公司)", ""));
+  assert.ok(!chk(/每段都标明/).pass);
+  // 章节级缺「不跨公司比」→ 章节级那条判失败(旧实现声称查这条却根本没查 = 假绿,已补)
+  mk(good.replace(";不同 ATS 口径不同,只在同一家公司内部比较,不跨公司比大小", ""));
+  assert.ok(!chk(/章节级护栏齐/).pass);
+  // 章节级缺「招聘意图不是产能」
+  mk(good.replace("岗位数是招聘意图不是产能,看变化;", ""));
+  assert.ok(!chk(/章节级护栏齐/).pass);
+  // 反向表述:等于产能(在带 id 的那段里)
+  mk(good.replace("在招 69 个 [ev-aa11aa11aa11]", "在招 69 个,岗位数等于产能 [ev-aa11aa11aa11]"));
+  assert.ok(!chk(/每段都标明/).pass);
+  // 数字未绑定(段内写了个没有证据支撑的数)
+  mk(good.replace("其中「光与互连」15 个 [ev-bb22bb22bb22]", "其中「光与互连」42 个 [ev-bb22bb22bb22]"));
+  assert.ok(!chk(/数字全部绑到/).pass);
+  // id 漏进事实章节
+  mk(`# 报告\n\n## 事实\n\n- 营收增长与招聘 [ev-aa11aa11aa11]\n\n${good.slice(good.indexOf("## 招聘信号"))}`);
+  assert.ok(!chk(/不出现在事实/).pass);
+  // 未接入被读成零岗位
+  mk(`# 报告\n\n## 招聘信号\n\n- 锚点未接入,没人在招\n\n## 裁决点\n\n- x\n`, []);
+  assert.ok(!chk(/未接入/).pass);
+});

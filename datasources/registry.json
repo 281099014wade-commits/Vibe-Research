@@ -2583,6 +2583,36 @@
         "window_hours": 48
       },
       "notes": "🔴 不可信文本:标题里的数字不得写成事实,动作措辞经 textsafe 脱敏,链接只进附录;相关性来自 industry_tags.json 的 headline_keywords(不硬编码个人关键词表),关键词为空 = 未标注(unscored)≠ 不相关;river 解析 0 条 = 结构变了 → 回退 RSS 但必须出声(只有约 15 条,窗口不完整);无时间戳条目丢弃不猜;窗口内零条是真实状态(凌晨 / 假日)标 partial 不算故障"
+    },
+    {
+      "id": "hiring_anchor_signal",
+      "title": "招聘信号 · 产业锚点公司公开在招岗位(Greenhouse / Ashby 零鉴权)",
+      "layer": "17 招聘信号",
+      "market": [
+        "CN"
+      ],
+      "source": "ats-public",
+      "compliance": "public-api-free(boards-api.greenhouse.io / api.ashbyhq.com,无 key;只读公开岗位不碰简历)",
+      "module": "hiring",
+      "function": "hiring_anchor_signal",
+      "mapper": "hiring_anchor_signal_map",
+      "mapper_module": "mappers_hiring",
+      "endpoint_label": "greenhouse boards-api + ashby posting-api",
+      "symbol_kind": "none",
+      "symbol_param": "code",
+      "stages": {
+        "risk": "optional"
+      },
+      "industry_tags": [
+        "ai_compute",
+        "storage_memory"
+      ],
+      "pass_out_dir": true,
+      "enabled": true,
+      "history_fields": [
+        "hiring_open_roles"
+      ],
+      "notes": "锚点清单在 industry_tags.json 的 hiring_anchors(与温度计同一处配置);⛔ Workday 系(NVIDIA/Coherent/Lumentum/Marvell/Micron)需 host+tenant+site 非零配置,不收、如实写未接入;岗位数是招聘意图不是产能,只在同一公司内部比变化;全市场证据 symbol=MARKET / record_key=ats:slug;逐家隔离失败,全失败才抛;解析不出 jobs 数组=结构变了必须抛"
     }
   ]
 }

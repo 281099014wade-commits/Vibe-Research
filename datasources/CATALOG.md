@@ -1,4 +1,4 @@
-# 数据源端点目录(registry v1.0.0,共 106 个)
+# 数据源端点目录(registry v1.0.0,共 115 个)
 
 由 `datasources/gen_catalog.py` 从 `registry.json` 生成,勿手改。调用方式:`.venv/bin/python .agents/skills/data-access/scripts/fetch_endpoint.py --endpoint <id> --symbol <代码> [--args '<JSON>'] --out-dir <运行目录>`;legacy 端点为 Phase 0 的独立脚本。合规级:cn-public = 国内公开网页接口;S = 官方政府数据;B = 非官方 / 个人研究;C = 仅个人研究(CBOE 条款);rss-public = 公开 RSS。
 symbol_kind:cn6 = A 股 6 位码;us = 美股 ticker;hk = 港股 5 位;global = 美股 / 港股自动判别;raw = 原样透传(指数 / 关键词 / 期权标的);none = 不需要标的。
@@ -228,3 +228,37 @@ symbol_kind:cn6 = A 股 6 位码;us = 美股 ticker;hk = 港股 5 位;global = �
 |---|---|---|---|---|---|---|---|
 | `exa_market_voice` | 市场声音 · 全网语义搜索(Exa 免 key MCP):新闻 / 深度文 / KOL 帖,按主题分组,前 N 条读摘录 | CN | exa-mcp | web-search-free(mcp.exa.ai,无 key;结果为公开网页索引,只作线索) | cn6 | risk:optional | 查询词由模块按公司名确定性生成(业绩进展 / 风险 / 行业竞争 / 英文分析师);标题与摘录经 textsafe 脱敏(动作词替换、控制字符剥离、截断),原文在 raw;数字不可作事实引用 |
 | `exa_forum_voice` | 市场声音 · 雪球 / 股吧讨论(经 Exa 索引,只取标题 / 作者 / 日期 / 链接;正文受 WAF 限制不可读) | CN | exa-mcp | web-search-free(mcp.exa.ai,无 key;雪球 / 股吧页面本身受 WAF,只用索引元数据) | cn6 | risk:optional | 雪球 / 股吧匿名直连被阿里云 WAF 拦截(2026-08-23 实测),Jina 读帖子正文也被 IP 频繁墙挡;本端点只提供讨论的存在性与热度线索 |
+
+## 13 产业温度计(4)
+
+| id | 标题 | 市场 | 源 | 合规 | symbol_kind | 阶段 | 鉴权 / 备注 |
+|---|---|---|---|---|---|---|---|
+| `tw_monthly_revenue` | 产业温度计 · 台系供应链月营收(FinMind 零鉴权):台光 / 台燿 / 金像电 / 联亚,环比 · 同比 · 累计同比 · 台光×金像电差分 | CN | finmind | public-api-free(api.finmindtrade.com,无 key;台股法定月营收) | none | risk:optional | 每月 10 日前披露、滞后 ~10 天;402 = 配额 / 限流必须出声;资料期 > 2 个月标 partial;证据 market=TW / symbol=台股代码,币种 TWD。读法护栏在 note 与 extra.guard;history_fields=月营收 / 环比 / 同比进用户数据区序列,下次运行出 _prev / _change_*(累计同比与差分文本不做历史) |
+| `gpu_rent_thermometer` | 产业温度计 · GPU 租金(Vast 现货中位 + Kalshi 远期概率):算力缺不缺的一根线 | CN | vast+kalshi | public-api-free(console.vast.ai bundles + api.elections.kalshi.com trade-api v2,无 key) | none | risk:optional | Vast 带浏览器 UA 会 403(显式传 Python-urllib UA);H100 无在租报价是市场状态;Kalshi 三分判定(格式变 / 未开盘 / 有报价);$3 是折旧参考线不是保本线;证据 market=US / symbol=GPU 型号;history_fields=现货中位 / 远期概率 / 最低档进序列(报价档数是噪音不做历史;远期 record_key 自带合约月不跨月比) |
+| `cn_commodity_futures` | 产业温度计 · 上游大宗期货(新浪连续合约:沪铜 / 沪锡 / 沪铝 / 沪镍 / 工业硅) | CN | sina_futures | public-api-free(akshare futures_zh_daily_sina,无 key) | none | risk:optional | 全市场证据 → symbol=MARKET / record_key=品种代码;期货价不是本公司采购价(护栏原样进 note);工业硅需求由光伏主导对半导体是弱信号;资料超 10 天未更新标 stale 并降 partial;逐品种隔离失败,全失败才抛;DataFrame 非传输层原文 → record_raw(kind=extracted) |
+| `dram_spot_thermo` | 产业温度计 · DRAM / NAND 现货均价(GitHub 社区仓转录的 DRAMeXchange) | CN | github-community | public-repo-free(raw.githubusercontent.com,无 key) | none | risk:optional | 🔴 社区转录的 DRAMeXchange 存档不是官方一手(可能有转录误差与停更),护栏必须原样带出;DRAM 现货是 HBM 的影子指标不是 HBM 价格(HBM 走年度长约无公开现货价);ddr5 序列无 product 字段 → 规格如实写"未在数据中标明";全市场证据 symbol=MARKET / record_key=品类;超 14 天标 stale 降 partial |
+
+## 14 管制与准入(1)
+
+| id | 标题 | 市场 | 源 | 合规 | symbol_kind | 阶段 | 鉴权 / 备注 |
+|---|---|---|---|---|---|---|---|
+| `policy_access` | 管制与准入 · 美方名单状态(1260H 全文检索 / BIS 规则提及 / FCC Covered List)+ 中方出口管制公告事件流 | CN | federalregister+cninfo+fcc+mofcom | public-api-free(federalregister.gov API / cninfo companyOverview / fcc.gov 与 mofcom 经 r.jina.ai 免 key) | cn6 | risk:optional | 判定以联邦公报通知全文检索公司英文名为准;无英文名 = undetermined(≠ not_on_list);没被点名 ≠ 不受影响;'被建议列入' ≠ '已列入';中方侧默认不接(商务部公告列表 JS 渲染零配置抓不到,证据里给 not_connected 护栏)。移植自 V2 policy_access.py |
+
+## 15 数据日历(2)
+
+| id | 标题 | 市场 | 源 | 合规 | symbol_kind | 阶段 | 鉴权 / 备注 |
+|---|---|---|---|---|---|---|---|
+| `next_disclosure` | 数据日历 · 本公司下一份定期报告的预约披露日(东财 RPT_PUBLIC_BS_APPOIN) | CN | eastmoney | public-api-free(datacenter-web.eastmoney.com,无 key) | cn6 | risk:optional | 预约日可能提前或推迟,以公司公告为准;过了预约日仍未披露=延期信号;result=null 是真实状态(无记录)不是故障;成功但一行都解析不出=结构变了必须抛 |
+| `us_anchor_earnings` | 数据日历 · 美股锚下一个财报日(Nasdaq analyst/{ticker}/earnings-date,默认 NVDA) | CN | nasdaq | public-api-free(api.nasdaq.com,无 key;主机限流 2/s) | none | risk:optional | 文案带 * / expected = 交易所与 Zacks 预估日,不是公司确认日,证据 note 必须写明;逐 ticker 隔离失败;解析不出日期=结构变了必须抛;证据 market=US / record_key=ticker |
+
+## 16 海外头条(1)
+
+| id | 标题 | 市场 | 源 | 合规 | symbol_kind | 阶段 | 鉴权 / 备注 |
+|---|---|---|---|---|---|---|---|
+| `techmeme_headlines` | 海外科技头条 · Techmeme river 时间流(按产业标签标注相关性) | CN | techmeme | public-free(www.techmeme.com/river,无 key) | none | risk:optional | 🔴 不可信文本:标题里的数字不得写成事实,动作措辞经 textsafe 脱敏,链接只进附录;相关性来自 industry_tags.json 的 headline_keywords(不硬编码个人关键词表),关键词为空 = 未标注(unscored)≠ 不相关;river 解析 0 条 = 结构变了 → 回退 RSS 但必须出声(只有约 15 条,窗口不完整);无时间戳条目丢弃不猜;窗口内零条是真实状态(凌晨 / 假日)标 partial 不算故障 |
+
+## 17 招聘信号(1)
+
+| id | 标题 | 市场 | 源 | 合规 | symbol_kind | 阶段 | 鉴权 / 备注 |
+|---|---|---|---|---|---|---|---|
+| `hiring_anchor_signal` | 招聘信号 · 产业锚点公司公开在招岗位(Greenhouse / Ashby 零鉴权) | CN | ats-public | public-api-free(boards-api.greenhouse.io / api.ashbyhq.com,无 key;只读公开岗位不碰简历) | none | risk:optional | 锚点清单在 industry_tags.json 的 hiring_anchors(与温度计同一处配置);⛔ Workday 系(NVIDIA/Coherent/Lumentum/Marvell/Micron)需 host+tenant+site 非零配置,不收、如实写未接入;岗位数是招聘意图不是产能,只在同一公司内部比变化;全市场证据 symbol=MARKET / record_key=ats:slug;逐家隔离失败,全失败才抛;解析不出 jobs 数组=结构变了必须抛 |

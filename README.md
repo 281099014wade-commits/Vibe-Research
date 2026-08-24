@@ -1,6 +1,6 @@
 <p align="center"><b>简体中文</b> | <a href="README_en.md">English</a></p>
 <h1 align="center">vibe-research-agent</h1>
-<p align="center"><b>基于 OpenAI Codex 的开源 A 股金融研究 Agent("Codex for Finance")</b><br>零 fork · 三级约束 · 104 端点数据管道 · 确定性计算库 · 合规红线 · 多模型接入</p>
+<p align="center"><b>基于 OpenAI Codex 的开源 A 股金融研究 Agent("Codex for Finance")</b><br>零 fork · 三级约束 · 115 端点数据管道 · 确定性计算库 · 合规红线 · 多模型接入</p>
 <p align="center">
   <img alt="License" src="https://img.shields.io/badge/license-pending-lightgrey">
   <img alt="TypeScript" src="https://img.shields.io/badge/TypeScript-orchestrator-3178c6">
@@ -42,7 +42,8 @@ Codex 仓库一行不改(零 fork):运行用官方安装的 `codex` CLI 与同�
 ## 它能做什么
 
 - **一键研究**:`run.ts --symbol 300308` → 六阶段状态机,每阶段取数 → agent 解释 → validator 校验(账本 / schema / 引用 / 复算 / 语义槽位)→ 不过自动补跑 → 合规 gate → 合并产物。产物:`report.md`、`evidence.json`(每条证据带 raw 原文引用)、`calculations.json`(每个数字的计算 DAG)、`conflicts.json`(跨源冲突)、`viewer.html`(自包含证据查看器)、`manifest.json`。
-- **数据管道**:`datasources/registry.json` 注册 106 个零鉴权 / 低鉴权端点(24 层,CN / US / HK:行情、财务三表、一致预期、资金流、融资融券、筹码、公告、研报、宏观、交易所、SEC / FINRA / CBOE、RSS 新闻雷达),通用取数器一条命令取任一端点,原始响应全部落盘;**取数层不做任何派生计算**。
+- **数据管道**:`datasources/registry.json` 注册 115 个零鉴权 / 低鉴权端点(29 层,CN / US / HK:行情、财务三表、一致预期、资金流、融资融券、筹码、公告、研报、宏观、交易所、SEC / FINRA / CBOE、RSS 新闻雷达),通用取数器一条命令取任一端点,原始响应全部落盘;**取数层不做任何派生计算**。
+- **情报层(第 12–17 层,按产业标签自动挂载)**:公司自己的报表之外,再叠三类外部读数 —— **市场声音**(公开讨论,只当线索不当事实)· **产业温度计**(上下游硬数据:台系月营收 / GPU 租金 / 期货 / DRAM 现货,带跨运行变动)· **管制与准入**(联邦公报 1260H / BIS / FCC 原文检索)· **数据日历**(下一个数据点的具体日期)· **海外头条**(需求侧一手线索)· **招聘信号**(产业锚点公司公开在招岗位)· **卡口事件**(公告标题的确定性分类)。🔴 每类都自带**读法护栏**并要求与数字同段出现(例:岗位数是招聘意图不是产能;温度计是产业读数不是本公司业绩),且**按标的所属产业标签门控** —— 没命中标签就不取,不是缺口。
 - **确定性计算库** `calc/`:估值 / 序列 / 技术指标 / 筹码分布 18 个纯函数,fixture 测试,CLI 输出带确定性 `calculation_id` 与输入 DAG,validator 可复算。
 - **知识层**:每次运行自动归档到用户私有区 `.local/knowledge/`,下次运行默认召回(带"不可信数据"边界与新鲜度判定),由 agent 逐条裁决新旧冲突。
 - **接口**:MCP server(8 个工具,可接入 Codex CLI / 任何 MCP 客户端)、本机 HTTP API + 薄浏览页、多标的批量、两次运行变化提醒、数据源健康巡检。
@@ -178,7 +179,7 @@ OpenAI 基线矩阵(订阅登录,2026-08-22):9 pass · 1 n/a。国产模型矩�
 
 ## 数据源
 
-106 个端点 / 24 层 / CN + US + HK,按合规级标注(`cn-public` 国内公开网页接口 · `S` 官方政府数据 · `B` 非官方 / 个人研究 · `C` 仅个人研究 · `rss-public` 公开 RSS)。原则:证据单位 / 币种按源原样由 mapper 明示、每条证据绑定 raw 原文、**取数层不做任何求和 / 比率 / 派生**(派生量一律经 calc 记 DAG)、跨源冲突显式报告不静默取舍。目录见 [datasources/CATALOG.md](datasources/CATALOG.md);新增端点 = 源函数 + mapper + 注册表条目 + 重生成目录 + 离线测试。
+115 个端点 / 29 层 / CN + US + HK,按合规级标注(`cn-public` 国内公开网页接口 · `S` 官方政府数据 · `B` 非官方 / 个人研究 · `C` 仅个人研究 · `rss-public` 公开 RSS)。原则:证据单位 / 币种按源原样由 mapper 明示、每条证据绑定 raw 原文、**取数层不做任何求和 / 比率 / 派生**(派生量一律经 calc 记 DAG)、跨源冲突显式报告不静默取舍。目录见 [datasources/CATALOG.md](datasources/CATALOG.md);新增端点 = 源函数 + mapper + 注册表条目 + 重生成目录 + 离线测试。
 
 部分源有本地限制(东财 push2 偶发断连有多主机备源;百度 K 线源侧 403;申万 xls 证书链;mootdx 偶发不可达;SEC 需 `VRA_SEC_CONTACT`),`health.py` 巡检会如实列出。
 
