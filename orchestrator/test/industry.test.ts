@@ -197,3 +197,40 @@ test("policy-r1:judgePolicyAccess——护栏方向反写 / 绝对结论 / 文�
   assert.ok(judgePolicyAccess(d).checks.find((c) => /护栏/.test(c.name))!.pass, "ht14 真实写法:未被点名不等于不受整类禁令影响");
   assert.ok(judgePolicyAccess(d).checks.find((c) => /不在名单/.test(c.name))!.pass, "否定语境里的'不在名单'不算冲突");
 });
+
+test("数据日历规则:台系月营收下一档 = 最新资料期 +1 月,期限 = +2 月 10 日(跨年);从信封推日期行", async () => {
+  const { industryNextDateLines, twNextDisclosure } = await import("../src/industry.ts");
+  // 期限按"今天"推(不是按最新资料期):8-24 已过 10 日 → 期限 9-10、数据月 8 月;9-05 未过 → 期限 9-10
+  assert.deepEqual(twNextDisclosure("2026-07-01..2026-07-31", "2026-08-24"), { data_month: "2026-08", deadline: "2026-09-10", lagging: false });
+  assert.deepEqual(twNextDisclosure("2026-07-01..2026-07-31", "2026-09-05"), { data_month: "2026-08", deadline: "2026-09-10", lagging: false });
+  // 提前披露:手里已有 8 月数据 → 下一档 = 9 月月报、期限 10-10(Codex datacal-r2);10 日当天同理
+  assert.deepEqual(twNextDisclosure("2026-08-01..2026-08-31", "2026-09-05"), { data_month: "2026-09", deadline: "2026-10-10", lagging: false });
+  assert.deepEqual(twNextDisclosure("2026-08-01..2026-08-31", "2026-09-10"), { data_month: "2026-09", deadline: "2026-10-10", lagging: false });
+  assert.deepEqual(twNextDisclosure("2026-12-01..2026-12-31", "2026-12-24"), { data_month: "2027-01", deadline: "2027-02-10", lagging: false }, "提前披露跨年");
+  // 资料滞后:8-24 最新只到 5 月 → 数据月 8 月,6 / 7 月缺 → lagging(Codex datacal-r1:不能把已过去的期限当下一档)
+  assert.deepEqual(twNextDisclosure("2026-05-01..2026-05-31", "2026-08-24"), { data_month: "2026-08", deadline: "2026-09-10", lagging: true });
+  // 跨年:12-24 → 期限 2027-01-10、数据月 2026-12
+  assert.deepEqual(twNextDisclosure("2026-11-01..2026-11-30", "2026-12-24"), { data_month: "2026-12", deadline: "2027-01-10", lagging: false });
+  assert.equal(twNextDisclosure("garbage", "2026-08-24"), null);
+  assert.equal(twNextDisclosure("2026-13-01", "2026-08-24"), null);
+  assert.equal(twNextDisclosure("2026-07-01", "not-a-date"), null);
+  const d = fs.mkdtempSync(path.join(os.tmpdir(), "vra-nd-"));
+  fs.mkdirSync(path.join(d, "fetch"));
+  writeJson(path.join(d, "fetch", "tw_monthly_revenue.json"), { evidence: [
+    { field: "tw_monthly_revenue", period: "2026-06-01..2026-06-30" }, { field: "tw_monthly_revenue", period: "2026-07-01..2026-07-31" }, { field: "tw_monthly_revenue_mom_pct", period: "2026-08-01..2026-08-31" }] });
+  writeJson(path.join(d, "fetch", "gpu_rent_thermometer.json"), { evidence: [
+    { field: "gpu_forward_p_below_lowest_strike", record_key: "KXB200MS:2026-12" }, { field: "gpu_spot_median_usd_per_gpu_hr", record_key: "B200" }] });
+  const lines = industryNextDateLines(d, "2026-08-24");
+  assert.equal(lines.length, 2);
+  assert.ok(lines[0].includes("2026-08 月报") && lines[0].includes("2026-09-10 前") && lines[0].includes("规则推算") && !lines[0].includes("滞后"), lines[0]);
+  assert.ok(lines[1].includes("2026-12") && lines[1].includes("结算"), lines[1]);
+  // 资料滞后时同一行要出声
+  writeJson(path.join(d, "fetch", "tw_monthly_revenue.json"), { evidence: [{ field: "tw_monthly_revenue", period: "2026-05-01..2026-05-31" }] });
+  assert.ok(industryNextDateLines(d, "2026-08-24")[0].includes("资料源滞后"));
+  writeJson(path.join(d, "fetch", "tw_monthly_revenue.json"), { evidence: [
+    { field: "tw_monthly_revenue", period: "2026-06-01..2026-06-30" }, { field: "tw_monthly_revenue", period: "2026-07-01..2026-07-31" }, { field: "tw_monthly_revenue_mom_pct", period: "2026-08-01..2026-08-31" }] });
+  // 远期不可用(rung 0,record_key 无合约月)→ 不给 Kalshi 行;tw 信封缺 → 不给 tw 行
+  writeJson(path.join(d, "fetch", "gpu_rent_thermometer.json"), { evidence: [{ field: "gpu_forward_rung_count", record_key: "KXB200MS" }] });
+  fs.rmSync(path.join(d, "fetch", "tw_monthly_revenue.json"));
+  assert.deepEqual(industryNextDateLines(d), []);
+});

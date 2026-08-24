@@ -2441,6 +2441,56 @@
         "with_mofcom": false
       },
       "notes": "判定以联邦公报通知全文检索公司英文名为准;无英文名 = undetermined(≠ not_on_list);没被点名 ≠ 不受影响;'被建议列入' ≠ '已列入';中方侧默认不接(商务部公告列表 JS 渲染零配置抓不到,证据里给 not_connected 护栏)。移植自 V2 policy_access.py"
+    },
+    {
+      "id": "next_disclosure",
+      "title": "数据日历 · 本公司下一份定期报告的预约披露日(东财 RPT_PUBLIC_BS_APPOIN)",
+      "layer": "15 数据日历",
+      "market": [
+        "CN"
+      ],
+      "source": "eastmoney",
+      "compliance": "public-api-free(datacenter-web.eastmoney.com,无 key)",
+      "module": "datacal",
+      "function": "next_disclosure",
+      "mapper": "next_disclosure_map",
+      "mapper_module": "mappers_datacal",
+      "endpoint_label": "datacenter-web.eastmoney.com RPT_PUBLIC_BS_APPOIN",
+      "symbol_kind": "cn6",
+      "symbol_param": "code",
+      "stages": {
+        "risk": "optional"
+      },
+      "enabled": true,
+      "notes": "预约日可能提前或推迟,以公司公告为准;过了预约日仍未披露=延期信号;result=null 是真实状态(无记录)不是故障;成功但一行都解析不出=结构变了必须抛"
+    },
+    {
+      "id": "us_anchor_earnings",
+      "title": "数据日历 · 美股锚下一个财报日(Nasdaq analyst/{ticker}/earnings-date,默认 NVDA)",
+      "layer": "15 数据日历",
+      "market": [
+        "CN"
+      ],
+      "source": "nasdaq",
+      "compliance": "public-api-free(api.nasdaq.com,无 key;主机限流 2/s)",
+      "module": "datacal",
+      "function": "us_anchor_earnings",
+      "mapper": "us_anchor_earnings_map",
+      "mapper_module": "mappers_datacal",
+      "endpoint_label": "api.nasdaq.com/api/analyst/{ticker}/earnings-date",
+      "symbol_kind": "none",
+      "symbol_param": "code",
+      "stages": {
+        "risk": "optional"
+      },
+      "industry_tags": [
+        "ai_compute"
+      ],
+      "enabled": true,
+      "args": {
+        "tickers": "NVDA"
+      },
+      "notes": "文案带 * / expected = 交易所与 Zacks 预估日,不是公司确认日,证据 note 必须写明;逐 ticker 隔离失败;解析不出日期=结构变了必须抛;证据 market=US / record_key=ticker"
     }
   ]
 }
