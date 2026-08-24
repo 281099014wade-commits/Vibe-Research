@@ -19,6 +19,7 @@ import { loadProductConfig, type LoadedProductConfig } from "./productConfig.ts"
 import { parseArgs } from "./run.ts";
 import { fetchEndpoint, redact, repoRootFromHere, safePath, serviceContext } from "./service.ts";
 import { SKILLS_MAX_SCAN_DEPTH, installCommandFor, listForeignSkillPaths, resolveHomeDir, skillsIsolationStatus } from "./skills_isolation.ts";
+import { thermoDir, thermoLedgerOverview } from "./thermo_history.ts";
 
 export type CheckStatus = "ok" | "warn" | "fail" | "skip";
 export interface Check { id: string; title: string; status: CheckStatus; detail: string; fix?: string }
@@ -255,6 +256,18 @@ export function runDoctor(opts: { repoRoot?: string; env?: NodeJS.ProcessEnv; ex
       try { fs.writeSync(fd, "1"); } finally { fs.closeSync(fd); fs.unlinkSync(probe); }
       add({ id: "data_root", title: "数据根写权限", status: "ok", detail: dataRoot });
     } catch (e) { add({ id: "data_root", title: "数据根写权限", status: "fail", detail: `${dataRoot}:${e instanceof Error ? e.message : String(e)}`, fix: "检查目录权限;数据根内不得有符号链接" }); }
+  }
+
+  // 11.5 温度计历史序列(用户数据区;只读概览:损坏 / 无效条目要出声,没有序列不是错)
+  if (!dataRootOk) add({ id: "thermo_history", title: "温度计历史序列", status: "skip", detail: "数据根边界未通过" });
+  else {
+    try {
+      const rows = thermoLedgerOverview({ dataRoot });
+      const bad = rows.filter((r) => r.unreadable || r.dropped > 0);
+      add({ id: "thermo_history", title: "温度计历史序列", status: bad.length ? "warn" : "ok",
+        detail: rows.length ? rows.map((r) => `${r.endpoint}:${r.observations} 条 ${r.first ?? "-"}→${r.last ?? "-"}${r.unreadable ? " 🔴不可读" : ""}${r.dropped ? ` ⚠️无效 ${r.dropped}` : ""}`).join(";") : `${thermoDir({ dataRoot })} 尚无序列(首次完整运行归档后生成;或 node orchestrator/src/thermo_history.ts backfill)`,
+        fix: bad.length ? "不可读的文件会在下次归档时移到 .corrupt 旁路重建;无效条目已被忽略——若是手工编辑过序列文件,按 schema 修回或删掉该条" : undefined });
+    } catch (e) { add({ id: "thermo_history", title: "温度计历史序列", status: "warn", detail: sub(e instanceof Error ? e.message : String(e)) }); }
   }
 
   // 12. .gitignore

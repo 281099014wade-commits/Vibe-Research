@@ -11,6 +11,7 @@ import path from "node:path";
 import { GATE_PATTERNS, fetchEnv, type RunConfig, type Scenario } from "./config.ts";
 import { fetchArgv } from "./registry.ts";
 import { listFiles, nowIso, readJsonIfExists, sha256File, writeJson } from "./fsutil.ts";
+import { applyThermometerHistory } from "./thermo_history.ts";
 
 export interface LedgerEntry {
   script: string;
@@ -171,6 +172,8 @@ export const runFetchScripts: FetchExecutor = (cfg, stage, scripts, log, ledger)
     ledger[script] = entry;
     log("fetch.executed", { script, status: entry.status, exit_code: entry.exit_code, duration_ms: entry.duration_ms, sha256: entry.sha256, raw_files: Object.keys(entry.raw_files).length, injected: entry.injected ?? null });
   }
+  // 温度计历史比较(第 13 层时间维度):本阶段带 history_fields 的信封取完后,从用户数据区序列(或 scenario 注入)确定性生成 thermo_history 信封 + raw
+  applyThermometerHistory(cfg, stage, ledger, log);
   // 动态冲突注入:在已取到的真实证据里找该 field 的最新一条,克隆其完整事实键(symbol/market/field/period/unit/adjustment/record_key),只改 id / source / value
   if (scenario.inject_conflict && !ledger["fetch_injected"]) {
     const { field, factor } = scenario.inject_conflict;
@@ -204,8 +207,9 @@ export const runFetchScripts: FetchExecutor = (cfg, stage, scripts, log, ledger)
 };
 
 /** 账本摘要(写入 manifest) */
-export function ledgerSummary(ledger: Ledger): Record<string, { status: string; exit_code: number | null; sha256: string | null; raw_files: number; injected?: string }> {
-  const out: Record<string, { status: string; exit_code: number | null; sha256: string | null; raw_files: number; injected?: string }> = {};
-  for (const [k, v] of Object.entries(ledger)) out[k] = { status: v.status, exit_code: v.exit_code, sha256: v.sha256, raw_files: Object.keys(v.raw_files ?? {}).length, ...(v.injected ? { injected: v.injected } : {}) };
+export function ledgerSummary(ledger: Ledger): Record<string, { status: string; exit_code: number | null; sha256: string | null; raw_files: number; injected?: string; synthetic_overlay?: string }> {
+  const out: Record<string, { status: string; exit_code: number | null; sha256: string | null; raw_files: number; injected?: string; synthetic_overlay?: string }> = {};
+  // synthetic_overlay 也要进 manifest 摘要:审计 / 硬测试判定要能从 manifest 看出"真实信封上叠了合成证据"(ht17 真踩:判定读 manifest 看不到标记)
+  for (const [k, v] of Object.entries(ledger)) out[k] = { status: v.status, exit_code: v.exit_code, sha256: v.sha256, raw_files: Object.keys(v.raw_files ?? {}).length, ...(v.injected ? { injected: v.injected } : {}), ...(v.synthetic_overlay ? { synthetic_overlay: v.synthetic_overlay } : {}) };
   return out;
 }

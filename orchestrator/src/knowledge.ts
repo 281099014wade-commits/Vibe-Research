@@ -148,6 +148,8 @@ export function buildArchiveMarkdown(cfg: RunConfig, run: RunView, manifest: Man
       if (seenIds.has(id) || facts >= KNOWLEDGE_MAX_FACTS) continue;
       const e = run.evidence.get(id);
       if (!e) continue;
+      // 温度计历史比较证据(source=history 的 _prev / _change_*)是"上次运行的值",不是本次事实:不进关键数据表,否则下次召回会把更老的值当事实并列(Codex thermo-r1)
+      if (e.source === "history") { seenIds.add(id); continue; }
       seenIds.add(id);
       facts += 1;
       L.push(`| ${line(e.field, 40)} | ${line(e.value, 60)} | ${line(e.unit, 12)} | ${line(e.period, 24)} | ${line(e.source, 20)} | ${line(String(e.fetched_at ?? e.as_of).slice(0, 10), 10)} | ${KNOWLEDGE_VALID_DAYS} | ${id} |`);

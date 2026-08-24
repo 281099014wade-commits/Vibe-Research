@@ -32,6 +32,8 @@ export interface EndpointDef {
   sample?: string;
   /** 产业温度计:只在研究标的命中这些产业标签(datasources/industry_tags.json)时才取 */
   industry_tags?: string[];
+  /** 温度计历史序列:这些证据字段(白名单)在归档时写进用户数据区序列,下次运行生成 _prev / _change_* 比较证据(orchestrator/src/thermo_history.ts) */
+  history_fields?: string[];
   [k: string]: unknown;
 }
 
@@ -59,6 +61,7 @@ export function loadRegistry(repoRoot: string): Registry | null {
     for (const [st, lvl] of Object.entries(e.stages ?? {})) if (lvl !== "required" && lvl !== "optional") throw new Error(`端点 ${e.id} 阶段 ${st} 的级别非法:${String(lvl)}`);
     // 产业温度计端点按标签门控,未命中会被整体跳过 → 只能是 optional(required 会被 validator 判"未执行")
     if (Array.isArray(e.industry_tags) && e.industry_tags.length && Object.values(e.stages ?? {}).includes("required")) throw new Error(`端点 ${e.id} 带 industry_tags 却是 required:按产业标签门控的端点只能 optional`);
+    if (e.history_fields !== undefined && !(Array.isArray(e.history_fields) && e.history_fields.length > 0 && e.history_fields.every((x) => typeof x === "string" && /^[a-z0-9_]{1,80}$/.test(x)))) throw new Error(`端点 ${e.id} 的 history_fields 非法:须为非空的小写字段名数组`);
   }
   return reg;
 }

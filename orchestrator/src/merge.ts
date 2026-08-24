@@ -158,6 +158,8 @@ export interface Manifest {
   /** M2:召回的知识档案(null = 无 / 关闭)与归档 / 查看器产物路径 */
   knowledge_recalled?: { path: string; as_of: string; status: string; truncated: boolean } | null;
   knowledge_archived?: { latest: string; run_file: string; gate_removed: number } | null;
+  /** 温度计历史序列归档结果(null = 未归档:scenario / failed / 未开 archive) */
+  thermo_archived?: { endpoints: string[]; appended: number; skipped: number; corrupt_moved: number } | null;
   /** 带 scenario(硬测试旋钮)的运行:产物含合成数据,不进知识层归档 */
   test_scenario?: boolean;
   /** 产业温度计门控结果(第 13 层):命中的产业标签、依据、被跳过的端点 */

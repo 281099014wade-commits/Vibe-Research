@@ -49,6 +49,8 @@ export interface Scenario {
   inject_voice?: { script?: "exa_market_voice" | "exa_forum_voice"; title: string; highlights?: string; url?: string; published?: string }[];
   /** 硬测试第 9 组:往 fetch_announcements 信封追加伪造公告标题(验证卡口事件分类器的正向路径、negatives 与口令不执行) */
   inject_announcements?: { script?: "fetch_announcements" | "em_stock_news"; title: string; date?: string; url?: string }[];
+  /** 硬测试第 11 组:温度计历史比较用这些合成"上次观测"替代真实序列(完全不读 .local/knowledge/thermometers;该运行不归档) */
+  inject_thermo_history?: { endpoint: string; record_key: string; field: string; value: number; unit?: string; period: string; as_of: string; run_id?: string }[];
 }
 
 export interface RunConfig {

@@ -2376,7 +2376,12 @@
         "tickers": "2383,6274,2368,3081",
         "years": 2
       },
-      "notes": "每月 10 日前披露、滞后 ~10 天;402 = 配额 / 限流必须出声;资料期 > 2 个月标 partial;证据 market=TW / symbol=台股代码,币种 TWD。读法护栏在 note 与 extra.guard"
+      "notes": "每月 10 日前披露、滞后 ~10 天;402 = 配额 / 限流必须出声;资料期 > 2 个月标 partial;证据 market=TW / symbol=台股代码,币种 TWD。读法护栏在 note 与 extra.guard;history_fields=月营收 / 环比 / 同比进用户数据区序列,下次运行出 _prev / _change_*(累计同比与差分文本不做历史)",
+      "history_fields": [
+        "tw_monthly_revenue",
+        "tw_monthly_revenue_mom_pct",
+        "tw_monthly_revenue_yoy_pct"
+      ]
     },
     {
       "id": "gpu_rent_thermometer",
@@ -2404,7 +2409,12 @@
       "args": {
         "gpus": "B200,H100"
       },
-      "notes": "Vast 带浏览器 UA 会 403(显式传 Python-urllib UA);H100 无在租报价是市场状态;Kalshi 三分判定(格式变 / 未开盘 / 有报价);$3 是折旧参考线不是保本线;证据 market=US / symbol=GPU 型号"
+      "notes": "Vast 带浏览器 UA 会 403(显式传 Python-urllib UA);H100 无在租报价是市场状态;Kalshi 三分判定(格式变 / 未开盘 / 有报价);$3 是折旧参考线不是保本线;证据 market=US / symbol=GPU 型号;history_fields=现货中位 / 远期概率 / 最低档进序列(报价档数是噪音不做历史;远期 record_key 自带合约月不跨月比)",
+      "history_fields": [
+        "gpu_spot_median_usd_per_gpu_hr",
+        "gpu_forward_p_below_lowest_strike",
+        "gpu_forward_lowest_strike_usd"
+      ]
     },
     {
       "id": "policy_access",

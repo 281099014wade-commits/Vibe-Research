@@ -218,6 +218,7 @@ export const manifestSchema = {
     industry_tags: { type: "object", additionalProperties: false, required: ["tags", "matched", "skipped", "signals"], properties: { tags: { type: "array", items: { type: "string" } }, matched: { type: "object", additionalProperties: { type: "array", items: { type: "string" } } }, skipped: { type: "array", items: { type: "string" } }, signals: { type: "integer" } } },
     knowledge_archived: { type: ["object", "null"], additionalProperties: false, required: ["latest", "run_file", "gate_removed"], properties: { latest: { type: "string" }, run_file: { type: "string" }, gate_removed: { type: "integer" } } },
     viewer: { type: ["object", "null"], additionalProperties: false, required: ["html", "appendix"], properties: { html: { type: "string" }, appendix: { type: "string" } } },
+    thermo_archived: { type: ["object", "null"], additionalProperties: false, required: ["endpoints", "appended", "skipped", "corrupt_moved"], properties: { endpoints: { type: "array", items: { type: "string" } }, appended: { type: "integer" }, skipped: { type: "integer" }, corrupt_moved: { type: "integer" } } },
     final_errors: { type: "array", items: { type: "string" } },
   },
 } as const;

@@ -12,6 +12,7 @@ import { STAGES, STATUS_PRIORITY, type RunConfig, type RunStatus, type Stage } f
 import { ledgerSummary, type FetchExecutor, type Ledger } from "./fetchrun.ts";
 import { PLAN_REL, planFileOf } from "./registry.ts";
 import { archiveRun, recallKnowledge, shouldRecall } from "./knowledge.ts";
+import { appendThermoLedger } from "./thermo_history.ts";
 import { INDUSTRY_FILE_REL, applyIndustryGate, detectIndustryTags, loadIndustryTags, writeIndustryFile } from "./industry.ts";
 import { CHOKE_FILE_REL, loadChokeTable, scanChokepoints, writeChokeFile } from "./chokepoint.ts";
 import { writeViewer } from "./viewer.ts";
@@ -355,6 +356,12 @@ async function runResearchInner(cfg: RunConfig, deps: Deps, onlyStages?: Stage[]
       try { const a = archiveRun(cfg, viewRun, manifest); manifest.knowledge_archived = { latest: a.latestFile, run_file: a.runFile, gate_removed: a.gateRemoved.length }; runner.log("orchestrator", "knowledge.archived", { latest: a.latestFile, gate_removed: a.gateRemoved.length }); }
       catch (e) { runner.log("orchestrator", "knowledge.archive_failed", { error: e instanceof Error ? e.message : String(e) }); }
     } else runner.log("orchestrator", "knowledge.archive_skipped", { reason: isTestScenario ? "测试场景运行(scenario)含合成数据,不归档" : status === "failed" ? "运行 failed 不归档" : "未含 report 阶段" });
+    // 温度计历史序列:与知识层同规矩(scenario / failed 不写),但不要求 report 阶段——risk 阶段已校验的温度计信封就够
+    manifest.thermo_archived = null;
+    if (status !== "failed" && !isTestScenario) {
+      try { const t = appendThermoLedger(cfg, ledger, (ty, p) => runner.log("orchestrator", ty, p)); manifest.thermo_archived = { endpoints: t.endpoints, appended: t.appended, skipped: t.skipped.length, corrupt_moved: t.corrupt_moved.length }; }
+      catch (e) { runner.log("orchestrator", "thermo_history.archive_failed", { error: e instanceof Error ? e.message : String(e) }); }
+    } else runner.log("orchestrator", "thermo_history.archive_skipped", { reason: isTestScenario ? "测试场景运行(scenario)含合成数据" : "运行 failed" });
   }
   persistManifest();
   if (fs.existsSync(reportPath)) runner.log("orchestrator", "report.ready", { status, report: reportPath, manifest: path.join(cfg.runDir, "manifest.json"), evidence: path.join(cfg.runDir, "evidence.json"), calculations: path.join(cfg.runDir, "calculations.json") });

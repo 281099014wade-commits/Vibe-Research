@@ -150,9 +150,10 @@ test("industry-r3:标签表为数组 / 空对象 / 字段为空都抛;合规的�
   writeJson(path.join(d, "manifest.json"), { status: "complete", exit_code: 0, industry_tags: { tags: ["ai_compute"], matched: {}, skipped: [], signals: 5 }, fetch_ledger: { tw_monthly_revenue: { status: "ok" }, gpu_rent_thermometer: { status: "ok" } }, gate: { ok: true, hits: [] }, stages: [] });
   const rep = (tw: string, gpu: string) => `# 报告\n\n## 产业温度计\n\n- 台光月营收 192.07 亿新台币;${tw} [ev-a1a1a1a1a1a1]\n- B200 租金 6.88 美元/卡时;${gpu} [ev-b1b1b1b1b1b1]\n\n## 裁决点\n\n- x\n`;
   const naturalTw = ["该读数不可单独归因,需与金像电差分后再判断", "应先与金像电差分,差分后方可归因", "必须与金像电差分后归因,不能单独归因", "台光单月营收未能单独归因,需与金像电差分后再判断"];
-  const naturalGpu = ["3 美元/卡时仅为设备折旧参考线,不能视作完整经济保本线", "3 美元是折旧参考线,并非完整经济保本线", "折旧参考线 3 美元不代表保本线", "3 美元/卡时属于 B200 设备折旧参考线,不能视为完整经济保本线"];
+  // ht17 真实写法:否定词与"保本线"之间带修饰("不是含电力、机房、运维的完整经济保本线"),必须认
+  const naturalGpu = ["3 美元/卡时仅为设备折旧参考线,不能视作完整经济保本线", "3 美元是折旧参考线,并非完整经济保本线", "折旧参考线 3 美元不代表保本线", "3 美元/卡时属于 B200 设备折旧参考线,不能视为完整经济保本线", "3 美元/卡时是设备折旧参考线,不是含电力、机房、运维的完整经济保本线", "3 美元/卡时是设备折旧参考线,不能视为考虑电价后的经济保本线"];
   for (const tw of naturalTw) for (const gpu of naturalGpu) { fs.writeFileSync(path.join(d, "report.md"), rep(tw, gpu)); assert.ok(judgeIndustryThermometer(d).checks.find((c) => /护栏/.test(c.name))!.pass, `${tw} / ${gpu}`); }
-  for (const [tw, gpu] of [["无需与金像电差分,可以单独归因", naturalGpu[0]], [naturalTw[0], "3 美元不是折旧参考线,而是完整保本线"], [naturalTw[0], "折旧参考线 3 美元即完整保本线"], [naturalTw[0], "3 美元/卡时仅为设备折旧参考线,但在当前电价下相当于完整经济保本线"]] as const) { fs.writeFileSync(path.join(d, "report.md"), rep(tw, gpu)); assert.ok(!judgeIndustryThermometer(d).checks.find((c) => /护栏/.test(c.name))!.pass, `反向:${tw} / ${gpu}`); }
+  for (const [tw, gpu] of [["无需与金像电差分,可以单独归因", naturalGpu[0]], [naturalTw[0], "3 美元不是折旧参考线,而是完整保本线"], [naturalTw[0], "折旧参考线 3 美元即完整保本线"], [naturalTw[0], "3 美元/卡时仅为设备折旧参考线,但在当前电价下相当于完整经济保本线"], [naturalTw[0], "3 美元不是折旧参考线而是含电力的完整经济保本线"], [naturalTw[0], "3 美元是折旧参考线,并非完整经济保本线;但它相当于含电力后的完整经济保本线"], [naturalTw[0], "3 美元/卡时是设备折旧参考线,不是上限,而是含电力后的完整经济保本线"]] as const) { fs.writeFileSync(path.join(d, "report.md"), rep(tw, gpu)); assert.ok(!judgeIndustryThermometer(d).checks.find((c) => /护栏/.test(c.name))!.pass, `反向:${tw} / ${gpu}`); }
 });
 
 test("policy-r1:judgePolicyAccess——护栏方向反写 / 绝对结论 / 文号 / N 条绑定 / on_list 冲突都判得出;合规写法通过", () => {
