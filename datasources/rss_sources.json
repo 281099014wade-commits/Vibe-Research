@@ -1,5 +1,5 @@
 {
- "_comment": "RSS 新闻源清单,移植自 simonlin1212/investment-news sources.json(tier-1 策展源,纯 RSS);redline_keywords 供新闻过滤;industries 为行业分组。产品内由 sources/rss.py 读取。",
+ "_comment": "RSS 新闻源清单,移植自 simonlin1212/investment-news 的 sources.json(tier-1 策展源,纯 RSS;2026-08-24 与上游逐字节一致)。**只移植清单,抓取逻辑是产品自有的 sources/rss.py** —— 上游 v1.0.1-v1.0.3 的抓取端修复不适用,需要跟进的只有清单本身的增删。redline_keywords 供新闻过滤;industries 为行业分组。漂移对账见 datasources/UPSTREAM.md。",
  "fetch": {
   "per_source": 6,
   "timeout": 15,

@@ -1,6 +1,6 @@
 {
   "version": "1.0.0",
-  "_doc": "数据源端点注册表(方案 v2 §5 registry 的落地,JSON 供 Python / TS 双方读取)。每个端点:id(也是 fetch/<id>.json 的文件名)/ layer / market / source / compliance / module.function(legacy = 既有脚本)/ symbol_kind / mapper / stages(研究阶段计划:required|optional)/ enabled / auth_env。compliance:cn-public = 国内公开网页接口(仅限研究,许可待审);S/B/C = global-stock-data 的条款分级。",
+  "_doc": "数据源端点注册表(方案 v2 §5 registry 的落地,JSON 供 Python / TS 双方读取)。每个端点:id(也是 fetch/<id>.json 的文件名)/ layer / market / source / compliance / module.function(legacy = 既有脚本)/ symbol_kind / mapper / stages(研究阶段计划:required|optional)/ enabled / auth_env。compliance:cn-public = 国内公开网页接口(仅限研究,许可待审);S/B/C = global-stock-data(v2.0.3)的条款分级。上游移植版本与漂移对账见 datasources/UPSTREAM.md。",
   "endpoints": [
     {
       "id": "fetch_profile",

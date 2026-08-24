@@ -22,6 +22,9 @@
 4. `codex review`(或 `codex exec` 审查提示)→ 逐条核实(会误报)→ 修 → 复审至 "No actionable regressions";
 5. 确认 `.gitignore` 含 `.local/`、仓库内无 `.local/` 内容、无密钥(doctor 密钥扫描 + 人工过一遍 `git status`);
 6. 英文 README 两遍翻译审查(diff 对照 + 纯英文只读);
+6.5 **上游对账**:数据层是从 a-stock-data / global-stock-data / investment-news **移植代码**(不是依赖),
+   上游更新不会自动流过来 → 按 [datasources/UPSTREAM.md](../datasources/UPSTREAM.md) 的方法对一次账。
+   🔴 判据是「这个修复在本产品的代码路径上会不会发生」,**不是版本号是否落后** —— 必须读 release notes 逐条判断;
 7. 填 License / clone 地址 / 徽章 → `CHANGELOG.md` 定版本号 → push + tag + Release。
 
 ## 3. 发布后
