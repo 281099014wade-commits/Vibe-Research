@@ -13,6 +13,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 SCRIPTS = os.path.dirname(HERE)
 REPO = os.path.normpath(os.path.join(SCRIPTS, "..", "..", "..", ".."))
 sys.path.insert(0, SCRIPTS)
+from core import exa_client
 from sources import exa, mappers_cn, textsafe  # noqa: E402
 
 SAMPLE = """Title: 中际旭创上半年净利136.5亿元增2.4倍，1.6T等高速率光模块持续放量_新浪财经_新浪网
@@ -258,7 +259,7 @@ def test_rpc_transport_errors_session_and_raw_ref(monkeypatch):
             raise TimeoutError("read timed out")
         return R(500, b"\xff\xfe", raw="raw/r5.txt")
 
-    monkeypatch.setattr(exa, "http_post", fake_post)
+    monkeypatch.setattr(exa_client, "http_post", fake_post)
     c = exa.ExaClient().connect()
     assert c.sid == "S1" and calls[1][1].get("Mcp-Session-Id") == "S1", "initialize 后的请求继承 Session-Id"
     assert c.last_raw_ref == "raw/r2.txt", "逐次请求更新 raw_ref"
