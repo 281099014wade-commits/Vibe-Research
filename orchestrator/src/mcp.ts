@@ -6,6 +6,7 @@
  * 工具全部走 service 的输入校验;取数由子进程 fetch_endpoint.py 执行;研究运行 detached 拉起 run.ts;只读 .local 产物。
  */
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { productVersion } from "./version.ts";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 
@@ -26,7 +27,7 @@ function wrap<T>(fn: () => T): { content: { type: "text"; text: string }[]; isEr
 }
 
 export function buildServer(ctx: ServiceContext): McpServer {
-  const server = new McpServer({ name: "vibe-research-agent", version: "0.5.0" });
+  const server = new McpServer({ name: "vibe-research-agent", version: productVersion() });
   server.registerTool("list_endpoints", { title: "列出数据端点", description: "按层 / 市场 / 关键词列出 datasources/registry.json 里的端点(id / 标题 / 市场 / 源 / 合规级 / symbol_kind / 阶段 / 是否需要环境变量)。",
     inputSchema: { layer: z.string().optional(), market: z.string().optional(), q: z.string().optional(), enabled_only: z.boolean().optional() } },
     (a) => wrap(() => listEndpoints(ctx, a)));

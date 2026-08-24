@@ -12,6 +12,13 @@ import { loadLedgerFromDisk, type Ledger } from "./fetchrun.ts";
 import { PLAN_REL, type EndpointDef, type PlanFile, type StagePlan } from "./registry.ts";
 import { complianceGate, missingSections, referencedIds, reportStatusToken } from "./gate.ts";
 import { extraSectionErrors, requiredExtraSections } from "./report_sections.ts";
+import "./finance/register.ts";   // 注册金融包的词表(Core + DomainPack 边界的第一块砖)
+import { checkNumberFidelity, quotedHistory } from "./number_fidelity.ts";
+import { resultProjection, type ResultProjectionItem } from "./calc_projection.ts";
+
+/** 复算:对每条 calc 记录用同样的函数 / 实参 / 引用重新调用 calc cli,比对 id / status / value / unit / inputs_resolved 与退出码。*/
+export type CalcVerifier = (cfg: RunConfig, run: RunView) => ValidationResult;
+export { resultProjection, type ResultProjectionItem };
 import { listFiles, readJsonIfExists, sha256File } from "./fsutil.ts";
 import { detectSourceConflicts, loadCalcs, loadFetch, mergeEvidence, type CalcRecord, type EvidenceItem, type FetchEnvelope, type SourceConflict } from "./merge.ts";
 import { validateCalcRecord, validateEvidenceItem, validateFetchEnvelope, validateStageOutput } from "./schemas.ts";
@@ -444,6 +451,27 @@ export function validateReport(run: RunView, expectedStatus?: RunStatus): Valida
   // 扩展章节:risk 阶段落了哪些 topic 是既成事实 → 报告必须写出对应章节并引其证据。
   // 原来这条纪律只在提示词里,实测会被静默丢掉(见 report_sections.ts 顶部)。
   errors.push(...extraSectionErrors(run.report, requiredExtraSections(run.stage("risk"))));
+  // 🔴 数字忠实度:报告写出的数字必须等于**同一行所引** evidence / calc 的值。
+  //    在此之前 validateReport 只查"章节在不在、id 存不存在" —— 报告可以引一个**真实的 calc-id
+  //    却写另一个数字**,仍判 complete(架构审计 2026-08-24 指出的最关键缺口)。
+  //    实现与硬测试共用 number_fidelity.ts,不复制两份。
+  //    `applicable=false` = 本次没有带 display 的 calc(旧运行 / 纯取数运行)→ 不适用,不判失败。
+  const symbolOf = () => { for (const e of run.evidence.values()) { const s = (e as { symbol?: unknown }).symbol; if (typeof s === "string" && s && s !== "MARKET") return s; } return undefined; };
+  const fid = checkNumberFidelity(run.report, run.evidence as never, run.calcById as never, symbolOf(),
+                                  quotedHistory((st) => run.stage(st as never) as never));
+  if (fid.missingDisplay) {
+    // 引用了 calc 结果却一个带 display 的都没有 = calc 侧缺陷。静默跳过等于把这条防线关掉。
+    errors.push("report.md 引用的 calc 里有**成功结果没写 display**(该版本本应写),数字忠实度对这些结果无法校验");
+  }
+  // 纯 evidence 行的违规**不受 applicable 门控**:它与 display 无关,旧运行同样该报
+  if (fid.evidenceViolations?.length) {
+    errors.push(`report.md 有 ${fid.evidenceViolations.length} 个数字与同行引用的 evidence 对不上(引了 id 却写了别的数)`
+      + `:${fid.evidenceViolations.slice(0, 3).join(" | ")}`);
+  }
+  if (fid.applicable && fid.violations.length) {
+    errors.push(`report.md 有 ${fid.violations.length}/${fid.total} 个数字与同行引用的证据 / 计算对不上(引了 id 却写了别的数)`
+      + `:${fid.violations.slice(0, 3).join(" | ")}`);
+  }
   const refs = referencedIds(run.report);
   for (const id of refs.evidence) if (!run.evidenceIds.has(id)) errors.push(`report.md 引用了不存在的 evidence ${id}`);
   for (const id of refs.calculation) if (!run.calcIds.has(id)) errors.push(`report.md 引用了不存在的 calculation ${id}`);
@@ -456,28 +484,6 @@ export function validateReport(run: RunView, expectedStatus?: RunStatus): Valida
   return ok(errors);
 }
 
-/** 复算:对每条 calc 记录用同样的函数 / 实参 / 引用重新调用 calc cli,比对 id / status / value / unit / inputs_resolved 与退出码。*/
-export type CalcVerifier = (cfg: RunConfig, run: RunView) => ValidationResult;
-export interface ResultProjectionItem { path: string; status: unknown; unit: unknown; value: number | null; display: string | null; /** 源对象是否带 display 键(旧记录没有) */ hasDisplay: boolean }
-
-/**
- * output 的"结果投影":顶层 + details 里所有结果形子对象(含 status / value / unit,如四锚 scenarios)的 status / unit / value / display,按路径排序。
- * 复算比对用它整体比较——子结果的 value 被改而 display 保留、或子 display 被改,都能抓到(Codex 审查 r3 / r4)。旧记录(calc < 0.3.2)没有 display 字段时 display 为 null。
- */
-export function resultProjection(output: unknown): ResultProjectionItem[] {
-  const out: ResultProjectionItem[] = [];
-  const walk = (v: unknown, p: string, depth: number) => {
-    if (depth > 5 || v === null || typeof v !== "object") return;
-    if (Array.isArray(v)) { v.forEach((x, i) => walk(x, `${p}[${i}]`, depth + 1)); return; }
-    const o = v as Record<string, unknown>;
-    if ("status" in o && "value" in o && "unit" in o) {
-      out.push({ path: p, status: o.status, unit: o.unit, value: typeof o.value === "number" ? o.value : null, display: typeof o.display === "string" ? o.display : null, hasDisplay: "display" in o });
-    }
-    for (const [k, x] of Object.entries(o)) if (k !== "display") walk(x, p ? `${p}.${k}` : k, depth + 1);
-  };
-  walk(output, "", 0);
-  return out.sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
-}
 /** 仅带 display 键的结果的 display 投影(旧记录整棵树没有 display 键 → 空) */
 export function displayProjection(output: unknown): [string, string | null][] {
   return resultProjection(output).filter((r) => r.hasDisplay).map((r) => [r.path, r.display] as [string, string | null]);

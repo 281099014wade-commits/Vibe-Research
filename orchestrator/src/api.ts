@@ -9,6 +9,7 @@
  *      Cookie 只对白名单只读 GET 有效(COOKIE_GET_ROUTES:/ui、/ui/runs/:id、/runs、/runs/:id/viewer|report|status);其余 GET 与所有 POST 只认 Bearer(防 CSRF);所有响应带 SECURITY_HEADERS。
  */
 import fs from "node:fs";
+import { productVersion } from "./version.ts";
 import http from "node:http";
 import path from "node:path";
 
@@ -92,7 +93,7 @@ export function createApiServer(ctx: ServiceContext, opts: { token: string; cook
       if (req.method === "GET" && /^\/ui\/runs\/[^/]+$/.test(url.pathname)) { const t = uiRun(ctx, decodeURIComponent(url.pathname.split("/")[3])); return t === null ? send(res, 404, { error: "no such run" }) : send(res, 200, t, "text/html; charset=utf-8"); }
       const parts = url.pathname.split("/").filter(Boolean);
       const q = Object.fromEntries(url.searchParams.entries());
-      if (req.method === "GET" && url.pathname === "/health") return send(res, 200, { ok: true, version: "0.5.0" });
+      if (req.method === "GET" && url.pathname === "/health") return send(res, 200, { ok: true, version: productVersion() });
       if (req.method === "GET" && url.pathname === "/endpoints") return send(res, 200, listEndpoints(ctx, { layer: q.layer, market: q.market, q: q.q, enabled_only: q.enabled_only === "1" }));
       if (req.method === "POST" && url.pathname === "/fetch") { const b = await readBody(req); return send(res, 200, fetchEndpoint(ctx, b as never)); }
       if (req.method === "POST" && url.pathname === "/research") { const b = await readBody(req); return send(res, 202, startResearch(ctx, b as never)); }
