@@ -37,6 +37,7 @@ import { fileURLToPath } from "node:url";
 import type { RunConfig } from "./config.ts";
 import { atomicWrite } from "./fsutil.ts";
 import { mergeBlock } from "./hooks.ts";
+import { scanTomlLine, splitKeyValue, unquoteTomlKey } from "./tomlscan.ts";
 
 export const SKILLS_BLOCK_BEGIN = "# >>> vibe-research skills isolation (generated; do not edit) >>>";
 export const SKILLS_BLOCK_END = "# <<< vibe-research skills isolation <<<";
@@ -189,50 +190,6 @@ export function buildSkillsIsolationBlock(disabledPaths: string[], maxContextTok
   }
   lines.push(SKILLS_BLOCK_END);
   return lines.join("\n");
-}
-
-/**
- * 扫一行 TOML:返回去掉行尾注释的文本,以及本行是否**开启了未闭合的多行字符串**(`"""` / `'''` 出现在单行字符串之外且本行没有对应闭合)。
- * 单行字符串内的 `"""`(如 `x = 'Use """ here'`)不算多行分隔符(Codex 审查 r4)。
- */
-function scanTomlLine(line: string): { text: string; opensMultiline: '"""' | "'''" | null } {
-  let q: string | null = null;
-  let i = 0;
-  while (i < line.length) {
-    const ch = line[i];
-    if (q) { if (ch === "\\" && q === '"') i++; else if (ch === q) q = null; i++; continue; }
-    if (ch === "#") return { text: line.slice(0, i), opensMultiline: null };
-    if (ch === '"' || ch === "'") {
-      const triple = line.slice(i, i + 3);
-      if (triple === '"""' || triple === "'''") {
-        const close = line.indexOf(triple, i + 3);
-        if (close < 0) return { text: line.slice(0, i), opensMultiline: triple as '"""' | "'''" };
-        i = close + 3; continue;  // 同行开合的多行字符串,当普通值跳过
-      }
-      q = ch; i++; continue;
-    }
-    i++;
-  }
-  return { text: line, opensMultiline: null };
-}
-
-/** TOML 基本字符串键的转义还原(\uXXXX / \UXXXXXXXX / \" / \\ / \b \t \n \f \r);字面量键('…')原样;裸键原样 */
-function unquoteTomlKey(k: string): string {
-  const t = k.trim();
-  if (t.length >= 2 && t.startsWith("'") && t.endsWith("'")) return t.slice(1, -1);
-  if (t.length >= 2 && t.startsWith('"') && t.endsWith('"')) {
-    return t.slice(1, -1).replace(/\\(u[0-9A-Fa-f]{4}|U[0-9A-Fa-f]{8}|["\\bfnrt])/g, (_, g: string) => {
-      if (g[0] === "u" || g[0] === "U") return String.fromCodePoint(parseInt(g.slice(1), 16));
-      return { '"': '"', "\\": "\\", b: "\b", f: "\f", n: "\n", r: "\r", t: "\t" }[g] ?? g;
-    });
-  }
-  return t;
-}
-
-/** 取一行的"键 = 值":键支持裸键 / 引号键(含转义);不是键值行返回 null */
-function splitKeyValue(line: string): { key: string; value: string } | null {
-  const m = /^("(?:[^"\\]|\\.)*"|'[^']*'|[A-Za-z0-9_-]+)\s*=\s*(.*)$/.exec(line);
-  return m ? { key: unquoteTomlKey(m[1]), value: m[2].trim() } : null;
 }
 
 /** 一行的首个键段(表头 `[a.b]` / `[[a.b]]` 或键 `a.b = …`)是否解码后等于 skills */

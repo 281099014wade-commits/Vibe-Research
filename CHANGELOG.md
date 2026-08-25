@@ -2,6 +2,109 @@
 
 格式遵循 Keep a Changelog;版本号待首次发布时定(当前未发布)。
 
+## 未发布 · 指令发现链:解开分离安装的阻塞,顺带修掉一个现存的静默缺陷(2026-08-25)
+
+原本要解的是「`data/` 放到产品根之外时引擎发现不到 `AGENTS.md` / `.agents/skills`」——
+它同时卡住安装布局与用户数据迁出。查下来发现问题比预期大。
+
+### 先把引擎的规则搞清楚(实测,不是读代码推断)
+
+`codex debug prompt-input` 能渲染**模型可见的提示词**且**不调用模型、不花额度**,所以整条规则是用
+七个金丝雀探针量出来的(表格见 `docs/instructions-root.md`)。宪法与项目技能用**同一条规则**:
+收集 **project root 到线程 cwd 之间每一层目录**里的两者;project root = 从 cwd 向上第一个含
+`project_root_markers` 的祖先(默认 `.git`),找不到就**只看 cwd 那一层**。**找不到时引擎不报错。**
+
+### 🔴 顺带挖出两个现存缺陷,都要 `git clone` 才碰不到
+
+现在能工作只是因为**恰好有 `.git`**。开源产品的用户多数下载 zip 而不是 `git clone`:
+
+1. **`exec` 入口有一道门:cwd 不在 git 仓库里就 exit 1**,报
+   `Not inside a trusted directory and --skip-git-repo-check was not specified.`
+   ⇒ **zip 解压装的用户,每次运行都直接失败**,而且报错完全看不懂。
+   ⚠️ 这句话的措辞有误导性:判据与 `[projects] trust_level` **无关**,就是
+   `get_git_repo_root(cwd).is_none()`(`codex-rs/exec/src/lib.rs:798`)。
+   修法:`skipGitRepoCheck: true` —— 运行目录是产品自管的数据目录、不是用户源码树。
+2. **产品若装在用户自己的 git 仓库里,那个仓库的 `AGENTS.md` 与技能会被一起读进产品线程**
+   (不是发现不到,是反向污染,与 `~/.agents/skills` 那次同一性质)。自定义 marker 堵住这头。
+
+⚠️ **我一开始把①说成了"静默丢掉产出红线",那是错的** —— 那是 `debug prompt-input`
+(只看提示词组装)层面的现象;真实运行**在组装之前就退出了**,是硬失败不是静默。
+把这两层合起来看才是真实结局。**只验一层就下结论,结论会反着说。**
+
+### 做法
+
+新增 `orchestrator/src/instructions_root.ts` 的「指令根」概念 = 宪法与技能所在的那一层,
+**必须是运行目录的祖先**。产品自带 `.vibe-research-root` 标记(随仓库发行)并把它写进
+产品 `CODEX_HOME` 的 `project_root_markers`,一举解决两头。数据根与产品根**无路径关系**时
+(将来 `/Applications` + `~/Library/Application Support`),指令资产**同步**到数据根;
+宪法母本始终是产品根那份,副本逐字节相同由 preflight 保证。
+
+运行前逐条 preflight,**不过就抛** —— 这些失效全是静默的。doctor 加了「指令发现链」检查项。
+
+### Codex 四轮审计(r1 5P1+4P2 / r2 2P1+1P2 / r3 1P2 / r4 1P2),全部核实成立
+
+最要紧的一条是**我自己写的东西压根没生效,而体检还报 OK**:
+
+> `project_root_markers` 被追加到 config.toml 末尾,而 **TOML 表头作用域会一直延续** ——
+> 这个顶层键落进了 `[hooks.state."…"]`。在真实安装上用 `tomllib` 实测确认:顶层根本没有这个键。
+> 体检之所以绿,是因为它查的是"生成块在不在",**不是这个键是否真的在顶层**。
+
+⇒ **校验要盯效果,不能盯自己刚写下的痕迹。** 现在顶层键块一律放**文件最前面**,
+校验改成"文件必须以预期块开头 + 内容逐字相同 + 块外没有等价键(含引号形式)"。
+
+⇒ 另一条同样值得记:**我的 e2e 测试当时是绿的** —— 因为夹具里的 `config.toml` 太干净(没有表头)。
+后来改用"脏" `config.toml`(带 `[projects]` / `[hooks.state]`)重跑才复现。**夹具比真实环境干净 = 假绿。**
+
+其余修复:链上更近的 marker 会把 project root 拉下来(拒绝)· 技能镜像改整棵树 sha256 比对
+· 符号链接(目标端删掉重写;**路径中间段**是链接会顺着它删掉数据根之外的文件 → 拒绝)
+· 源与目标互相包含(拒绝)· 路径比较改 realpath · 生成块分隔符只认独占整行、不在多行字符串里、
+闭合检测认转义。为最后一条把 `skills_isolation.ts` 里既有的逐行 TOML 扫描件抽成 `src/tomlscan.ts`。
+
+### 顺带修掉一个没人发现的抖动
+
+`mergeBlock` 原本是"删掉再追加到末尾",于是同一个 config.toml 里的多个生成块
+(hooks / skills 隔离 / project root)会**互相把对方顶到后面** —— 每次运行都重写、`changed` 永远为真。
+改为**就地替换**。
+
+### 验证
+
+十四条修复逐条**变异测试**(改回旧写法,对应测试必须变红)。
+真引擎端到端:**数据根完全在产品根之外 + 带表头的脏 config.toml**,宪法与技能都被发现。
+测试 TS 292 / doctor 16 ok · 0 warn · 0 fail;Core 行业词仍为 0。审计产物 `.local/reviews/instructions-root-r1..r4.md`。
+
+### ⭐ 真跑之后又挖出三个阻塞(Simon:「需要验证的就验证」)
+
+上面那些做完,我把分离安装列成了"未验证的残留"。**真跑四次,一个都不是理论问题**:
+
+| 第几次 | 结果 | 挖出什么 |
+|---|---|---|
+| 1 | ❌ 阶段 failed,**钩子 0 次调用**,三次尝试相隔 46 毫秒 | 引擎压根没启动(所以**没烧额度**) |
+| 2 | ✅ 阶段 complete,但**钩子 5 次调用 5 次 error** | 执行纪律全程失效,而产出看不出来 |
+| 3 | ✅ complete,钩子 6 次 **0 error** | 前两条修好了 |
+| 4 | ✅ 同上,数据根建在 `$HOME` 下 | 又发现 `allowedPathPrefixes` 缺 `dataRoot` |
+
+1. **`exec` 的 git 仓库门**(见上)→ `skipGitRepoCheck: true`。
+2. **`contextMatchesCwd` 还要求运行目录在产品根之下** → 改成数据根。
+   ⚠️ 这条最阴:**运行成功、报告产出、阶段 complete**,只有 `manifest.hooks.errors` 里写着 5。
+   ⇒ **执行层"没跑"和"跑了没拦到"在产出上长得一模一样。** 而 `contextMatchesCwd` 此前
+   **一条测试都没有** —— 这就是它能活到今天的原因。
+   ⇒ 也是"我在别处拆掉旧假设、却漏了这一处"的又一例:**同一根因要一次找干净。**
+3. **`allowedPathPrefixes` 缺 `dataRoot`** → agent 连自己的运行目录都读不了。
+   ⚠️ **临时目录测不出来**(`/var/folders` 恰在默认白名单里),把数据根放 `$HOME` 下才暴露。
+
+### 顺带定下一条产品约束:根路径不能含空格
+
+命令扫描器按空白切 token,`~/Library/Application Support/X/runs/…` 会被切成
+`/Users/…/Library/Application`,与允许前缀永远对不上 → agent 引用运行目录的命令**全被拒**(实测)。
+`makeConfig` 改为**配置期就拒绝**并给替代建议。⇒ macOS 上装到 `~/Library/Application Support` 不行,
+用 `~/.vibe-research` 这类(引擎自己的 `~/.codex` 就是这个风格)。
+不去改扫描器分词:那套规则用 1,142 条真实命令语料回归过,动它的风险比这条限制大。
+
+### 剩下的残留
+
+`init` / `doctor` 仍要求数据根在产品根内 —— 那是面向仓库内布局的策略,**不是运行路径的限制**
+(运行路径已实测支持分离安装)。分离安装的初始化归 launcher(未开工)。
+
 ## 未发布 · 档案模板变成契约(2026-08-25)
 
 `knowledge.ts` 是 Core 里最后一块写死垂类的地方:六个章节标题、每节放什么、有效期 90 天、

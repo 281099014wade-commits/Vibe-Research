@@ -82,7 +82,7 @@ export interface RunConfig {
   /** 相对产品根的 data-access 脚本目录 / calc CLI */
   scriptsRel: string;
   calcCliRel: string;
-  /** 宪法文件绝对路径(AGENTS.md;Codex 从 .git 项目根逐级发现到 cwd,因此运行目录必须在产品根之内——prepareRunDir 校验) */
+  /** 宪法文件绝对路径:必须是**产品根**的 AGENTS.md(它是母本;分离安装时引擎实际加载的是同步到指令根的副本,两者逐字节相同由 preflightInstructions 保证——见 instructions_root.ts) */
   constitutionPath: string;
   model?: string;
   reasoning?: string;
@@ -172,6 +172,15 @@ export function makeConfig(partial: Partial<RunConfig> & { symbol: string; repoR
   if (!RUN_ID_RE.test(runId)) throw new Error(`run-id 非法:${runId}(只允许字母数字 . _ -,≤64 字符)`);
   const repoRoot = path.resolve(partial.repoRoot);
   const dataRoot = path.resolve(partial.dataRoot ?? path.join(repoRoot, ".local"));
+  // 🔴 根路径里不许有空白。执行层的命令扫描器按空白切 token 找绝对路径,路径里带空格就会被切断:
+  //    `~/Library/Application Support/X/runs/…` 只剩 `/Users/…/Library/Application`,与允许前缀永远对不上,
+  //    于是 agent 每一条引用运行目录绝对路径的命令都被拒(实测)。
+  //    ⇒ 这里**提前拒绝并说清楚**,而不是改扫描器的分词(那会动到已用真实命令语料回归过的规则,风险更大)。
+  //    macOS 上装到 `~/Library/Application Support` 是不行的,用 `~/.vibe-research` 这类无空格路径
+  //    (引擎自己的 `~/.codex` 也是这个风格)。
+  for (const [what, p] of [["产品根", repoRoot], ["数据根", dataRoot]] as const) {
+    if (/\s/.test(p)) throw new Error(`${what}路径不能含空格 / 制表符:${p}(执行层的命令扫描器按空白切分,带空格的路径会被切断,导致 agent 引用运行目录的命令全被拒);请换成无空格路径,如 ~/.vibe-research`);
+  }
   // 解释器路径规范化:带目录的路径一律 resolve(折叠 ../ 与重复斜杠)。否则 "repo/../.venv/bin/python" 会原样进提示词与允许前缀——
   // agent 照抄它就撞「命令越界含 ../」,改写成绝对路径又撞「仓库外路径」(前缀按未规范化字符串比对),calc 一条都跑不了(硬测试 ht4 真踩)。
   const python = normalizeInterpreter(partial.python ?? "python3");
@@ -215,7 +224,10 @@ export function makeConfig(partial: Partial<RunConfig> & { symbol: string; repoR
     turnTimeoutMs: partial.turnTimeoutMs ?? 20 * 60_000,
     fetchTimeoutMs: partial.fetchTimeoutMs ?? 180_000,
     forbiddenPathPatterns: partial.forbiddenPathPatterns ?? DEFAULT_FORBIDDEN_PATHS,
-    allowedPathPrefixes: partial.allowedPathPrefixes ?? [...DEFAULT_ALLOWED_PATH_PREFIXES, repoRoot, interpreterRoot(python)],
+    // ⚠️ 必须含 dataRoot:分离安装时运行目录在产品根之外,而真实安装位置多半在 `~/Library/Application Support`
+    //    —— 那是 HOME_PREFIXES 覆盖的"他人文件"前缀,不放行的话 agent 连自己的运行目录都读不了。
+    //    (临时目录测不出这条:`/var/folders` 恰好在默认白名单里。)
+    allowedPathPrefixes: partial.allowedPathPrefixes ?? [...DEFAULT_ALLOWED_PATH_PREFIXES, repoRoot, dataRoot, interpreterRoot(python)],
     noAgent: partial.noAgent ?? false,
     hooksEnabled: partial.hooksEnabled ?? true,
     overwrite: partial.overwrite ?? false,

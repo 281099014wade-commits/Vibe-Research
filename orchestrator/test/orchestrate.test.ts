@@ -28,6 +28,8 @@ function tmpRepo(): string {
   const repo = fs.mkdtempSync(path.join(os.tmpdir(), "vra-repo-"));
   fs.mkdirSync(path.join(repo, ".local", "runs"), { recursive: true });
   fs.writeFileSync(path.join(repo, "AGENTS.md"), "# 测试宪法\n");
+  // 产品必需件:项目技能目录(引擎按 <指令根>/.agents/skills 发现;缺了就是装坏了,preflight 会拒绝运行)
+  fs.mkdirSync(path.join(repo, ".agents", "skills"), { recursive: true });
   // 产品随仓库发行的数据表(卡口事件分类表 / 产业标签表):缺失按配置错误直接抛,所以假仓库要带上
   fs.mkdirSync(path.join(repo, "datasources"), { recursive: true });
   for (const f of ["chokepoint_keywords.json", "industry_tags.json"]) fs.copyFileSync(path.join(REAL_REPO, "datasources", f), path.join(repo, "datasources", f));
@@ -393,12 +395,23 @@ test("run-id / 运行目录保护:非法 id 抛错;非空目录不加 --overwrit
   assert.throws(() => prepareRunDir(cfg3), /直接子目录/);
 });
 
-test("宪法与运行目录约束:宪法缺失 → 抛错;运行目录在产品根之外 → 抛错(Codex 发现不到 AGENTS.md);manifest 记宪法 sha256", async () => {
+test("宪法与运行目录:数据根在产品根之外也能跑(指令资产同步到数据根);宪法缺失 → 抛错;manifest 记宪法 sha256", async () => {
   const repo = tmpRepo();
+  // 分离安装:数据根与产品根毫无路径关系(将来 /Applications + ~/Library/Application Support 就是这样)
   const outside = fs.mkdtempSync(path.join(os.tmpdir(), "vra-data-"));
-  const cfgOut = makeConfig({ symbol: "300308", repoRoot: repo, dataRoot: outside, runId: "o1", python: "false" });
+  fs.writeFileSync(path.join(repo, ".agents", "skills", "probe.md"), "# 探针技能\n");
+  const cfgOut = makeConfig({ symbol: "300308", market: "SZ", repoRoot: repo, dataRoot: outside, runId: "o1", python: "false" });
   fs.mkdirSync(path.join(outside, "runs"), { recursive: true });
-  assert.throws(() => prepareRunDir(cfgOut), /不在产品根/);
+  // 不再拒绝(用另一个 run-id 单独验,免得占掉下面那次运行的目录)
+  assert.doesNotThrow(() => prepareRunDir(makeConfig({ symbol: "300308", repoRoot: repo, dataRoot: outside, runId: "o0", python: "false" })));
+  const rOut = await runResearch(cfgOut, deps(new FakeRunner(goodAgent, cfgOut), fakeFetch()));
+  assert.equal(rOut.manifest.instructions_root?.mode, "data");
+  assert.equal(rOut.manifest.instructions_root?.root, path.resolve(outside));
+  // 指令根上三件套齐了,且宪法副本与产品根母本逐字节相同(manifest 记的是母本 sha256)
+  assert.deepEqual(fs.readFileSync(path.join(outside, "AGENTS.md")), fs.readFileSync(path.join(repo, "AGENTS.md")));
+  assert.ok(fs.existsSync(path.join(outside, ".agents", "skills", "probe.md")), "项目技能要同步过去");
+  assert.ok(fs.existsSync(path.join(outside, ".vibe-research-root")), "project root 标记要在指令根");
+  assert.match(fs.readFileSync(path.join(cfgOut.codexHome, "config.toml"), "utf8"), /project_root_markers = \[".vibe-research-root"\]/);
   const cfgNoC = makeConfig({ symbol: "300308", repoRoot: repo, runId: "o2", python: "false", constitutionPath: path.join(repo, "NOPE.md") });
   assert.throws(() => prepareRunDir(cfgNoC), /宪法文件不存在/);
   const cfg = makeConfig({ symbol: "300308", market: "SZ", repoRoot: repo, runId: "o3", python: "false" });

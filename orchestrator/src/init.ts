@@ -15,6 +15,7 @@ import { PROVIDER_ID_RE } from "./providers.ts";
 import { parseArgs } from "./run.ts";
 import { repoRootFromHere } from "./service.ts";
 import { installSkillsIsolation } from "./skills_isolation.ts";
+import { ROOT_MARKER_FILENAME, ensureRootMarker, installProjectRootMarkers } from "./instructions_root.ts";
 
 export const LOCAL_SUBDIRS = ["codex-home", "runs", "knowledge", "providers", "mcp"] as const;
 
@@ -35,7 +36,10 @@ export function lstatOrNull(p: string): fs.Stats | null {
 /** 数据根边界:词法在产品根内 + 最近已存在祖先的 realpath 仍在产品根 realpath 内 + 数据根本身不是符号链接(含悬空;防 .local → 仓库外) */
 export function assertDataRootInside(repoRoot: string, dataRoot: string): void {
   const realRepo = fs.realpathSync(repoRoot);
-  if (dataRoot !== repoRoot && !dataRoot.startsWith(repoRoot + path.sep)) throw new Error(`数据根 ${dataRoot} 不在产品根 ${repoRoot} 之内,拒绝`);
+  // ⚠️ init / doctor 面向的是**仓库内布局**(clone 下来自己跑),所以这里仍要求数据根在产品根内。
+  //    分离安装(数据根在产品根之外)运行路径已经支持(instructions_root.ts 会把指令资产同步过去),
+  //    但那套的初始化归 launcher —— 别以为这条限制说明运行时也不支持。
+  if (dataRoot !== repoRoot && !dataRoot.startsWith(repoRoot + path.sep)) throw new Error(`数据根 ${dataRoot} 不在产品根 ${repoRoot} 之内,拒绝(init 面向仓库内布局;分离安装由 launcher 初始化)`);
   if (lstatOrNull(dataRoot)?.isSymbolicLink()) throw new Error(`数据根 ${dataRoot} 是符号链接,拒绝`);
   let probe = dataRoot;
   while (!lstatOrNull(probe)) { const parent = path.dirname(probe); if (parent === probe) break; probe = parent; }
@@ -105,6 +109,11 @@ export function runInit(opts: { repoRoot?: string; python?: string; provider?: s
   // 4) skills 隔离块(产品 CODEX_HOME/config.toml):首装就把用户级 / 捆绑 skills 禁掉,doctor 才能在首次运行前就绿;每次研究运行开始时也会刷新
   const codexHome = path.join(dataRoot, "codex-home");
   const iso = installSkillsIsolation({ codexHome, repoRoot, python: skeleton.python ?? null });
+  // 4b) 指令发现链:project root marker + project_root_markers 配置。首装就写,否则**下载 zip 解压的用户**
+  //     (没有 .git)在首次运行前一直处于"引擎发现不到宪法与技能、而且不报错"的状态(instructions_root.ts)。
+  const markerCreated = ensureRootMarker(repoRoot);
+  const prm = installProjectRootMarkers({ codexHome });
+  steps.push({ id: "instructions_root", action: markerCreated || prm.changed ? "written" : "exists", detail: `${path.join(repoRoot, ROOT_MARKER_FILENAME)} + ${prm.configTomlPath} 的 project_root_markers(引擎靠它才能发现 AGENTS.md 与 .agents/skills)` });
   steps.push({ id: "skills_isolation", action: iso.changed ? "written" : "exists", detail: `${path.join(codexHome, "config.toml")}(禁用用户级 skill ${iso.disabledPaths.length} 个;捆绑 skills 已关;max_context_tokens=${iso.maxContextTokens})` });
   const next = [
     `登录到产品自己的 CODEX_HOME(ChatGPT 订阅):CODEX_HOME="${path.join(dataRoot, "codex-home")}" codex login`,

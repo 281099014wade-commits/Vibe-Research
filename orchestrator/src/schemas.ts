@@ -197,6 +197,9 @@ export const manifestSchema = () => ({
     hooks: { type: "object", additionalProperties: false, required: ["enabled", "installed", "hooks_json", "invocations", "stop_blocks", "stop_terminations", "pre_tool_use_blocks", "errors", "log_trust"],
       properties: { enabled: { type: "boolean" }, installed: { type: "boolean" }, hooks_json: { type: ["string", "null"] }, invocations: { type: "integer" }, stop_blocks: { type: "integer" }, stop_terminations: { type: "integer" },
         pre_tool_use_blocks: { type: "integer" }, errors: { type: "integer" }, log_trust: { type: "string", enum: ["diagnostic_untrusted"] } } },
+    // 指令发现链摘要(可选:noAgent 运行不写;见 instructions_root.ts)
+    instructions_root: { type: "object", additionalProperties: false, required: ["root", "mode", "marker_created", "synced_files"],
+      properties: { root: { type: "string" }, mode: { type: "string", enum: ["product", "data"] }, marker_created: { type: "boolean" }, synced_files: { type: "integer", minimum: 0 } } },
     // skills 隔离摘要(可选:noAgent 运行不写;见 skills_isolation.ts)
     skills_isolation: { type: "object", additionalProperties: false, required: ["installed", "config_toml", "disabled_user_skills", "bundled_disabled", "max_context_tokens"],
       properties: { installed: { type: "boolean" }, config_toml: { type: "string" }, disabled_user_skills: { type: "integer", minimum: 0 }, bundled_disabled: { type: "boolean" }, max_context_tokens: { type: "integer", minimum: 1, maximum: 10000 }, truncated: { type: "boolean" } } },

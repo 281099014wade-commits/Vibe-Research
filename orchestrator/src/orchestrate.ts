@@ -21,6 +21,7 @@ import { atomicWrite, ensureDirs, nowIso, sha256File, sha256Text, writeJson } fr
 import { complianceGate, normalizeReportStatus } from "./gate.ts";
 import { HOOK_CONTEXT_REL, clearStopFailed, installHooks, readHookLog, readStopFailed, summarizeHookLog, uninstallHooks, writeHookContext } from "./hooks.ts";
 import { installSkillsIsolation } from "./skills_isolation.ts";
+import { CONSTITUTION_FILENAME, ensureInstructionsRoot } from "./instructions_root.ts";
 import { rawHashes, writeConflicts, writeManifest, writeMergedArtifacts, type Manifest, type StageRecord } from "./merge.ts";
 import type { AgentRunner } from "./runner.ts";
 import { turnReplySchema, validateManifest } from "./schemas.ts";
@@ -61,13 +62,14 @@ export function prepareRunDir(cfg: RunConfig): void {
   const runsRoot = path.resolve(cfg.dataRoot, "runs");
   const rd = path.resolve(cfg.runDir);
   if (path.dirname(rd) !== runsRoot) throw new Error(`运行目录必须是 ${runsRoot} 的直接子目录:${rd}`);
-  // 宪法必须存在;且运行目录(Codex 线程 cwd)必须在产品根之内——Codex 只从 .git 项目根逐级发现到 cwd 的 AGENTS.md / .agents/skills(v2.1 安装布局 data/ 在 app/ 外时需 launcher 另行解决,见开发日志)
+  // 宪法必须存在,且**发现链**必须成立。发现链的规则与三种静默失效见 instructions_root.ts 文件头
+  // (原先这里硬性要求"运行目录在产品根之内",既挡住了分离安装,也没拦住"无 .git 时静默丢宪法")。
   if (!fs.existsSync(cfg.constitutionPath)) throw new Error(`宪法文件不存在:${cfg.constitutionPath}`);
-  const discovered = path.join(path.resolve(cfg.repoRoot), "AGENTS.md");
-  if (path.resolve(cfg.constitutionPath) !== discovered)
-    throw new Error(`Phase 0 宪法必须是产品根的 AGENTS.md(${discovered}),因为 Codex 自动加载的就是它;配置为 ${cfg.constitutionPath} 不会被引擎加载(自定义宪法路径需 Phase 1 另造加载机制)`);
-  const root = path.resolve(cfg.repoRoot);
-  if (!rd.startsWith(root + path.sep)) throw new Error(`运行目录 ${rd} 不在产品根 ${root} 之内:Codex 将发现不到 AGENTS.md / .agents/skills(Phase 0 限制;Phase 1 launcher 需设 project_root_markers 或把 data 放在产品根内)`);
+  // ⚠️ 这里比的是**产品根**的宪法,不是指令根的:分离安装时指令根上那份是同步过去的副本,
+  //    而 prepareRunDir 跑在同步之前。副本与母本逐字节相同由 preflightInstructions 保证。
+  const expected = path.join(path.resolve(cfg.repoRoot), CONSTITUTION_FILENAME);
+  if (path.resolve(cfg.constitutionPath) !== expected)
+    throw new Error(`宪法必须是产品根的 ${CONSTITUTION_FILENAME}(${expected}),它是引擎实际加载那份的母本;配置为 ${cfg.constitutionPath} 不会生效`);
   // 🔴 夹具的校验放在**清空之前**:夹具坏了 / 过期 / 主体不符时,不该先把旧运行目录毁掉再失败
   //    (Codex fixture-r1 P2)。这里只校验不落盘,播种在建目录之后。
   // 顺序:①不改磁盘的 overwrite 门控 → ②夹具校验(也不改磁盘)→ ③清空 → ④建目录 → ⑤播种。
@@ -195,6 +197,11 @@ async function runResearchInner(cfg: RunConfig, deps: Deps, onlyStages?: Stage[]
   const protectedNow = (): ProtectedExpectation => ({ files: { ...protectedFiles }, eventsSha: runner.eventsDigest() });
   // skills 隔离(执行层,常开):把用户主目录 ~/.agents/skills 与捆绑系统 skills 从产品 CODEX_HOME 的 catalog 里禁掉,只留产品 .agents/skills(skills_isolation.ts)
   if (!cfg.noAgent) {
+    // 指令发现链:写 project root marker + project_root_markers 配置(分离安装时先把宪法与技能同步到数据根),
+    // 再逐条校验链路。不通过直接抛 —— 这类失效引擎全程不报错,只是宪法与技能不在提示词里(instructions_root.ts)。
+    const ins = ensureInstructionsRoot(cfg);
+    manifest.instructions_root = { root: ins.root, mode: ins.mode, marker_created: ins.markerCreated, synced_files: ins.sync ? ins.sync.copied.length + ins.sync.removed.length : 0 };
+    runner.log("orchestrator", "instructions.root", { root: ins.root, mode: ins.mode, marker_created: ins.markerCreated, config_changed: ins.configChanged, synced: ins.sync ? { copied: ins.sync.copied.length, removed: ins.sync.removed.length, unchanged: ins.sync.unchanged } : null });
     const iso = installSkillsIsolation(cfg);  // cfg 含 repoRoot(产品 skill 不写入)与 python(写前 tomllib 校验)
     manifest.skills_isolation = { installed: true, config_toml: iso.configTomlPath, disabled_user_skills: iso.disabledPaths.length, bundled_disabled: iso.bundledDisabled, max_context_tokens: iso.maxContextTokens, truncated: iso.truncated };
     // 事件只记数量 + 清单哈希:events.jsonl 会经 service 层(API / MCP research_status.last_events)回给调用方,不带用户主目录下的路径清单

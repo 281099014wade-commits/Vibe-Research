@@ -20,6 +20,7 @@ import { loadProductConfig, type LoadedProductConfig } from "./productConfig.ts"
 import { parseArgs } from "./run.ts";
 import { fetchEndpoint, redact, repoRootFromHere, safePath, serviceContext } from "./service.ts";
 import { SKILLS_MAX_SCAN_DEPTH, installCommandFor, listForeignSkillPaths, resolveHomeDir, skillsIsolationStatus } from "./skills_isolation.ts";
+import { preflightInstructions } from "./instructions_root.ts";
 import { thermoDir, thermoLedgerOverview } from "./finance/thermo_history.ts";
 
 
@@ -161,7 +162,8 @@ export function runDoctor(opts: { repoRoot?: string; env?: NodeJS.ProcessEnv; ex
   catch (e) { add({ id: "config", title: "产品配置链", status: "fail", detail: e instanceof Error ? e.message : String(e), fix: "检查 .local/config.json / 环境变量 VRA_* / provider 密钥变量;或先 node orchestrator/src/init.ts" }); }
   const dataRoot = pc?.resolved.dataRoot ?? resolveDataRoot(repoRoot);
   const codexHome = pc?.resolved.codexHome ?? path.join(dataRoot, "codex-home");
-  // 数据根边界(同 init):不在产品根 realpath 内或是符号链接 → 直接 fail 并且后续不再往里写任何东西
+  // 数据根边界(同 init):不在产品根 realpath 内或是符号链接 → 直接 fail 并且后续不再往里写任何东西。
+  // ⚠️ 与上面的「指令发现链」不同:那条支持分离安装,这条是 init / doctor 面向仓库内布局的策略(见 init.ts)。
   let dataRootOk = true;
   try { assertDataRootInside(repoRoot, dataRoot); } catch (e) { dataRootOk = false; add({ id: "data_root_boundary", title: "数据根边界", status: "fail", detail: e instanceof Error ? e.message : String(e), fix: "把 .local 改回产品根内的普通目录(不要用符号链接指向仓库外)" }); }
 
@@ -206,6 +208,22 @@ export function runDoctor(opts: { repoRoot?: string; env?: NodeJS.ProcessEnv; ex
   const found = fs.existsSync(skillsDir) ? fs.readdirSync(skillsDir).filter((d) => fs.existsSync(path.join(skillsDir, d, "SKILL.md"))) : [];
   const missing = REQUIRED_SKILLS.filter((s) => !found.includes(s));
   add({ id: "skills", title: "skills 可发现性(.agents/skills/<名>/SKILL.md)", status: missing.length ? "fail" : fs.existsSync(path.join(repoRoot, "skills")) ? "warn" : "ok", detail: `${found.length} 个:${found.join(", ") || "(无)"}${missing.length ? `;缺 ${missing.join(", ")}` : ""}${fs.existsSync(path.join(repoRoot, "skills")) ? ";根目录存在 skills/(Codex 不会加载该路径)" : ""}`, fix: missing.length ? "恢复 .agents/skills/" : undefined });
+
+  // 7a2. 指令发现链(instructions_root.ts):引擎只收集 project root → cwd 之间的 AGENTS.md 与 .agents/skills。
+  //      失效是**静默**的:不报错,只是宪法与技能不在提示词里,报告照样产出 —— 所以这条必须体检。
+  if (!pc || !codexHome) add({ id: "instructions_root", title: "指令发现链(宪法 / 项目技能)", status: "skip", detail: "产品配置不可用,无法定位 CODEX_HOME" });
+  else {
+    const probeRun = path.join(dataRoot, "runs", "__doctor__");
+    const pre = preflightInstructions({ repoRoot, dataRoot, runDir: probeRun, codexHome });
+    add({
+      id: "instructions_root", title: "指令发现链(宪法 / 项目技能)",
+      status: pre.problems.length ? "fail" : "ok",
+      detail: pre.problems.length
+        ? pre.problems.map((x) => sub(x)).join(" / ")
+        : `指令根 ${sub(pre.root)}(${pre.mode === "product" ? "产品根" : "数据根,指令资产已同步"});链上 ${pre.chain.length} 层无多余宪法 / 技能`,
+      fix: pre.problems.length ? "scripts/init(幂等)会补 marker 与 project_root_markers;链上多余的 AGENTS.md / AGENTS.override.md / .agents/skills 需手动删除" : undefined,
+    });
+  }
 
   // 7b. 用户级 / 捆绑 skills 隔离(Codex 还会从 ~/.agents/skills 与 $CODEX_HOME/skills/.system 发现 skill,与 CODEX_HOME 无关;编排器每次运行开始时写禁用块,这里只读报告)
   if (!pc || !codexHome) add({ id: "skills_isolation", title: "用户级 / 捆绑 skills 隔离", status: "skip", detail: "产品配置不可用,无法定位 CODEX_HOME" });

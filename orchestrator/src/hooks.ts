@@ -11,6 +11,8 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 
+import { findMultilineClose, scanTomlLine } from "./tomlscan.ts";
+
 import type { RunConfig, Stage } from "./config.ts";
 import { atomicWrite, readJsonIfExists, writeJson } from "./fsutil.ts";
 
@@ -117,25 +119,76 @@ export function uninstallHooks(cfg: Pick<RunConfig, "codexHome">): void {
   if (fs.existsSync(cp)) { const txt = fs.readFileSync(cp, "utf8"); const b = txt.indexOf(BLOCK_BEGIN), e = txt.indexOf(BLOCK_END); if (b >= 0 && e > b) atomicWrite(cp, (txt.slice(0, b) + txt.slice(e + BLOCK_END.length)).replace(/\s+$/, "") + "\n"); }
 }
 
-/** 把标记块替换 / 追加到 toml 文本末尾(块必须在文件末尾:TOML 表头会一直作用到下一个表头,放末尾才不会把用户的键吞进我们的表)。
- *  begin / end 默认为 hooks 块标记;skills 隔离块(skills_isolation.ts)传自己的标记复用同一机制——每个块都以表头开始,多块并存互不吞键 */
+/**
+ * 分隔符健全性:损坏 / 重复 / 只有一半时**必须报错**,不能当"没有块"去追加新的 —— 那样旧键新键会同时留在文件里,
+ * 而 TOML 里后写的未必赢(Codex ir-r1 P2-9)。
+ * ⚠️ 只认**独占整行、且不在多行字符串里**的分隔符:
+ *   - 裸子串匹配 → 注释里提到这行标记(排查笔记很容易这么写)会被判成"块只有一半",
+ *     此后**每次运行都抛、自己好不了**(Codex ir-r2 P2);
+ *   - 只按整行匹配还不够 → TOML 多行字符串里原样贴一段配置也会整行命中(Codex ir-r3 P2)。
+ */
+function lineSpan(existing: string, marker: string): { start: number; end: number }[] {
+  const hits: { start: number; end: number }[] = [];
+  let offset = 0;
+  let multiline: ReturnType<typeof scanTomlLine>["opensMultiline"] = null;
+  for (const line of existing.split("\n")) {
+    if (multiline) {
+      if (findMultilineClose(line, multiline) >= 0) multiline = null;  // 闭合行本身不参与匹配
+    } else {
+      if (line.trimEnd() === marker) hits.push({ start: offset, end: offset + line.length });
+      multiline = scanTomlLine(line).opensMultiline;
+    }
+    offset += line.length + 1;
+  }
+  return hits;
+}
+
+function blockSpan(existing: string, begin: string, end: string): { b: number; e: number; eEnd: number } | null {
+  const bs = lineSpan(existing, begin), es = lineSpan(existing, end);
+  if (!bs.length && !es.length) return null;
+  if (!bs.length || !es.length) throw new Error(`生成块只有一半(缺${bs.length ? "结束" : "开始"}标记),请手工修复:${bs.length ? begin : end}`);
+  if (bs.length > 1) throw new Error(`生成块开始标记出现多次,请手工修复:${begin}`);
+  if (es.length > 1) throw new Error(`生成块结束标记出现多次,请手工修复:${end}`);
+  if (es[0].start < bs[0].start) throw new Error(`生成块分隔符顺序颠倒(结束标记在开始标记之前),请手工修复:${begin}`);
+  return { b: bs[0].start, e: es[0].start, eEnd: es[0].end };
+}
+
+/** 合并生成块:已存在则**就地替换**(不挪位置);不存在则追加到末尾。
+ *  ⚠️ 只适用于**自带表头**的块(hooks / skills);裸的顶层键要用 `mergeTopLevelBlock`。 */
 export function mergeBlock(existing: string, block: string, begin: string = BLOCK_BEGIN, end: string = BLOCK_END): string {
-  const b = existing.indexOf(begin);
-  const e = existing.indexOf(end);
-  let base = existing;
-  if (b >= 0 && e > b) base = existing.slice(0, b) + existing.slice(e + end.length);
-  base = base.replace(/\s+$/, "");
+  // 🔴 已存在的块就地替换,不挪位置。旧实现是"删掉再追加到末尾",同一个文件里有多个生成块时
+  //    (config.toml 现在有 hooks / skills 隔离 / project root 三个)两个写入方会**互相把对方顶到后面**:
+  //    每次运行都重写、`changed` 永远为真、"再跑一次 action=exists" 永远不成立。
+  const span = blockSpan(existing, begin, end);
+  if (span) {
+    const next = existing.slice(0, span.b) + block + existing.slice(span.eEnd);
+    return next.endsWith("\n") ? next : next + "\n";
+  }
+  const base = existing.replace(/\s+$/, "");
   return (base ? base + "\n\n" : "") + block + "\n";
+}
+
+/**
+ * 顶层键专用:块**放在文件最前面**。
+ * 🔴 TOML 的表头作用域会一直延续到下一个表头 —— 把 `k = v` 追加到末尾,它会变成**最后那张表的键**。
+ *    实测:本产品的 `project_root_markers` 就这样落进了 `[hooks.state."…"]`,完全不生效**而体检还报 OK**
+ *    (因为体检只查了"块在不在",没查这个键是否真的在顶层)。放最前面则不存在歧义,校验也简单:文件必须以它开头。
+ */
+export function mergeTopLevelBlock(existing: string, block: string, begin: string, end: string): string {
+  const span = blockSpan(existing, begin, end);
+  const stripped = span ? existing.slice(0, span.b) + existing.slice(span.eEnd) : existing;
+  const rest = stripped.trim();
+  return rest ? `${block}\n\n${rest}\n` : `${block}\n`;
 }
 
 /** 每个 turn 前写给钩子的上下文(编排器所有;sha256 记入受保护产物) */
 export interface HookContext {
-  stage: Stage; attempt: number; run_id: string; repo_root: string; run_dir: string; python: string; scripts_rel: string;
+  stage: Stage; attempt: number; run_id: string; repo_root: string; data_root: string; run_dir: string; python: string; scripts_rel: string;
   forbidden_path_patterns: string[]; allowed_path_prefixes: string[]; written_at: string;
 }
 export function writeHookContext(cfg: RunConfig, stage: Stage, attempt: number): string {
   const p = path.join(cfg.runDir, HOOK_CONTEXT_REL);
-  const ctx: HookContext = { stage, attempt, run_id: cfg.runId, repo_root: cfg.repoRoot, run_dir: cfg.runDir, python: cfg.python, scripts_rel: cfg.scriptsRel,
+  const ctx: HookContext = { stage, attempt, run_id: cfg.runId, repo_root: cfg.repoRoot, data_root: cfg.dataRoot, run_dir: cfg.runDir, python: cfg.python, scripts_rel: cfg.scriptsRel,
     forbidden_path_patterns: cfg.forbiddenPathPatterns, allowed_path_prefixes: cfg.allowedPathPrefixes, written_at: new Date().toISOString() };
   writeJson(p, ctx);
   return p;
@@ -165,13 +218,22 @@ export function summarizeHookLog(entries: HookLogEntry[]): { invocations: number
     errors: entries.filter((e) => e.decision === "error").length,
   };
 }
-/** 钩子上下文与 cwd 的真实性校验:cwd 必须就是上下文里的运行目录,且运行目录在 <repo_root>/.local 之下(防伪造上下文 / 换 cwd) */
+/**
+ * 钩子上下文与 cwd 的真实性校验:cwd 必须就是上下文里的运行目录,且运行目录在**数据根**之下
+ * (防伪造上下文 / 换 cwd)。
+ * 🔴 边界是**数据根**不是产品根 —— 分离安装时运行目录本来就在产品根之外。
+ *    旧实现要求在产品根之下,于是 data 模式下**每一次钩子调用都报"上下文与 cwd 不一致"并放行**:
+ *    PreToolUse 那层执行纪律**全程等于没有**,而阶段照样 complete(实测抓到,5/5 全 error)。
+ *    ⇒ 这是"我在别处拆掉了旧假设、却漏了这一处"的典型;同一根因要一次找干净。
+ * ⚠️ 旧上下文文件没有 data_root 字段 → 视为不匹配(拒绝按残缺上下文放行)。
+ */
 export function contextMatchesCwd(ctx: HookContext, cwd: string): boolean {
   try {
+    if (!ctx.data_root) return false;
     const a = fs.realpathSync(cwd);
     const b = fs.realpathSync(ctx.run_dir);
-    const repo = fs.realpathSync(ctx.repo_root);
-    return a === b && b.startsWith(repo + path.sep);
+    const dataRoot = fs.realpathSync(ctx.data_root);
+    return a === b && b.startsWith(dataRoot + path.sep);
   } catch { return false; }
 }
 

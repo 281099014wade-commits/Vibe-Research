@@ -180,6 +180,8 @@ export interface Manifest {
   engine: { codex_path: string | null; codex_home: string; binary: string | null };
   constitution: { path: string; sha256: string };
   hooks: { enabled: boolean; installed: boolean; hooks_json: string | null; invocations: number; stop_blocks: number; stop_terminations: number; pre_tool_use_blocks: number; errors: number; log_trust: "diagnostic_untrusted" };
+  /** 指令发现链(instructions_root.ts):宪法与项目技能所在的根、以及分离安装时同步了多少文件;noAgent 运行不写 */
+  instructions_root?: { root: string; mode: "product" | "data"; marker_created: boolean; synced_files: number };
   /** skills 隔离(skills_isolation.ts):运行开始时写入产品 CODEX_HOME/config.toml 的禁用清单摘要;noAgent 运行不写 */
   skills_isolation?: { installed: boolean; config_toml: string; disabled_user_skills: number; bundled_disabled: boolean; max_context_tokens: number; /** 枚举触及 Codex 截断边界,清单可能不完整 */ truncated?: boolean };
 }

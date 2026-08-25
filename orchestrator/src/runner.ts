@@ -104,8 +104,17 @@ export class CodexRunner implements AgentRunner {
   private ensureThread(): Thread {
     if (this.thread) return this.thread;
     this.thread = this.codex.startThread({
-      workingDirectory: this.cfg.runDir,    // cwd = 运行目录:workspace-write 沙箱只放行运行目录写入,仓库代码 / 契约 / skills 只读(AGENTS.md 与 .agents/skills 仍从 git 根逐级发现)
+      workingDirectory: this.cfg.runDir,    // cwd = 运行目录:workspace-write 沙箱只放行运行目录写入,产品代码 / 契约 / skills 只读(宪法与 .agents/skills 的发现见 instructions_root.ts)
       sandboxMode: "workspace-write",
+      // 🔴 必开。引擎在 `exec` 入口有一道门:cwd 不在 git 仓库里就直接 exit 1,报
+      //    `Not inside a trusted directory and --skip-git-repo-check was not specified.`
+      //    (codex-rs/exec/src/lib.rs:798 —— 判据其实**只是 `get_git_repo_root(cwd).is_none()`**,
+      //     与 `[projects] trust_level` 无关,那句话的措辞有误导性)。
+      //    我们的运行目录是**产品自管的数据目录**、不是用户源码树,agent 只往里写本次运行产物,
+      //    这道门保护不到任何东西,却会让两种正常安装直接跑不起来(都已实测):
+      //      · 用户下载 zip 解压(没有 .git)→ 每次运行 exit 1;
+      //      · 数据根在产品根之外(分离安装)→ 同上。
+      skipGitRepoCheck: true,
       networkAccessEnabled: false,          // 解释阶段不联网:取数已由编排器执行,calc / jq 不需要网络(AGENTS.md §5)
       approvalPolicy: "never",              // 非交互
       webSearchMode: "disabled",            // 不联网搜索,数据只来自登记脚本

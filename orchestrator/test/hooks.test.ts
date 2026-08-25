@@ -6,7 +6,7 @@ import path from "node:path";
 import { test } from "node:test";
 
 import { makeConfig } from "../src/config.ts";
-import { MAX_STOP_BLOCKS, buildHooksJson, hookHash, hookKey, installHooks, mergeBlock, normalizedHandler, readHookLog, readStopFailed, summarizeHookLog, writeHookContext } from "../src/hooks.ts";
+import { MAX_STOP_BLOCKS, buildHooksJson, contextMatchesCwd, hookHash, hookKey, installHooks, mergeBlock, normalizedHandler, readHookLog, readStopFailed, summarizeHookLog, writeHookContext } from "../src/hooks.ts";
 import { writeJson } from "../src/fsutil.ts";
 
 
@@ -20,6 +20,8 @@ function tmpRepo(): string {
   fs.mkdirSync(path.join(repo, ".local", "runs", "r1", "raw"), { recursive: true });
   fs.mkdirSync(path.join(repo, ".local", "runs", "r1", "calcs"), { recursive: true });
   fs.writeFileSync(path.join(repo, "AGENTS.md"), "# c\n");
+  // 产品必需件:项目技能目录(引擎按 <指令根>/.agents/skills 发现;缺了就是装坏了,preflight 会拒绝运行)
+  fs.mkdirSync(path.join(repo, ".agents", "skills"), { recursive: true });
   return repo;
 }
 
@@ -50,8 +52,24 @@ test("installHooks:写 hooks.json + 在 config.toml 末尾登记 trusted_hash(�
   for (const st of inst.states) { assert.ok(toml.includes(`[hooks.state.${JSON.stringify(st.key)}]`)); assert.ok(toml.includes(st.trusted_hash)); assert.ok(st.key.startsWith(inst.hooksJsonPath + ":")); }
   const again = installHooks(cfg, "/usr/local/bin/node");
   assert.equal(fs.readFileSync(again.configTomlPath, "utf8"), toml); // 幂等
+  // 已存在的块**就地替换**,不挪位置也不插空行(旧实现是"删掉再追加到末尾")
   assert.equal(mergeBlock("a = 1\n# >>> vibe-research hooks state (generated; do not edit) >>>\nold\n# <<< vibe-research hooks state <<<\n", "# >>> vibe-research hooks state (generated; do not edit) >>>\nnew\n# <<< vibe-research hooks state <<<"),
-    "a = 1\n\n# >>> vibe-research hooks state (generated; do not edit) >>>\nnew\n# <<< vibe-research hooks state <<<\n");
+    "a = 1\n# >>> vibe-research hooks state (generated; do not edit) >>>\nnew\n# <<< vibe-research hooks state <<<\n");
+  // 🔴 同一文件里多个生成块不许互相顶位置:旧实现下 A 写完把 B 顶到后面、B 写完又把 A 顶回去,
+  //    每次运行都重写、changed 永远为真(config.toml 现在有 hooks / skills 隔离 / project root 三个块)
+  const A = ["# >>> a >>>", "x = 1", "# <<< a <<<"].join("\n"), B = ["# >>> b >>>", "y = 2", "# <<< b <<<"].join("\n");
+  const both = mergeBlock(mergeBlock("", A, "# >>> a >>>", "# <<< a <<<"), B, "# >>> b >>>", "# <<< b <<<");
+  assert.equal(mergeBlock(both, A, "# >>> a >>>", "# <<< a <<<"), both, "重写 A 不该改变文件");
+  assert.equal(mergeBlock(both, B, "# >>> b >>>", "# <<< b <<<"), both, "重写 B 不该改变文件");
+  assert.ok(both.indexOf("# >>> a >>>") < both.indexOf("# >>> b >>>"), "写入顺序应保持");
+  // 分隔符必须**独占整行**才算:注释 / 字符串里提到它(排查笔记很容易这么写)不能被判成"块只有一半"、
+  // 从而每次运行都抛、自己好不了
+  const mention = 'note = "排查时搜索 # >>> a >>>"\n';
+  assert.doesNotThrow(() => mergeBlock(mention, A, "# >>> a >>>", "# <<< a <<<"));
+  assert.ok(mergeBlock(mention, A, "# >>> a >>>", "# <<< a <<<").includes(mention.trim()), "原有内容要保留");
+  // 真的只有一半仍要抛(不能因为放宽匹配就把真损坏放过去)
+  assert.throws(() => mergeBlock("# >>> a >>>\nx = 1\n", A, "# >>> a >>>", "# <<< a <<<"), /只有一半/);
+  assert.throws(() => mergeBlock(both + A + "\n", A, "# >>> a >>>", "# <<< a <<<"), /出现多次/);
   assert.deepEqual(Object.keys(buildHooksJson(cfg).hooks), ["Stop", "PreToolUse"]);
 });
 
@@ -126,4 +144,33 @@ test("PreToolUse 钩子脚本:自跑取数脚本 / 读禁区 / 改写受保护�
   const sum = summarizeHookLog(readHookLog(runDir));
   assert.equal(sum.pre_tool_use_blocks, 8);
   assert.equal(sum.errors, 0);
+});
+
+test("contextMatchesCwd:边界是**数据根**不是产品根(分离安装时运行目录本来就在产品根之外)", () => {
+  const app = fs.mkdtempSync(path.join(os.tmpdir(), "vra-hc-app-"));
+  const data = fs.mkdtempSync(path.join(os.tmpdir(), "vra-hc-data-"));
+  const runDir = path.join(data, "runs", "r1");
+  fs.mkdirSync(runDir, { recursive: true });
+  const ctx = { stage: "profile", attempt: 1, run_id: "r1", repo_root: app, data_root: data, run_dir: runDir,
+    python: "python3", scripts_rel: "x", forbidden_path_patterns: [], allowed_path_prefixes: [], written_at: "" };
+
+  // 分离安装:运行目录在产品根之外,但在数据根之内 → 必须匹配。
+  // 🔴 旧实现要求"在产品根之下",于是这里返回 false,每次钩子调用都报"上下文与 cwd 不一致"并**放行** ——
+  //    PreToolUse 那层执行纪律全程等于没有,而阶段照样 complete(真实运行里 5/5 全 error)。
+  assert.equal(contextMatchesCwd(ctx, runDir), true, "数据根在产品根之外时也必须匹配");
+
+  // cwd 不是上下文里的运行目录 → 不匹配
+  const other = fs.mkdtempSync(path.join(os.tmpdir(), "vra-hc-other-"));
+  assert.equal(contextMatchesCwd(ctx, other), false);
+  // 运行目录跑到数据根之外 → 不匹配(这才是该守的边界)
+  assert.equal(contextMatchesCwd({ ...ctx, run_dir: other, data_root: data } as never, other), false);
+  // 旧上下文没有 data_root → 视为不匹配,不按残缺上下文放行
+  const legacy = { ...ctx } as Record<string, unknown>;
+  delete legacy.data_root;
+  assert.equal(contextMatchesCwd(legacy as never, runDir), false);
+  // 仓库内布局仍然成立(数据根 = <产品根>/.local)
+  const inRepoData = path.join(app, ".local");
+  const inRepoRun = path.join(inRepoData, "runs", "r1");
+  fs.mkdirSync(inRepoRun, { recursive: true });
+  assert.equal(contextMatchesCwd({ ...ctx, data_root: inRepoData, run_dir: inRepoRun } as never, inRepoRun), true);
 });
