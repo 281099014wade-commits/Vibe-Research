@@ -2,6 +2,105 @@
 
 格式遵循 Keep a Changelog;版本号待首次发布时定(当前未发布)。
 
+## 未发布 · 档案模板变成契约(2026-08-25)
+
+`knowledge.ts` 是 Core 里最后一块写死垂类的地方:六个章节标题、每节放什么、有效期 90 天、
+关键数据最多 40 条、"§4/§5/§6 是尾部章节要优先保留"的正则 —— 全是金融档案的样子。
+换个垂类得改 Core。这次搬进 `Plugin.archive` 契约。
+
+### 声明式配置,不是模板引擎
+
+插件声明**分节顺序**,每节挑几个**内置区块**并配参数:
+
+```ts
+archive: {
+  validDays: 90, maxFacts: 40,
+  sections: [
+    { title: "1. 业务与上下游位置", blocks: [{ kind: "stageSummary", stage: "profile", extras: [...] }] },
+    { title: "4. 裁决点(什么数据出来会改变判断)", tail: true, blocks: [{ kind: "decisionPoints", stage: "risk" }] },
+    { title: "6. 对上次档案的裁决(knowledge_conflicts)", tail: true, omitIfEmpty: true, blocks: [{ kind: "knowledgeConflicts" }] },
+  ],
+}
+```
+
+九种内置区块:`stageSummary` / `evidenceTable` / `stageSummaries` / `standardColumnsTable` /
+`conclusions` / `conflictCount` / `decisionPoints` / `gaps` / `knowledgeConflicts`。
+
+🔴 **刻意不让插件塞 markdown 字符串进来** —— 那样脱敏 gate、数字纪律、证据 id 绑定就全绕过去了。
+新垂类要新排版 = 在 Core 加一种 kind + 一条 schema 分支,**加法是有审查的**。
+形状与 VS Code 的 `contributes.views` / `walkthroughs` 一致:声明结构 + 引用内置渲染器。
+
+### 注册期就拒绝(不是运行到那一节才发现)
+
+区块是**判别式 union**(ajv `discriminator: true`),报错能定位到具体哪种区块少了哪个参数,
+而不是笼统一句"不匹配 oneOf"。另外两条 JSON Schema 表达不了的关系检查:
+
+- **区块引用的阶段必须真的存在** —— 阶段名拼错的话,渲染期只会静默出一行"(无)"。
+- **至少要有一节 `tail: true`** —— 一节都不标,召回截断时"优先保留尾部"整个失效,
+  而且是**静默**失效:裁决点和数据缺口被一起截掉,报告里看不出来。
+
+`truncateBySection` 的尾部判定从写死正则 `/^## (4\.|5\.|6\.)/` 改成按插件标题匹配。
+⚠️ 残留:旧档案是改标题之前写的 → 一节都匹配不上 → 尾部保护退化(重构前写死正则也是同样的性质,已在注释写明)。
+
+### 真实回归
+
+拿真实运行 `simon-local-2`(820 证据 / 24 计算)重新渲染,与当时归档的 `.md` 逐字节 diff,
+**只有两处差异,都是预期内的**:①§1 标题(那是更早一次会话改的,不是这次)②§2 那句
+"每条带 报告期 / 来源 …最多 40 条"从标题里挪到标题下一行(标题里带变量就得上模板引擎,不值当)。
+
+新增的两条关系检查都做了**变异测试**(把检查改成 `if (false)` → 对应测试立刻变红),
+避免写了个永远不会红的校验。
+
+### 顺带
+
+- `KNOWLEDGE_VALID_DAYS` / `KNOWLEDGE_MAX_FACTS` 从 Core 删掉(改由插件 `archive` 给);
+  `KNOWLEDGE_MAX_CHARS` 留在 Core —— 它是提示词预算,与垂类无关。
+- `test/knowledge_viewer.test.ts` 的截断用例改为**从插件契约取标题**构造正文。原来写死
+  `"## 4. 裁决点"` 这种字面量,插件改标题时它会**绿着失效**(测的是自己造的假数据)。
+- 已知残留(不算耦合,是证据契约本身的措辞):关键数据表的表头「指标 / 报告期」和
+  「标准产出列」仍写在 Core —— 它们标的是 Core 的 `Evidence` 字段与 `standardColumns` 槽位。
+
+### Codex 审计三轮(archive-r1 / r2 / r3)
+
+r1 契约层 1 P2、渲染层 2 P1 / 3 P2 / 1 P3;r2 复审 1 P1 / 2 P2;**r3 无新 P1**。修了这些:
+
+- **表格单元格没转义 `|`**(P1,重构前就有)。证据值 / 摘要都来自外部数据源,里面一个 `|` 就多切一列 ——
+  表格不报错,只是**字段整体错位**(值被读成来源),而这份档案下次会原样注入提示词。
+  🔴 r2 又指出**只替 `|` 是修不掉的**:输入 `A\|B` 会变成 `A\\|B`,两个反斜杠互相转义掉、
+  `|` 又变回分隔符 —— 必须**先转义反斜杠**。
+- **`truncateBySection` 会超预算**(P1)。尾部本身超长时会带上两个截断标记,返回长度 > max。
+  改成 `fit(t, budget)` 保证任何输入都 ≤ budget;连接换行只在两段都非空时计入
+  (—— 自己写的边界测试当场抓到 head 为空时仍无条件加换行的 off-by-one)。
+- **`tail` 判定用 `startsWith` 会前缀误匹配**(P2)。tail 标题「风险」会把更早的「风险因素」一节
+  当成尾部,连带把它后面全部保护起来。改成**整行相等**。
+- **`items` 语义两处不自洽**(P2):`stageSummary` 只看 summary,"摘要空但标签有值"的章节会被
+  `omitIfEmpty` 静默丢掉;`conclusions` 恒定从 1 起,空章节永远省不掉。
+- **`validDays` / `maxFacts` 只校验了下限**(P2)。`1e100` 也是合法 integer,
+  而 recallKnowledge 里 `as_of + validDays 天` 会**抛 RangeError**(Codex 说"永远 fresh",实测是崩)。
+  🔴 顺着这条查同类,发现**同一个洞在磁盘那侧更严重**:`valid_days` 还能从档案 frontmatter 进来,
+  那是**用户数据区的文件 = 不可信输入**,旧代码 `Number(fm.valid_days) || 兜底` 拦不住 —— 这是
+  **重构前就存在的 bug**,变异测试证实旧写法确实抛 RangeError。两侧都夹紧到 1..3650。
+- **`Infinity` 被归一化成 0**(r3):语义上"预算无限"应该全文照返,不是全部吃掉。
+
+新加了一条注册期校验:**`tail` 章节必须是连续后缀**。中间夹一个 tail,截断会把它后面的普通章节
+一起当尾部保护而且不报错 —— 在注册期拒掉,渲染和截断两侧就都不用处理交错情形。
+
+**两条不采纳,写明理由**:
+1. r1 说"gate 删行后可能只剩表头,调用方无法发现" —— 不成立:`archiveRun` 返回 `gateRemoved`,
+   `gate_removed` 计数进了 manifest 也打了事件日志(`orchestrate.ts:447`)。r3 已接受。
+2. r3 建议兜底时"取 matched 与 最后 N 节 的较早者",让部分改名的 tail 也能保住 —— **不采纳**:
+   `omitIfEmpty` 的 tail 章节被省掉时实际节数少于 N,那个式子会把 §3 这种普通章节也算进尾部。
+   宁可少保护,不要在正常情况下悄悄扩大保护范围。
+
+### 每条修复都做了变异测试
+
+把修复改回旧写法,对应测试必须变红。**11 条里 10 条红了,1 条没红** —— `max` 的 NaN / 负数归一化:
+实测不归一化时那些输入**恰好**也返回空串(NaN 让每个比较都为 false)。所以那行是**把契约写明确**、
+不是修当前的 bug,代码与测试里都如实标注了(`tails.length > 0` 那个条件同理,与算式冗余,已标注)。
+⇒ 不这么验一遍的话,这两处会被当成"已修复并有测试保护",而它们其实一条都拦不住。
+
+测试 TS 275 / doctor 15 ok · 0 warn · 0 fail。Core 行业词仍为 0。
+
 ## 未发布 · 校验改用 ajv,自造名换成通行叫法(2026-08-25)
 
 上一版的注册期校验全是手写 if-else,名字也是自造的 `DomainPack`。这次两件事一起做。

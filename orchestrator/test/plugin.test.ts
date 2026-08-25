@@ -295,3 +295,47 @@ test("stageScripts 也只读一次:多余字段检查与投影共用同一份(�
   resetPlugin();
   registerPlugin(FINANCE_PLUGIN);
 });
+
+test("archive:区块参数、阶段引用与 tail 由 schema + 关系检查一起管住", () => {
+  const arch = FINANCE_PLUGIN.archive;
+  const withArch = (over: Partial<Plugin["archive"]>) => plugin({ archive: { ...arch, ...over } });
+  const sec = (blocks: unknown[]) => [{ title: "X", tail: true, blocks }] as never;
+
+  // 形状:未知 kind / 缺必填参数 / 多余字段 —— 判别式 union 让报错定位到具体那种区块
+  rejects(withArch({ sections: sec([{ kind: "没有这种区块" }]) }), /kind|oneOf/);
+  rejects(withArch({ sections: sec([{ kind: "stageSummary" }]) }), /stage/);
+  rejects(withArch({ sections: sec([{ kind: "evidenceTable", stage: "profile" }]) }), /additional|properties/i);
+  rejects(withArch({ sections: sec([]) }), /minItems|fewer than 1/i);
+
+  // 关系:区块引用的阶段必须真的存在(拼错阶段名在渲染期只会静默出"(无)")
+  rejects(withArch({ sections: sec([{ kind: "conclusions", stage: "risk_打错了" }]) }),
+    /archive[\s\S]*引用了不存在的阶段 risk_打错了/);
+  rejects(withArch({ sections: sec([{ kind: "stageSummaries", stages: ["profile", "不存在"] }]) }),
+    /archive[\s\S]*引用了不存在的阶段 不存在/);
+  rejects(withArch({ sections: sec([{ kind: "evidenceTable", stages: ["不存在"] }]) }),
+    /archive[\s\S]*引用了不存在的阶段 不存在/);
+
+  // 至少一节 tail:否则召回截断时尾部保护整个失效(而且是静默失效)
+  rejects(withArch({ sections: arch.sections.map((s) => ({ ...s, tail: false })) as never }), /tail: true/);
+  // tail 必须是连续后缀:中间夹一个 tail,截断会把它后面的普通章节一起当尾部保护(不报错)
+  rejects(withArch({ sections: [{ title: "A", tail: true, blocks: [{ kind: "gaps" }] }, { title: "B", blocks: [{ kind: "gaps" }] }] as never }),
+    /tail 章节必须是连续的结尾几节/);
+  rejects(withArch({ sections: [{ title: "A", tail: true, blocks: [{ kind: "gaps" }] }, { title: "B", tail: false, blocks: [{ kind: "gaps" }] }, { title: "C", tail: true, blocks: [{ kind: "gaps" }] }] as never }),
+    /tail 章节必须是连续的结尾几节/);
+  // 合法:tail 在最后连着
+  fresh(withArch({ sections: [{ title: "A", blocks: [{ kind: "gaps" }] }, { title: "B", tail: true, blocks: [{ kind: "gaps" }] }, { title: "C", tail: true, blocks: [{ kind: "gaps" }] }] as never }));
+
+  // 数值上下限:1e100 也是合法 integer,不设上限的话 recallKnowledge 会抛 RangeError(Codex archive-r1)
+  rejects(withArch({ validDays: 0 }), /validDays|minimum|>=/i);
+  rejects(withArch({ maxFacts: 0 }), /maxFacts|minimum|>=/i);
+  rejects(withArch({ validDays: 1e100 }), /validDays|maximum|<=/i);
+  rejects(withArch({ maxFacts: 1e100 }), /maxFacts|maximum|<=/i);
+  rejects(withArch({ validDays: 3651 }), /validDays|maximum|<=/i);
+
+  // 多写一个字段当场说(ajv 校验的是投影,靠 assertNoExtraKeys 比对原对象)
+  rejects(plugin({ archive: { ...arch, 手滑多写的字段: 1 } as never }), /archive[\s\S]*手滑多写的字段/);
+
+  fresh(FINANCE_PLUGIN);
+  assert.ok(currentPlugin().archive.sections.some((s) => s.tail), "金融包必须有 tail 章节");
+  assert.throws(() => { (currentPlugin().archive.sections as unknown[]).push({} as never); }, /read only|frozen|extensible/i);
+});

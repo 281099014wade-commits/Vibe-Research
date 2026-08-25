@@ -7,7 +7,8 @@ import test from "node:test";
 
 import { packCriticalScripts, stageScripts, makeConfig } from "../src/config.ts";
 import { sha256File, writeJson } from "../src/fsutil.ts";
-import { archiveRun, companyDir, recallKnowledge, safeFmValue, sensitiveHits, shDate, shouldRecall, truncateBySection } from "../src/knowledge.ts";
+import { currentPlugin } from "../src/plugin.ts";
+import { archiveRun, buildArchiveMarkdown, companyDir, recallKnowledge, safeFmValue, sensitiveHits, shDate, shouldRecall, truncateBySection } from "../src/knowledge.ts";
 import type { Manifest } from "../src/merge.ts";
 import { loadRun } from "../src/validator.ts";
 import { APPENDIX_REL, VIEWER_REL, renderAppendix, collectViewerData, writeViewer } from "../src/viewer.ts";
@@ -166,15 +167,126 @@ test("knowledge:frontmatter 动态字段(公司名 / 来源)单行规范化 + �
   assert.equal(recallKnowledge(cfg)?.status, "fresh");
 });
 
-test("knowledge:召回截断按章节——裁决点 / 缺口保留,只截中间关键数据表", () => {
-  const body = ["## 1. 业务", "profile 摘要", "## 2. 关键数据", ...Array.from({ length: 400 }, (_, i) => `| f${i} | ${i} | 元 | 2026 | s | d | 90 | ev-${i.toString(16).padStart(6, "0")} |`), "## 3. 历史结论", "结论 A", "## 4. 裁决点", "- 裁决点 X", "## 5. 待验证 / 数据缺口", "- 缺口 Y", "## 6. 对上次档案的裁决", "- 旧结论 Z 被推翻"].join("\n");
+test("knowledge:召回截断按章节——插件标 tail 的章节保留,只截中间章节", () => {
+  // 标题从插件契约取:写死字面量的话,插件改标题时这条会"绿着失效"(重构前的 /^## (4\.|5\.|6\.)/ 正是这样)
+  const secs = currentPlugin().archive.sections;
+  const heads = secs.filter((x) => !x.tail), tails = secs.filter((x) => x.tail);
+  assert.ok(heads.length && tails.length, "本条测试要求插件同时有 head 与 tail 章节");
+  const bulk = Array.from({ length: 400 }, (_, i) => `| f${i} | ${i} | 元 | 2026 | s | d | 90 | ev-${i.toString(16).padStart(6, "0")} |`);
+  const body = [
+    ...heads.flatMap((x, i) => [`## ${x.title}`, ...(i === heads.length - 1 ? bulk : [`正文 ${i}`])]),
+    ...tails.flatMap((x, i) => [`## ${x.title}`, `尾部条目 T${i}`]),
+  ].join("\n");
   const r = truncateBySection(body, 3000);
   assert.ok(r.truncated && r.text.length <= 3200, String(r.text.length));
-  assert.ok(r.text.includes("## 4. 裁决点") && r.text.includes("- 裁决点 X") && r.text.includes("- 缺口 Y") && r.text.includes("旧结论 Z 被推翻"), "尾部章节必须完整保留");
+  for (const [i, x] of tails.entries()) assert.ok(r.text.includes(`## ${x.title}`) && r.text.includes(`尾部条目 T${i}`), `尾部章节必须完整保留:${x.title}`);
   assert.ok(r.text.includes("本章已截断"), "中间章节被截断并标记");
   assert.equal(truncateBySection("short", 100).truncated, false);
   // 尾部本身超长 → 按比例截但仍在上限附近
-  const longTail = ["## 1. x", "a", "## 4. 裁决点", ...Array.from({ length: 500 }, (_, i) => `- 裁决点 ${i}`)].join("\n");
+  const t0 = tails[0].title;
+  const longTail = [`## ${heads[0].title}`, "a", `## ${t0}`, ...Array.from({ length: 500 }, (_, i) => `- 裁决点 ${i}`)].join("\n");
   const r2 = truncateBySection(longTail, 2000);
-  assert.ok(r2.truncated && r2.text.length <= 2200 && r2.text.includes("## 4. 裁决点"));
+  assert.ok(r2.truncated && r2.text.length <= 2200 && r2.text.includes(`## ${t0}`));
+  // 显式传 tailTitles(旧档案 / 第三方标题)也要生效
+  assert.ok(truncateBySection(["## A", "x".repeat(4000), "## B", "keep"].join("\n"), 1000, ["B"]).text.includes("keep"));
+});
+test("knowledge:档案 frontmatter 是不可信输入——valid_days 异常值不能把召回带崩", () => {
+  const repo = fs.mkdtempSync(path.join(os.tmpdir(), "vra-vd-"));
+  const cfg = makeConfig({ symbol: "VD1", market: "SZ", repoRoot: repo, runId: "vd1", python: "false" });
+  const dir = companyDir(cfg);
+  fs.mkdirSync(dir, { recursive: true });
+  const fallback = currentPlugin().archive.validDays;
+  const write = (vd: string) => fs.writeFileSync(path.join(dir, "latest.md"),
+    `---\nschema_version: 1\nsymbol: "VD1"\nas_of: ${shDate()}\nstatus: fresh\nvalid_days: ${vd}\n---\n正文\n`);
+  // 1e100 不夹紧的话 as_of + valid_days 天会超出 Date 范围 → RangeError(不是"永远 fresh")
+  for (const bad of ["1e100", "-1", "0", "abc", "99999999999999999999", "1.5"]) {
+    write(bad);
+    const r = recallKnowledge(cfg);
+    assert.equal(r?.valid_days, fallback, `valid_days=${bad} 应回退到插件声明的 ${fallback}`);
+    assert.ok(r?.status === "fresh" || r?.status === "stale");
+  }
+  // 合法值照常生效
+  write("30");
+  assert.equal(recallKnowledge(cfg)?.valid_days, 30);
+});
+
+test("knowledge:截断严格不超预算 + 标题整行匹配 + 匹配不上退到保护最后一节(Codex archive-r1)", () => {
+  const sec = (t: string, text: string) => `## ${t}\n${text}`;
+  const big = "x".repeat(5000);
+  // 1) 尾部本身就超预算时,总长仍 <= max(旧实现会多带两个 marker 溢出)
+  for (const max of [80, 300, 2000]) {
+    const r = truncateBySection([sec("H", big), sec("T", big)].join("\n"), max, ["T"]);
+    assert.ok(r.text.length <= max, `max=${max} 实际=${r.text.length}`);
+  }
+  // 2) marker 都放不下的极小预算也不许溢出
+  assert.ok(truncateBySection(sec("T", big), 5, ["T"]).text.length <= 5);
+  // 3) 标题必须整行相等:tail 标题「风险」不能把更早的「风险因素」一节吃成尾部
+  const body = [sec("风险因素", big), sec("中间", "m"), sec("风险", "真尾部")].join("\n");
+  const r3 = truncateBySection(body, 400, ["风险"]);
+  // 判别点就是这一条:用 startsWith 的话 tailIdx 会落在「风险因素」那节,「真尾部」根本进不了结果
+  assert.ok(r3.text.includes("真尾部"), "真正的 tail 章节必须保住(整行匹配才不会被「风险因素」抢先)");
+  assert.ok(r3.text.includes("本章已截断"), "「风险因素」应落在被截的 head 里");
+  // 4) 一节都匹配不上(档案是改标题之前写的)→ 退到保护最后一节,而不是尾部保护整个失效
+  const r4 = truncateBySection([sec("旧标题A", big), sec("旧标题B", "最后一节的内容")].join("\n"), 300, ["现在的标题"]);
+  assert.ok(r4.text.includes("最后一节的内容"), "匹配不上时要退到保护最后一节");
+});
+
+test("knowledge:表格单元格里的竖线必须转义,否则字段整体错位(Codex archive-r1 P1)", () => {
+  const { cfg, ledger, manifest } = fakeRun();
+  const run = loadRun(cfg.runDir, ledger as never);
+  for (const e of run.evidence.values()) { (e as { value: unknown }).value = "10 | 20"; break; }
+  const { body } = buildArchiveMarkdown(cfg, run, manifest, "2026-08-22");
+  const BS = String.fromCharCode(92);
+  const cols = (row: string) => row.split(BS + "|").join("").split("|").length;
+  // 逐张表比:档案里有 8 列的证据表也有 6 列的结论表,混在一起比会误判
+  const lines = body.split("\n");
+  let header = -1, checked = 0;
+  for (let i = 0; i < lines.length; i += 1) {
+    if (lines[i].startsWith("|---")) { header = cols(lines[i - 1]); continue; }
+    if (header > 0 && lines[i].startsWith("| ")) { assert.equal(cols(lines[i]), header, `列数不一致,表格被撑坏:${lines[i].slice(0, 120)}`); checked += 1; }
+    else if (!lines[i].startsWith("| ")) header = -1;
+  }
+  assert.ok(checked >= 3, `应检查到多张表的数据行,实际 ${checked}`);
+  assert.ok(body.includes("10 " + BS + "| 20"), "含竖线的证据值必须转义后落进单元格");
+});
+
+test("knowledge:反斜杠+竖线不能击穿转义 / max 异常值 / 兜底保护最后 N 节(Codex archive-r2)", () => {
+  const BS = String.fromCharCode(92);
+  // 1) 输入本身就带 反斜杠+竖线:只替竖线的话两个反斜杠互相转义掉,竖线又变回分隔符
+  const { cfg, ledger, manifest } = fakeRun();
+  const run = loadRun(cfg.runDir, ledger as never);
+  for (const e of run.evidence.values()) { (e as { value: unknown }).value = "A" + BS + "|B"; break; }
+  const { body } = buildArchiveMarkdown(cfg, run, manifest, "2026-08-22");
+  const cols = (row: string) => row.split(BS + BS).join("").split(BS + "|").join("").split("|").length;
+  const lines = body.split("\n");
+  let header = -1;
+  for (let i = 0; i < lines.length; i += 1) {
+    if (lines[i].startsWith("|---")) { header = cols(lines[i - 1]); continue; }
+    if (header > 0 && lines[i].startsWith("| ")) assert.equal(cols(lines[i]), header, `表格被撑坏:${lines[i].slice(0, 120)}`);
+    else if (!lines[i].startsWith("| ")) header = -1;
+  }
+  assert.ok(body.includes("A" + BS + BS + BS + "|B"), "反斜杠要先转义,竖线再转义");
+
+  // 2) max 是负数 / NaN 时不许违约。⚠️ 这是**契约测试不是回归测试**:去掉归一化那行它也不会红(见 knowledge.ts 注释)
+  const sec = (t: string, text: string) => `## ${t}\n${text}`;
+  const long = [sec("H", "x".repeat(3000)), sec("T", "尾")].join("\n");
+  for (const bad of [-1, Number.NaN, -1e9]) {
+    const r = truncateBySection(long, bad as number, ["T"]);
+    assert.equal(r.text.length, 0, `max=${String(bad)} 应归一化为 0`);
+    assert.equal(r.truncated, true);
+  }
+
+  // 2b) Infinity = 预算无限 → 全文照返,不能被归一化成 0 吃掉(Codex archive-r3)
+  assert.deepEqual(truncateBySection(long, Number.POSITIVE_INFINITY, ["T"]), { text: long, truncated: false });
+  // 2c) 显式传空 tailTitles = 调用方明说"没有尾部" → 不做最后一节兜底
+  const noTail = truncateBySection([sec("A", "x".repeat(3000)), sec("B", "最后一节")].join("\n"), 300, []);
+  assert.ok(!noTail.text.includes("最后一节"), "调用方说没有尾部就不该兜底保护最后一节");
+
+  // 3) 插件有多节 tail 而档案标题全改过 → 兜底要保住最后 N 节,不是只保最后一节
+  const body3 = [sec("旧A", "x".repeat(3000)), sec("旧B", "倒数第二节"), sec("旧C", "最后一节")].join("\n");
+  const r3 = truncateBySection(body3, 400, ["新甲", "新乙"]);  // 当前插件有 2 节 tail
+  assert.ok(r3.text.includes("最后一节") && r3.text.includes("倒数第二节"), "两节 tail 都要保住");
+  // 只有 1 节 tail 时仍只保最后一节
+  const r1 = truncateBySection(body3, 400, ["新甲"]);
+  assert.ok(r1.text.includes("最后一节") && !r1.text.includes("倒数第二节"), "1 节 tail 就只保最后一节");
 });

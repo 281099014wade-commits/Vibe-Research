@@ -115,5 +115,35 @@ export const FINANCE_PLUGIN: Plugin = {
   /** 基准期 = 当前财年 T */
   baselinePeriod: financeBaselinePeriod as Plugin["baselinePeriod"],
 
+  /**
+   * 研究档案模板。章节顺序与编号写在标题里;`tail: true` 的几节在召回截断时优先保留
+   * (裁决点 / 缺口 / 对旧档案的裁决 —— 这三样被截掉,档案就没用了)。
+   */
+  archive: {
+    validDays: 90,
+    maxFacts: 40,                 // 关键数据表 ≤ 40 行,保证裁决点 / 缺口不被截掉
+    sections: [
+      { title: "1. 业务与上下游位置", blocks: [
+        { kind: "stageSummary", stage: "profile", extras: [
+          { label: "不可替代性标签", field: "moat_tag", fallback: "待补" },
+          { label: "报价判定", field: "quote_decision", fallback: "?" },
+        ] },
+      ] },
+      { title: "2. 关键数据", blocks: [
+        // ⚠️ 不含 report:它引用的 id 多且多为重复,放进来会把 40 条上限挤满(沿用重构前的行为)
+        { kind: "evidenceTable", stages: ["profile", "financials", "estimates", "valuation", "risk"] },
+        { kind: "stageSummaries", stages: ["financials", "estimates", "valuation"], caption: "阶段摘要(数值以证据 / 计算 id 为准):" },
+        { kind: "standardColumnsTable" },
+      ] },
+      { title: "3. 历史结论(本次阶段判读;与实时数据冲突时以实时为准)", blocks: [
+        { kind: "conclusions", stage: "risk" },
+        { kind: "conflictCount", stage: "risk" },
+      ] },
+      { title: "4. 裁决点(什么数据出来会改变判断)", tail: true, blocks: [{ kind: "decisionPoints", stage: "risk" }] },
+      { title: "5. 待验证 / 数据缺口", tail: true, blocks: [{ kind: "gaps" }] },
+      { title: "6. 对上次档案的裁决(knowledge_conflicts)", tail: true, omitIfEmpty: true, blocks: [{ kind: "knowledgeConflicts" }] },
+    ],
+  },
+
   lexicon: FINANCE_LEXICON,
 };

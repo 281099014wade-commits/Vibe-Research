@@ -48,6 +48,40 @@ import { currentLexicon, resetLexicon, setLexicon, type Lexicon } from "./number
 //: 已生效的运行计划。
 export interface StageScripts { readonly required: readonly string[]; readonly optional: readonly string[] }
 
+/**
+ * 档案的一个**内容块**。Core 备好一组通用渲染器,插件按顺序引用它们 ——
+ * 这跟 VS Code 的 `views` / `walkthroughs` 贡献点是同一形状:**声明式引用内置渲染器,不是模板引擎**。
+ * 想要现成渲染器覆盖不了的东西,再谈加新 kind,别在配置里塞代码。
+ */
+export type ArchiveBlock =
+  /** 某阶段的 summary,可附带该阶段产物里的若干字段 */
+  | { readonly kind: "stageSummary"; readonly stage: string; readonly extras?: readonly { readonly label: string; readonly field: string; readonly fallback?: string }[] }
+  /** 关键数据表:这些阶段顶层引用的证据(受 archive.maxFacts 限制;省略 stages = 全部阶段) */
+  | { readonly kind: "evidenceTable"; readonly stages?: readonly string[] }
+  /** 一行一个阶段的 summary */
+  | { readonly kind: "stageSummaries"; readonly stages: readonly string[]; readonly caption?: string }
+  /** 标准产出列 → calc id */
+  | { readonly kind: "standardColumnsTable" }
+  /** 某阶段的 summary + counter_evidence 表 */
+  | { readonly kind: "conclusions"; readonly stage: string }
+  /** 数据源冲突条数(取自该阶段产物的 source_conflicts) */
+  | { readonly kind: "conflictCount"; readonly stage: string }
+  /** 某阶段的 decision_points */
+  | { readonly kind: "decisionPoints"; readonly stage: string }
+  /** 各阶段的 gaps */
+  | { readonly kind: "gaps" }
+  /** 各阶段的 knowledge_conflicts(对上次档案的裁决) */
+  | { readonly kind: "knowledgeConflicts" };
+
+export interface ArchiveSection {
+  readonly title: string;
+  /** 截断时**优先保留**(档案被召回注入提示词时有长度上限,尾部章节不能被截掉) */
+  readonly tail?: boolean;
+  /** 没有内容就整节不出现(如"对上次档案的裁决") */
+  readonly omitIfEmpty?: boolean;
+  readonly blocks: readonly ArchiveBlock[];
+}
+
 export interface Plugin {
   /** 插件标识,用于报错与诊断("finance" / "restaurant") */
   readonly id: string;
@@ -106,6 +140,17 @@ export interface Plugin {
   readonly alertFields: readonly string[];
   /** doctor 的 calc 自检:跑哪个函数、什么入参、期望什么值 */
   readonly selfTestCalc: { readonly fn: string; readonly args: Readonly<Record<string, unknown>>; readonly expect: number };
+  /**
+   * 研究档案的模板 —— 章节标题、每节放什么、哪几节在截断时优先保留,全随垂类变。
+   * Core 只提供**通用渲染器**与截断 / 脱敏 / 合规 gate。
+   */
+  readonly archive: {
+    /** 档案里的事实多久算过期(召回时据此标 fresh / stale) */
+    readonly validDays: number;
+    /** 关键数据表最多收几条证据 */
+    readonly maxFacts: number;
+    readonly sections: readonly ArchiveSection[];
+  };
   /** 数字判定用的词表(见 `number_fidelity.ts` 的 `Lexicon`) */
   readonly lexicon: Lexicon;
 }
@@ -115,7 +160,9 @@ export interface Plugin {
 const AjvCtor = ((AjvModule as unknown as { default?: unknown }).default ?? AjvModule) as new (o: object) => {
   compile: (s: object) => ((d: unknown) => boolean) & { errors?: { instancePath?: string; message?: string }[] | null };
 };
-const ajv = new AjvCtor({ allErrors: true, strict: false });
+// `discriminator: true` 让区块的判别式 union 报出精确错误
+// (实测:缺参数 → "must have required property 'stage'";未知 kind → "value of tag \"kind\" must be in oneOf")
+const ajv = new AjvCtor({ allErrors: true, strict: false, discriminator: true });
 
 /**
  * 非空白字符串。⚠️ **不能只写 `minLength: 1`** —— 那放行纯空格 `" "`,
@@ -132,13 +179,38 @@ const mapOf = (values: object) => ({ type: "object", additionalProperties: value
  */
 const STAGE_NAME = { type: "string", pattern: "^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$" };
 
+/** 一个内容块的 schema:`kind` 是判别式,每种 kind 各自声明必需参数 */
+const blockVariant = (kind: string, props: Record<string, object> = {}, required: string[] = []) => ({
+  type: "object", additionalProperties: false,
+  required: ["kind", ...required],
+  properties: { kind: { const: kind }, ...props },
+});
+const ARCHIVE_BLOCK = {
+  type: "object", required: ["kind"], discriminator: { propertyName: "kind" },
+  oneOf: [
+    blockVariant("stageSummary", {
+      stage: NONBLANK,
+      extras: { type: "array", items: { type: "object", additionalProperties: false, required: ["label", "field"],
+        properties: { label: NONBLANK, field: NONBLANK, fallback: { type: "string" } } } },
+    }, ["stage"]),
+    blockVariant("evidenceTable", { stages: strArray({ minItems: 1 }) }),
+    blockVariant("stageSummaries", { stages: strArray({ minItems: 1 }), caption: { type: "string" } }, ["stages"]),
+    blockVariant("standardColumnsTable"),
+    blockVariant("conclusions", { stage: NONBLANK }, ["stage"]),
+    blockVariant("conflictCount", { stage: NONBLANK }, ["stage"]),
+    blockVariant("decisionPoints", { stage: NONBLANK }, ["stage"]),
+    blockVariant("gaps"),
+    blockVariant("knowledgeConflicts"),
+  ],
+};
+
 /** 只覆盖**声明式**字段;函数插槽(quoteDecision / baselinePeriod / lexicon)另行手查 */
 export const PLUGIN_SCHEMA = {
   type: "object",
   additionalProperties: false,          // 多写一个字段 = 拼错了名字,当场说,别静默忽略
   required: ["id", "stages", "stageScripts", "criticalScripts", "stageCalcs", "extraTopics", "reportSections",
     "evidence", "standardColumns", "standardColumnLabels", "standardColumnsStage", "roles", "semanticSlots",
-    "stageLabels", "topicSections", "alertFields", "selfTestCalc"],
+    "stageLabels", "topicSections", "alertFields", "selfTestCalc", "archive"],
   properties: {
     id: NONBLANK,
     stages: { type: "array", items: STAGE_NAME, minItems: 1, uniqueItems: true },
@@ -169,6 +241,26 @@ export const PLUGIN_SCHEMA = {
     stageLabels: mapOf(NONBLANK),
     topicSections: mapOf(NONBLANK),
     alertFields: strArray({ minItems: 1 }),
+    archive: {
+      type: "object", additionalProperties: false, required: ["validDays", "maxFacts", "sections"],
+      properties: {
+        // 上限不是洁癖:没有上限时 `1e100` 也是合法 integer(Number.isInteger 为真、isSafeInteger 为假),
+        // 而 recallKnowledge 里 `as_of + validDays 天` 会算出超出 Date 范围的时刻 → **抛 RangeError**(实测)。
+        // maxFacts 的上限按 KNOWLEDGE_MAX_CHARS 定:一行约 100 字符,再多也塞不进召回预算,写大了只是自欺。
+        validDays: { type: "integer", minimum: 1, maximum: 3650 },
+        maxFacts: { type: "integer", minimum: 1, maximum: 1000 },
+        sections: {
+          type: "array", minItems: 1,
+          items: {
+            type: "object", additionalProperties: false, required: ["title", "blocks"],
+            properties: {
+              title: NONBLANK, tail: { type: "boolean" }, omitIfEmpty: { type: "boolean" },
+              blocks: { type: "array", minItems: 1, items: ARCHIVE_BLOCK },
+            },
+          },
+        },
+      },
+    },
     selfTestCalc: {
       type: "object", additionalProperties: false, required: ["fn", "args", "expect"],
       properties: {
@@ -318,6 +410,7 @@ interface Decl {
   topicSections: Record<string, string>;
   alertFields: string[];
   selfTestCalc: { fn: string; args: Record<string, unknown>; expect: number };
+  archive: Plugin["archive"];
 }
 
 /**
@@ -359,6 +452,25 @@ function checkRelations(d: Decl): void {
   // 键必须是**已声明的议题**:拼错的话该议题永远进不了专属章节,而且不会报错(静默失效)。
   // ⚠️ 值**不能**拿 reportSections 去校验 —— 那是必需骨架章节(报告的固定小标题),
   //    而这里的值是**扩展章节**名("资金与市场行为"),两个命名空间(照字面查会全判错)。
+  // 档案模板里引用的阶段必须真的存在 —— 拼错的话该节会静默空着(JSON Schema 说不了"这个字符串得是别处的元素")
+  for (const [i, sec] of d.archive.sections.entries()) {
+    for (const b of sec.blocks) {
+      const refs: readonly string[] = "stage" in b ? [b.stage] : ("stages" in b && b.stages) ? b.stages : [];
+      for (const r of refs) {
+        if (!d.stages.includes(r)) throw new Error(`Plugin.archive.sections[${i}](${sec.title})的 ${b.kind} 引用了不存在的阶段 ${r}`);
+      }
+    }
+  }
+  // tail 必须是**连续后缀**:截断只认"第一个 tail 到结尾"这一段,中间夹一个 tail 会把它后面的普通章节
+  // 一起当尾部保护(而且不报错)。在这里拒掉,渲染 / 截断两侧就都不用处理交错情形。
+  const firstTail = d.archive.sections.findIndex((sec) => sec.tail);
+  if (firstTail >= 0 && !d.archive.sections.slice(firstTail).every((sec) => sec.tail)) {
+    throw new Error(`Plugin.archive.sections 的 tail 章节必须是连续的结尾几节(第 ${firstTail} 节起出现了非 tail 章节)`);
+  }
+  if (!d.archive.sections.some((sec) => sec.tail)) {
+    // 一节都不标 tail,截断时"优先保留"就没有意义 —— 裁决点 / 缺口会被一起截掉
+    throw new Error("Plugin.archive.sections 至少要有一节标 tail: true(截断时优先保留)");
+  }
   const declaredTopics = new Set(Object.values(d.extraTopics).flat());
   for (const k of Object.keys(d.topicSections)) {
     if (!declaredTopics.has(k)) throw new Error(`Plugin.topicSections 里的议题 ${k} 没有出现在任何阶段的 extraTopics 里(拼错了?)`);
@@ -423,6 +535,8 @@ function register(plugin: Plugin): void {
     topicSections: tableOnce("topicSections", plugin.topicSections),
     alertFields: cp(plugin.alertFields),
     selfTestCalc: { fn: st?.fn, args: st?.args, expect: st?.expect },
+    // 档案模板整棵**深拷贝一次**:它是纯声明数据,后面既要校验又要进快照
+    archive: deepFrozen("archive", plugin.archive),
   };
   // 函数插槽 JSON Schema 表达不了,单独查(放在 ajv 之前:类型错时先给出更直白的信息)
   for (const [k, fn] of [["quoteDecision", quoteDecision], ["baselinePeriod", baselinePeriod]] as const) {
@@ -432,6 +546,7 @@ function register(plugin: Plugin): void {
   assertNoExtraKeys("", plugin, [...(PLUGIN_SCHEMA.required as readonly string[]), "quoteDecision", "baselinePeriod", "lexicon"]);
   assertNoExtraKeys("evidence", ev, ["markets", "adjustments", "marketWideCodes", "marketWideOnlyCodes"]);
   assertNoExtraKeys("selfTestCalc", st, ["fn", "args", "expect"]);
+  assertNoExtraKeys("archive", decl.archive, ["validDays", "maxFacts", "sections"]);
   for (const [k, v] of Object.entries(rawScripts)) {
     assertNoExtraKeys(`stageScripts.${k}`, v, ["required", "optional"]);
   }
@@ -475,6 +590,7 @@ function register(plugin: Plugin): void {
     topicSections: Object.freeze({ ...d.topicSections }),
     alertFields: Object.freeze([...d.alertFields]),
     selfTestCalc: Object.freeze({ fn: d.selfTestCalc.fn, args, expect: d.selfTestCalc.expect }),
+    archive: d.archive,          // 摄入时已 deepFrozen
   };
 
   // 词表有自己的一套校验(标志、形状、克隆快照)。放在提交之前:它抛错时这里也还没提交,不会半注册。
