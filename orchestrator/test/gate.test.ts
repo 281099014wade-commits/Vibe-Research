@@ -5,7 +5,7 @@ import { complianceGate, missingSections, normalizeReportStatus, referencedIds, 
 import { reportSections } from "../src/config.ts";
 
 
-import "../src/finance/register.ts";   // 测试文件也是入口:垂类包要先注册
+import "../src/finance/register.ts";   // 测试文件也是入口:插件要先注册
 test("合规 gate:命中建仓 / 目标价类词", () => {
   const r = complianceGate("## 结论摘要\n- 建议在 900 元附近建仓\n- 目标价 1200 元");
   assert.equal(r.ok, false);

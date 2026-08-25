@@ -22,10 +22,10 @@
  */
 
 /** risk 阶段 topic → 报告里的专属章节标题(与 stages.ts 的 report EXT_GUIDE 写法一一对应) */
-/** 议题 → 报告章节的归并映射**由垂类包提供**(没列的议题不进专属章节,只作全文要求) */
-import { currentPack } from "./domain.ts";
+/** 议题 → 报告章节的归并映射**由插件提供**(没列的议题不进专属章节,只作全文要求) */
+import { currentPlugin } from "./plugin.ts";
 
-export const topicSections = (): Record<string, string> => currentPack().topicSections as Record<string, string>;
+export const topicSections = (): Record<string, string> => currentPlugin().topicSections as Record<string, string>;
 
 /**
  * 有 topic 但**没有专属章节**的两个 —— 不要求章节(否则会逼出一个无处安放的空章节),

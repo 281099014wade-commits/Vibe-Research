@@ -8,7 +8,7 @@
  *        · 数据根写权限 · .gitignore 含 .local/ · 密钥扫描(产品文件,测试目录除外)· api.token 权限 · [--net] 数据源连通(取一个端点)
  * 退出码:0 全部 ok / 2 只有 warn / 3 有 fail。用法:node orchestrator/src/doctor.ts [--net] [--json] [--python P](--net 取注册表端点 tx_quote 一次)
  */
-import { currentPack } from "./domain.ts";
+import { currentPlugin } from "./plugin.ts";
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import { createRequire } from "node:module";
@@ -23,7 +23,7 @@ import { SKILLS_MAX_SCAN_DEPTH, installCommandFor, listForeignSkillPaths, resolv
 import { thermoDir, thermoLedgerOverview } from "./finance/thermo_history.ts";
 
 
-// **composition root**:垂类包在入口注册,Core 模块一律不 import 它
+// **composition root**:插件在入口注册,Core 模块一律不 import 它
 // (Core 消费者靠副作用 import 硬接某个包,换垂类时靠入口 import 恢复不了 —— ESM 会缓存)。
 import "./finance/register.ts";
 export type CheckStatus = "ok" | "warn" | "fail" | "skip";
@@ -241,8 +241,8 @@ export function runDoctor(opts: { repoRoot?: string; env?: NodeJS.ProcessEnv; ex
 
   // 9. calc 自检
   if (python && pyOk) {
-    // 自检用哪个计算、期望值多少,**由垂类包提供** —— Core 只负责"跑一次、比一下"
-    const st = currentPack().selfTestCalc;
+    // 自检用哪个计算、期望值多少,**由插件提供** —— Core 只负责"跑一次、比一下"
+    const st = currentPlugin().selfTestCalc;
     const r = exec(python, [path.join(repoRoot, "calc", "cli.py"), st.fn, "--args", JSON.stringify(st.args)], { cwd: repoRoot, timeoutMs: 60_000 });
     let ok = false, detail = "";
     try { const j = JSON.parse(r.stdout) as { output?: { status?: string; value?: number }; calc_version?: string }; ok = j.output?.status === "ok" && j.output?.value === st.expect; detail = `calc ${j.calc_version ?? "?"}:${st.fn} → ${j.output?.value}(期望 ${st.expect})`; } catch { detail = `calc CLI 输出不可解析(exit=${r.status};${sub(r.stderr || r.stdout)})`; }

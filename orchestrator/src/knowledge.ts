@@ -13,7 +13,7 @@ import type { Manifest } from "./merge.ts";
 import type { RunView, StageOutput } from "./validator.ts";
 
 
-// **composition root**:垂类包在入口注册,Core 模块一律不 import 它
+// **composition root**:插件在入口注册,Core 模块一律不 import 它
 // (Core 消费者靠副作用 import 硬接某个包,换垂类时靠入口 import 恢复不了 —— ESM 会缓存)。
 import "./finance/register.ts";
 export const KNOWLEDGE_VALID_DAYS = 90;

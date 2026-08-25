@@ -5,7 +5,7 @@
  * 结果增量写 <data_root>/hardtests/<batch>/{results.json,summary.md}。judge-only 只重判"本批次、已完成、scenario 一致"的运行。
  */
 import { classifyText, loadChokeTable } from "./chokepoint.ts";
-import "./register.ts";   // 注册金融包的词表(Core + DomainPack 边界的第一块砖)
+import "./register.ts";   // 注册金融包的词表(Core + Plugin 边界的第一块砖)
 import { PROSE_BEFORE, checkNumberFidelity, claimNumbers, quotedHistory, claimTokens, normDisp, numberBound,
          numbersOf, reportSections, stripSpeedLabels } from "../number_fidelity.ts";
 export { claimNumbers, claimTokens, reportSections, stripSpeedLabels };   // 兼容:既有测试从 hardtest 导入

@@ -11,7 +11,7 @@ import { loadRun, validateFetchIntegrity } from "../src/validator.ts";
 import { sha256File, writeJson } from "../src/fsutil.ts";
 
 
-import "../src/finance/register.ts";   // 测试文件也是入口:垂类包要先注册
+import "../src/finance/register.ts";   // 测试文件也是入口:插件要先注册
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 
 test("注册表可读;core 计划与 Phase 0 stageScripts() 完全一致;关键端点一致", () => {

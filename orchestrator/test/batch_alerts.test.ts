@@ -9,7 +9,7 @@ import { alertsMarkdown, diffEvidence, pickRuns, runAlerts } from "../src/alerts
 import { writeJson } from "../src/fsutil.ts";
 
 
-import "../src/finance/register.ts";   // 测试文件也是入口:垂类包要先注册
+import "../src/finance/register.ts";   // 测试文件也是入口:插件要先注册
 function repoWithRuns(): string {
   const repo = fs.mkdtempSync(path.join(os.tmpdir(), "vra-ba-"));
   const runs = path.join(repo, ".local", "runs");

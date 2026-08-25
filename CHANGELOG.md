@@ -2,6 +2,59 @@
 
 格式遵循 Keep a Changelog;版本号待首次发布时定(当前未发布)。
 
+## 未发布 · 校验改用 ajv,自造名换成通行叫法(2026-08-25)
+
+上一版的注册期校验全是手写 if-else,名字也是自造的 `DomainPack`。这次两件事一起做。
+
+### 名字:换成通行叫法
+
+`DomainPack` → **`Plugin`**;`registerDomainPack` → `registerPlugin`;`currentPack` → `currentPlugin`;
+`resetDomainPack` → `resetPlugin`;`FINANCE_PACK` → `FINANCE_PLUGIN`;`DomainLexicon` → `Lexicon`;
+`setDomainLexicon` → `setLexicon`;`PACK_DIRS` → `PLUGIN_DIRS`;
+`src/domain.ts` → `src/plugin.ts`,`src/finance/pack.ts` → `src/finance/plugin.ts`。
+
+理由:这套东西**每一块都有成名做法**,用自造词只会让别人查不到。契约头部已写清对应关系 ——
+形状上等同 VS Code 扩展清单的 **contribution points**;依赖方向是 Cockburn 的 **Ports & Adapters**;
+"同一内核 + 每个垂类一个包"在学界叫 **Software Product Line**(core assets + variation points);
+商业上就是 **Salesforce Industries** 那套。⇒ 以后遇到拿不准的地方,**去查这些名字,别自己发明**。
+
+### 校验:三层分工
+
+| 层 | 谁做 | 管什么 |
+|---|---|---|
+| 形状 | `ajv` + `PLUGIN_SCHEMA` | 字段在不在、类型、非空、去重、阶段名是不是安全路径段 |
+| 语义关系 | 手写 `checkRelations` | 键集与 stages 一致、子集关系、跨表引用 —— **JSON Schema 表达不了** |
+| 深层 JSON 性 | 手写 `deepFrozen` | 两个自由形状字段里不许有 `Map` / `NaN` / `undefined` / 稀疏数组 |
+
+不全用 ajv,是因为 JSON Schema 逐字段,说不了"A 的键必须等于 B 的元素";
+不全手写,是因为形状校验手写又长又容易漏,而仓库里本来就用 ajv 校验证据与 manifest。
+与 `providers.ts` 一样直接用 Ajv 而不走 `schemas.ts`(`schemas.ts → config.ts → plugin.ts` 会成环)。
+
+### 🔴 迁移校验最大的风险是"悄悄丢掉一条检查" —— 这次丢了四条,全被抓回来了
+
+自查抓到两条:
+- **ajv v8 的 `type: "number"` 接受 `NaN` / `Infinity`**(实测 8.20.0;ajv v6 才带有限性检查)。
+  我照旧版行为想当然写了注释,已在 `checkRelations` 手补 `selfTestCalc.expect` 的有限性。
+- **`minLength: 1` 放行纯空格 `" "`**,而旧的手写校验是 `trim() !== ""` —— 比原来松。
+  已加 `NONBLANK`(`minLength:1` + `pattern:"\\S"`)。
+
+Codex 审计(ajv-r1 → r3 通过)抓到两条:
+- **`additionalProperties: false` 看不到原对象的多余字段** —— 因为 ajv 校验的是**投影出来的 `decl`**,
+  多余字段在进 ajv 之前就被投影丢掉了。**我在注释里写的"多写一个字段就当场说"原本是假的。**
+  已加 `assertNoExtraKeys()` 显式比对原对象键集(根 / evidence / selfTestCalc / 每个 stageScripts.<stage>)。
+- **`__proto__` 作表键时会被普通 `{}` 静默吞掉** —— `semanticSlots: {"__proto__": []}` 会变成空表,
+  于是"键必须 ∈ stages"在空集上平凡通过。改为**直接拒键**(`__proto__` / `constructor` / `prototype`)。
+  ⚠️ Codex 建议的"容器一律 `Object.create(null)`" **试了但没采用**:实测会让 `currentPlugin()`
+  返回无原型字典,`assert.deepEqual` 与比较原型的消费者当场炸(三个既有测试打红)。拒键更简单、报错更直白。
+
+🔴 **"每个字段只读一次"这条纪律,同一根因犯到第三次**:先是五张表(上一轮),
+再是函数插槽(`quoteDecision` 校验读一次、建快照又读一次),这次是 `stageScripts`
+(多余字段检查里又 `tableOnce` 了一遍)。⇒ **修完一处必须问:同类还有几处?**
+
+新增回归 5 条(`test/plugin.test.ts` 共 26):getter 只读一次(函数插槽 / stageScripts)、
+四处多余字段被拒、`__proto__`/`constructor` 被拒、纯空格被拒、`NaN`/`Infinity` 被拒。
+测试:TS **270** / typecheck 干净 / Python 222 / calc 188 / doctor 15 ok / 纯净度 0。
+
 ## 未发布 · Core / DomainPack 第二次拆分:stages / schemas 变成可注入契约,Core 行业词清到 0(2026-08-25)
 
 第一次拆分只搬了词表,Core 里还剩 149 处行业词。这次把**阶段与 schema 也做成契约**,清到 **0**。

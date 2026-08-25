@@ -2,7 +2,7 @@
  * **金融的"报价是否陈旧"判定**(SOP §2),不信任 agent 自填。
  *
  * 判据全是证券特有的:交易日历、参考交易日、盘前时段、成交额为 0 且现价 == 昨收(停牌 / 废码)。
- * 换个垂类"数据陈旧"的含义完全不同 ⇒ 规则进包,Core 只在该判的时候来问(`DomainPack.quoteDecision`)。
+ * 换个垂类"数据陈旧"的含义完全不同 ⇒ 规则进包,Core 只在该判的时候来问(`Plugin.quoteDecision`)。
  */
 import type { QuoteDecision, RunView } from "../validator.ts";
 

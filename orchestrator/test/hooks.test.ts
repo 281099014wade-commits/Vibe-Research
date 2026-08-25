@@ -10,7 +10,7 @@ import { MAX_STOP_BLOCKS, buildHooksJson, hookHash, hookKey, installHooks, merge
 import { writeJson } from "../src/fsutil.ts";
 
 
-import "../src/finance/register.ts";   // 测试文件也是入口:垂类包要先注册
+import "../src/finance/register.ts";   // 测试文件也是入口:插件要先注册
 const HOOKS_DIR = path.resolve(import.meta.dirname, "..", "hooks");
 
 function tmpRepo(): string {

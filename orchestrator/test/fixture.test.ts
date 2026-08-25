@@ -11,7 +11,7 @@ import { checkFixture, seedFixtureInto } from "../src/orchestrate.ts";
 import { manifestSchema, validateWith } from "../src/schemas.ts";
 
 
-import "../src/finance/register.ts";   // 测试文件也是入口:垂类包要先注册
+import "../src/finance/register.ts";   // 测试文件也是入口:插件要先注册
 const SEEDED = ["profile", "financials", "estimates", "valuation"];
 const FP = { registry_version: "1.0.0", endpoint_scope: "full", calc_version: "0.3.2", repo_version: "abc123" };
 

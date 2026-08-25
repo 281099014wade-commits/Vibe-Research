@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { extraTopics } from "../src/schemas.ts";
 
-import "../src/finance/register.ts";   // 测试文件也是入口:垂类包要先注册
+import "../src/finance/register.ts";   // 测试文件也是入口:插件要先注册
 import {
   topicSections, TOPICS_WITHOUT_SECTION, citedIds, extraSectionErrors, extraSectionsPromptBlock,
   headingBlocks, missingExtraSections, normalizeHeading, requiredExtraSections,

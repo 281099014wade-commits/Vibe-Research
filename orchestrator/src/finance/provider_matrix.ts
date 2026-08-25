@@ -26,7 +26,7 @@ import { redact, repoRootFromHere } from "../service.ts";
 import { parseArgs } from "../run.ts";
 
 
-// **composition root**:垂类包在入口注册,Core 模块一律不 import 它
+// **composition root**:插件在入口注册,Core 模块一律不 import 它
 // (Core 消费者靠副作用 import 硬接某个包,换垂类时靠入口 import 恢复不了 —— ESM 会缓存)。
 import "./register.ts";
 export interface MatrixCase { no: number; name: string; verdict: "pass" | "partial" | "fail" | "n/a" | "error"; detail: string; duration_ms: number; commands: number; items: number; reasoning_items: number; failed?: string | null }

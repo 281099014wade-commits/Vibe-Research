@@ -11,7 +11,7 @@ import { writeJson } from "../src/fsutil.ts";
 import { extraTopics } from "../src/schemas.ts";
 
 
-import "../src/finance/register.ts";   // 测试文件也是入口:垂类包要先注册
+import "../src/finance/register.ts";   // 测试文件也是入口:插件要先注册
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const table = loadChokeTable(repoRoot);
 

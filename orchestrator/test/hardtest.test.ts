@@ -8,7 +8,7 @@ import { FALSE_CLAIMS, buildTests, claimNumbers, claimTokens, conclusionSignals,
 import { writeJson } from "../src/fsutil.ts";
 
 
-import "../src/finance/register.ts";   // 测试文件也是入口:垂类包要先注册
+import "../src/finance/register.ts";   // 测试文件也是入口:插件要先注册
 type Opts = { status?: string; exit?: number; price?: number; priceAsOf?: string; eps?: boolean; conflicts?: unknown[]; risk?: Record<string, unknown>; report?: string; profile?: Record<string, unknown>; calcs?: unknown[]; ledger?: Record<string, unknown>; hooksLog?: unknown[]; hooks?: Record<string, unknown>; events?: unknown[]; valuation?: Record<string, unknown>; estimates?: Record<string, unknown>; stages?: unknown[]; finished?: boolean; scenario?: unknown; extraEvidence?: unknown[] };
 const DEF_COLS = { pe_deducted_x4: "calc-0123456789abcdef", forward_pe: "calc-0123456789abcdef", pe_ttm_percentile: "calc-0123456789abcdef", peg: "calc-0123456789abcdef", forward_cagr: "calc-0123456789abcdef", ttm_yoy: "calc-0123456789abcdef", qoq: "calc-0123456789abcdef" };
 function fakeRun(o: Opts = {}): string {

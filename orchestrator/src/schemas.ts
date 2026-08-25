@@ -5,12 +5,12 @@
 import AjvModule, { type ValidateFunction } from "ajv";
 
 import { GAP_REASON_CODES, stages, type Stage } from "./config.ts";
-import { currentPack } from "./domain.ts";
+import { currentPlugin } from "./plugin.ts";
 
 /**
  * 🔴 **带垂类枚举的 schema 一律做成函数,不能是模块级常量。**
- * 市场代码、数据口径、阶段名、标准列、议题都来自 `DomainPack`,而包是在 import **之后**才注册的;
- * 写成 `const` 会在模块求值时就去读包 → 抛"未注入 DomainPack"。
+ * 市场代码、数据口径、阶段名、标准列、议题都来自 `Plugin`,而包是在 import **之后**才注册的;
+ * 写成 `const` 会在模块求值时就去读包 → 抛"未注入 Plugin"。
  * `validateWith` 按 key 缓存编译结果,所以每次调用重建对象字面量并不会重复编译 schema。
  */
 
@@ -30,7 +30,7 @@ export const evidenceItemSchema = () => ({
   properties: {
     id: { type: "string", pattern: "^ev-[0-9a-f]{6,}$" },
     symbol: { type: "string", minLength: 1 },
-    market: { type: "string", enum: [...currentPack().evidence.markets] },
+    market: { type: "string", enum: [...currentPlugin().evidence.markets] },
     field: { type: "string", minLength: 1 },
     value: { type: ["number", "string", "boolean", "null"] },
     unit: { type: "string" },
@@ -40,7 +40,7 @@ export const evidenceItemSchema = () => ({
     source: { type: "string", minLength: 1 },
     endpoint: { type: "string", minLength: 1 },
     fetched_at: { type: "string", pattern: ISO_TS },
-    adjustment: { type: "string", enum: [...currentPack().evidence.adjustments] },
+    adjustment: { type: "string", enum: [...currentPlugin().evidence.adjustments] },
     raw_ref: { type: ["string", "null"] },
     note: { type: "string" },
     record_key: { type: "string" },
@@ -54,7 +54,7 @@ export const fetchEnvelopeSchema = () => ({
   properties: {
     script: { type: "string", minLength: 1 },
     symbol: { type: "string" },
-    market: { type: "string", enum: [...currentPack().evidence.markets, ""] },
+    market: { type: "string", enum: [...currentPlugin().evidence.markets, ""] },
     status: { type: "string", enum: ["ok", "partial", "failed"] },
     fetched_at: { type: "string", pattern: ISO_TS },
     primary_source: { type: ["string", "null"] },
@@ -118,11 +118,11 @@ export const gapSchema = {
   },
 } as const;
 
-/** 批量摘要的标准列 —— 由垂类包提供 */
-export const standardColumns = (): readonly string[] => currentPack().standardColumns;
+/** 批量摘要的标准列 —— 由插件提供 */
+export const standardColumns = (): readonly string[] => currentPlugin().standardColumns;
 
-/** 各阶段 extra_findings 允许的 topic —— 由垂类包提供(schema 与 validator 双重约束) */
-export const extraTopics = (): Readonly<Record<Stage, readonly string[]>> => currentPack().extraTopics;
+/** 各阶段 extra_findings 允许的 topic —— 由插件提供(schema 与 validator 双重约束) */
+export const extraTopics = (): Readonly<Record<Stage, readonly string[]>> => currentPlugin().extraTopics;
 
 /** 阶段产物 stages/<stage>.json 的通用骨架;各阶段再加专属必填项 */
 export function stageOutputSchema(stage: Stage): Record<string, unknown> {

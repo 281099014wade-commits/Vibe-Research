@@ -177,126 +177,126 @@ test("行首的 Unicode 负号是负号,不是列表标记", () => {
   assert.deepEqual(checkNumberFidelity(`## 估值\n- 1.92% 为同比 [ev-999999999999] [${CID}]\n`, pos, calcs).violations, []);
 });
 
-test("词表注册的护栏:按用途校验正则标志,且不许两个垂类包并存", async () => {
-  const { setDomainLexicon, resetDomainLexicon } = await import("../src/number_fidelity.ts");
+test("词表注册的护栏:按用途校验正则标志,且不许两个插件并存", async () => {
+  const { setLexicon, resetLexicon } = await import("../src/number_fidelity.ts");
   const { FINANCE_LEXICON } = await import("../src/finance/lexicon.ts");
   // ⚠️ 身份检查在最前面 ⇒ 已注册状态下,任何**另一份**词表都会先被"多垂类并存"拦下,
   //    根本走不到标志校验。要测标志校验必须先 reset(这个顺序本身就是设计)。
-  resetDomainLexicon();
+  resetLexicon();
   const bad = { ...FINANCE_LEXICON, moneyBefore: /x/g };          // .test() 用的不许带 g
-  assert.throws(() => setDomainLexicon(bad as never), /不许带 g\/y/);
+  assert.throws(() => setLexicon(bad as never), /不许带 g\/y/);
   const bad2 = { ...FINANCE_LEXICON, subjectCodePatterns: [/\d{6}/] };  // .replace() 用的必须带 g
-  assert.throws(() => setDomainLexicon(bad2 as never), /必须带 g/);
-  setDomainLexicon(FINANCE_LEXICON);
+  assert.throws(() => setLexicon(bad2 as never), /必须带 g/);
+  setLexicon(FINANCE_LEXICON);
   // 进程级单例:换一份就当场失败,而不是静默串包
-  assert.throws(() => setDomainLexicon({ ...FINANCE_LEXICON } as never), /不支持多垂类并存/);
-  setDomainLexicon(FINANCE_LEXICON);                              // 同一份幂等,不抛
-  resetDomainLexicon();
-  setDomainLexicon(FINANCE_LEXICON);                              // 复原,不影响同文件其它用例
+  assert.throws(() => setLexicon({ ...FINANCE_LEXICON } as never), /不支持多垂类并存/);
+  setLexicon(FINANCE_LEXICON);                              // 同一份幂等,不抛
+  resetLexicon();
+  setLexicon(FINANCE_LEXICON);                              // 复原,不影响同文件其它用例
 });
 
 test("非正则值不能混过注册(否则要等到 .test() 时才崩)", async () => {
-  const { setDomainLexicon, resetDomainLexicon } = await import("../src/number_fidelity.ts");
+  const { setLexicon, resetLexicon } = await import("../src/number_fidelity.ts");
   const { FINANCE_LEXICON } = await import("../src/finance/lexicon.ts");
-  resetDomainLexicon();
-  assert.throws(() => setDomainLexicon({ ...FINANCE_LEXICON, moneyBefore: "美元" } as never), /必须是 RegExp/);
-  setDomainLexicon(FINANCE_LEXICON);
+  resetLexicon();
+  assert.throws(() => setLexicon({ ...FINANCE_LEXICON, moneyBefore: "美元" } as never), /必须是 RegExp/);
+  setLexicon(FINANCE_LEXICON);
 });
 
 test("注册后的词表不能被原地改;.replace() 字段不许带 y", async () => {
-  const { setDomainLexicon, resetDomainLexicon, currentLexicon } = await import("../src/number_fidelity.ts");
+  const { setLexicon, resetLexicon, currentLexicon } = await import("../src/number_fidelity.ts");
   const { FINANCE_LEXICON } = await import("../src/finance/lexicon.ts");
-  resetDomainLexicon();
+  resetLexicon();
   const lex = { ...FINANCE_LEXICON, subjectCodePatterns: [...FINANCE_LEXICON.subjectCodePatterns] };
-  setDomainLexicon(lex as never);
+  setLexicon(lex as never);
   // 原地改外部对象不该影响已注册的快照
   (lex as { moneyBefore: RegExp }).moneyBefore = /恶意/g;
   lex.subjectCodePatterns.push(/恶意/g);
   assert.notEqual(currentLexicon().moneyBefore.source, "恶意");
   assert.equal(currentLexicon().subjectCodePatterns.length, FINANCE_LEXICON.subjectCodePatterns.length);
   // sticky 正则会让 replace 常常一次都匹配不到
-  resetDomainLexicon();
-  assert.throws(() => setDomainLexicon({ ...FINANCE_LEXICON, windowLabelPattern: /\d+日/gy } as never), /不许带 y/);
-  setDomainLexicon(FINANCE_LEXICON);
+  resetLexicon();
+  assert.throws(() => setLexicon({ ...FINANCE_LEXICON, windowLabelPattern: /\d+日/gy } as never), /不许带 y/);
+  setLexicon(FINANCE_LEXICON);
 });
 
 test("同一份词表重复注册必须是真幂等:改完再注册不能替换活动快照", async () => {
-  const { setDomainLexicon, resetDomainLexicon, currentLexicon } = await import("../src/number_fidelity.ts");
+  const { setLexicon, resetLexicon, currentLexicon } = await import("../src/number_fidelity.ts");
   const { FINANCE_LEXICON } = await import("../src/finance/lexicon.ts");
-  resetDomainLexicon();
+  resetLexicon();
   const lex = { ...FINANCE_LEXICON, subjectCodePatterns: [...FINANCE_LEXICON.subjectCodePatterns] };
-  setDomainLexicon(lex as never);
+  setLexicon(lex as never);
   // 改完原对象再注册一次:必须**安静返回**(不重做快照,也不因校验抛错)
   (lex as { moneyBefore: RegExp }).moneyBefore = /完全不同的规则/g;   // 连非法标志一起改
-  setDomainLexicon(lex as never);
+  setLexicon(lex as never);
   assert.notEqual(currentLexicon().moneyBefore.source, "完全不同的规则");
-  resetDomainLexicon();
-  setDomainLexicon(FINANCE_LEXICON);
+  resetLexicon();
+  setLexicon(FINANCE_LEXICON);
 });
 
 test("两个 .replace() 字段的形状不同,不能一把抓;失败也不许留下半注册状态", async () => {
-  const { setDomainLexicon, resetDomainLexicon, currentLexicon } = await import("../src/number_fidelity.ts");
+  const { setLexicon, resetLexicon, currentLexicon } = await import("../src/number_fidelity.ts");
   const { FINANCE_LEXICON } = await import("../src/finance/lexicon.ts");
-  resetDomainLexicon();
+  resetLexicon();
   // subjectCodePatterns 必须是数组;windowLabelPattern 必须是单个正则
-  assert.throws(() => setDomainLexicon({ ...FINANCE_LEXICON, subjectCodePatterns: /代码/g } as never), /必须是 RegExp 数组/);
-  assert.throws(() => setDomainLexicon({ ...FINANCE_LEXICON, windowLabelPattern: [/窗口/g] } as never), /必须是 RegExp/);
+  assert.throws(() => setLexicon({ ...FINANCE_LEXICON, subjectCodePatterns: /代码/g } as never), /必须是 RegExp 数组/);
+  assert.throws(() => setLexicon({ ...FINANCE_LEXICON, windowLabelPattern: [/窗口/g] } as never), /必须是 RegExp/);
   // 🔴 失败之后必须还能正常注册 —— 半注册状态会让进程永久卡在"未注入"
-  setDomainLexicon(FINANCE_LEXICON);
+  setLexicon(FINANCE_LEXICON);
   assert.ok(currentLexicon().moneyBefore instanceof RegExp);
 });
 
 test("快照必须克隆正则:RegExp.compile() 能原地改 source/flags,共享对象就不叫快照", async () => {
-  const { setDomainLexicon, resetDomainLexicon, currentLexicon } = await import("../src/number_fidelity.ts");
+  const { setLexicon, resetLexicon, currentLexicon } = await import("../src/number_fidelity.ts");
   const { FINANCE_LEXICON } = await import("../src/finance/lexicon.ts");
-  resetDomainLexicon();
+  resetLexicon();
   const re = /ABC/g;
-  setDomainLexicon({ ...FINANCE_LEXICON, subjectCodePatterns: [re] } as never);
+  setLexicon({ ...FINANCE_LEXICON, subjectCodePatterns: [re] } as never);
   (re as unknown as { compile: (s: string, f: string) => void }).compile("XYZ", "gy");
   assert.equal(currentLexicon().subjectCodePatterns[0].source, "ABC");   // 快照不受影响
   assert.ok(!currentLexicon().subjectCodePatterns[0].flags.includes("y"));
-  resetDomainLexicon();
-  setDomainLexicon(FINANCE_LEXICON);
+  resetLexicon();
+  setLexicon(FINANCE_LEXICON);
 });
 
 test("注册只读词表自己的六个字段:无关的 getter 抛错不该让注册失败", async () => {
-  const { setDomainLexicon, resetDomainLexicon } = await import("../src/number_fidelity.ts");
+  const { setLexicon, resetLexicon } = await import("../src/number_fidelity.ts");
   const { FINANCE_LEXICON } = await import("../src/finance/lexicon.ts");
-  resetDomainLexicon();
+  resetLexicon();
   const lex: Record<string, unknown> = { ...FINANCE_LEXICON };
   Object.defineProperty(lex, "unrelated", { enumerable: true, get() { throw new Error("boom"); } });
-  setDomainLexicon(lex as never);                       // 不该炸
-  resetDomainLexicon();
+  setLexicon(lex as never);                       // 不该炸
+  resetLexicon();
   // 每个字段只读一次:第二次读会返回非法值的 getter 不该被读到
   let n = 0;
   const tricky: Record<string, unknown> = { ...FINANCE_LEXICON };
   Object.defineProperty(tricky, "subjectCodePatterns", {
     enumerable: true, get() { return ++n === 1 ? [/safe/g] : "changed"; },
   });
-  setDomainLexicon(tricky as never);
+  setLexicon(tricky as never);
   assert.equal(n, 1);
-  resetDomainLexicon();
-  setDomainLexicon(FINANCE_LEXICON);
+  resetLexicon();
+  setLexicon(FINANCE_LEXICON);
 });
 
 test("注册不支持重入:带行为的正则不能在校验途中偷偷注册另一份", async () => {
-  const { setDomainLexicon, resetDomainLexicon, currentLexicon } = await import("../src/number_fidelity.ts");
+  const { setLexicon, resetLexicon, currentLexicon } = await import("../src/number_fidelity.ts");
   const { FINANCE_LEXICON } = await import("../src/finance/lexicon.ts");
-  resetDomainLexicon();
+  resetLexicon();
   const hostile = /x/;
   let reentryError: unknown = null;
   Object.defineProperty(hostile, "flags", {
     get() {
-      try { setDomainLexicon({ ...FINANCE_LEXICON } as never); } catch (e) { reentryError = e; }
+      try { setLexicon({ ...FINANCE_LEXICON } as never); } catch (e) { reentryError = e; }
       return "";
     },
   });
   // 外层注册本来就该成功(它是合法的第一份);被拦的是**内层重入** ——
   // 攻击路径是"内层先注册另一份、外层再覆盖",守卫在第一步就断掉了
-  setDomainLexicon({ ...FINANCE_LEXICON, moneyBefore: hostile } as never);
+  setLexicon({ ...FINANCE_LEXICON, moneyBefore: hostile } as never);
   assert.match(String(reentryError), /不支持重入/);
   assert.equal(currentLexicon().moneyBefore.source, "x");    // 生效的是外层那份,没被内层换掉
-  resetDomainLexicon();
-  setDomainLexicon(FINANCE_LEXICON);
+  resetLexicon();
+  setLexicon(FINANCE_LEXICON);
   assert.ok(currentLexicon().moneyBefore instanceof RegExp);
 });

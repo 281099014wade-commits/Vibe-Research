@@ -1,15 +1,15 @@
 /**
- * **金融行业词表**(DomainPack 的一个插槽)。
+ * **金融行业词表**(Plugin 的一个插槽)。
  *
  * 架构审计 2026-08-24:数字忠实度的**机制**是通用的(剥非主张数字 → 绑定证据),
  * 但它依赖的**词表是行业的** —— `SPEED_CTX_RE` 里甚至写着"光模块 / CPO / OSFP",
  * 那是光通信行业的产品类别名。餐饮 AgentOS 的对应词表会完全不同(客单价 / 翻台率 / 门店数…)。
- * ⇒ 词表落进 `src/finance/`,Core 只接受一个 `DomainLexicon` 参数。
+ * ⇒ 词表落进 `src/finance/`,Core 只接受一个 `Lexicon` 参数。
  *
  * ⚠️ 下面每条正则里的每个词都对应一次真实误伤(见 number_fidelity.ts 的注释与各轮 Codex 审计)。
  * **原样搬过来,一个字符都没改。** 改它们之前先读注释。
  */
-import type { DomainLexicon } from "../number_fidelity.ts";
+import type { Lexicon } from "../number_fidelity.ts";
 
 const MONEY_BEFORE_RE = /(市值|营收|收入|金额|利润|资产|负债|现金|估值|USD|RMB|CNY|HKD|EUR|[$¥€£￥])(?:约|为|达|超过|接近|近|逾|的|总计|合计|规模|\s)*$/i;
 const MONEY_AFTER_RE = /^\s?(USD|RMB|CNY|HKD|EUR|美元|美金|港元|人民币|元(?!器件)|亿|万|%|倍)/i;
@@ -21,7 +21,7 @@ const SUBJECT_CODE_SUFFIX = /(?<![\d.])\d{6}(?![\d.])(?=\s*[)）】]|\.(?:SH|SZ|
 /** 时间窗口标签:"约 30 日涨跌" / "7 日均价" —— 窗口里的数字不是主张 */
 const WINDOW_LABEL = /约?\s?\d+\s?[日天](?=\s*(涨跌|变动|均价|均值|窗口|区间|回撤|新高|新低|走势|涨幅|跌幅))/g;
 
-export const FINANCE_LEXICON: DomainLexicon = {
+export const FINANCE_LEXICON: Lexicon = {
   moneyBefore: MONEY_BEFORE_RE,
   moneyAfter: MONEY_AFTER_RE,
   categoryLabelContext: SPEED_CTX_RE,

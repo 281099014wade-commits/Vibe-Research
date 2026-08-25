@@ -4,7 +4,7 @@ import test from "node:test";
 import { judge, scrubWith, type TurnSummary } from "../src/finance/provider_matrix.ts";
 
 
-import "../src/finance/register.ts";   // 测试文件也是入口:垂类包要先注册
+import "../src/finance/register.ts";   // 测试文件也是入口:插件要先注册
 const T = (p: Partial<TurnSummary> = {}): TurnSummary => ({ text: "", commands: [], items: 0, reasoning: 0, failed: null, error: null, max_inflight_commands: 0, completed: true, ...p });
 const cmd = (output: string, exit_code: number | null = 0) => ({ command: "x", exit_code, output });
 const W = { wire: "chat" } as const;

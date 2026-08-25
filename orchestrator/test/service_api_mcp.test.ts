@@ -15,7 +15,7 @@ import { writeJson } from "../src/fsutil.ts";
 import { detectPython } from "../src/init.ts";
 
 
-import "../src/finance/register.ts";   // 测试文件也是入口:垂类包要先注册
+import "../src/finance/register.ts";   // 测试文件也是入口:插件要先注册
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 /** 解释器:VRA_PYTHON → 仓库 .venv → 上一级 .venv(开发布局)→ PATH 上的 python3;不写死任何机器的绝对路径 */
 const PY = process.env.VRA_PYTHON ?? detectPython(REPO) ?? detectPython(path.join(REPO, "..")) ?? "python3";

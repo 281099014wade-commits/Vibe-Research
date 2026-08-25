@@ -9,7 +9,7 @@ import { installHooks } from "../src/hooks.ts";
 import { runInit } from "../src/init.ts";
 import { loadProductConfig } from "../src/productConfig.ts";
 
-import "../src/finance/register.ts";   // 测试文件也是入口:垂类包要先注册
+import "../src/finance/register.ts";   // 测试文件也是入口:插件要先注册
 import {
   SKILLS_BLOCK_BEGIN, SKILLS_BLOCK_END, SKILLS_MAX_CONTEXT_TOKENS, SKILLS_MAX_SCAN_DEPTH,
   buildSkillsIsolationBlock, findForeignSkillsConfig, installCommandFor, installSkillsIsolation, listForeignSkillPaths, posixQuote,

@@ -6,19 +6,19 @@ import path from "node:path";
 
 import type { ProviderProfile } from "./productConfig.ts";
 import { providerEnv, type ProviderProfileFile } from "./providers.ts";
-import { currentPack } from "./domain.ts";
+import { currentPlugin } from "./plugin.ts";
 import { buildStagePlan, criticalScripts as registryCriticalScripts, endpointsById, loadRegistry, type EndpointDef, type ScopeKind, type StagePlan } from "./registry.ts";
 
 /**
- * 阶段名**由垂类包提供**(`DomainPack.stages`),Core 只知道"有一串阶段、按序执行"。
+ * 阶段名**由插件提供**(`Plugin.stages`),Core 只知道"有一串阶段、按序执行"。
  *
  * ⚠️ `Stage` 因此退化成 `string`,`Record<Stage, …>` 的编译期穷尽性检查没有了 ——
- * 换来的是注册期的**键集必须与 stages 完全一致**校验(见 `domain.ts` 顶部说明)。
+ * 换来的是注册期的**键集必须与 stages 完全一致**校验(见 `plugin.ts` 顶部说明)。
  * 那条校验拦得住第三方包写漏,编译期检查只保护得了我们自己的代码。
  */
 export type Stage = string;
 /** 当前垂类的阶段顺序。**运行期读**,不要在模块顶层求值(注册发生在 import 之后)。 */
-export const stages = (): readonly Stage[] => currentPack().stages;
+export const stages = (): readonly Stage[] => currentPlugin().stages;
 
 export type RunStatus = "complete" | "incomplete" | "failed" | "stale";
 export type StageStatus = "complete" | "incomplete" | "skipped" | "failed";
@@ -122,20 +122,20 @@ export interface RunConfig {
   knowledgeArchive: boolean;
 }
 
-/** 每阶段必需 / 可选的取数脚本(注册表缺失时的回退计划)—— 由垂类包提供 */
-export const stageScripts = (): StagePlan<Stage> => currentPack().stageScripts as StagePlan<Stage>;
+/** 每阶段必需 / 可选的取数脚本(注册表缺失时的回退计划)—— 由插件提供 */
+export const stageScripts = (): StagePlan<Stage> => currentPlugin().stageScripts as StagePlan<Stage>;
 
-/** 关键脚本全部失败 → 运行 failed(无法产出可用研究)—— 由垂类包提供 */
-export const packCriticalScripts = (): string[] => [...currentPack().criticalScripts];
+/** 关键脚本全部失败 → 运行 failed(无法产出可用研究)—— 由插件提供 */
+export const packCriticalScripts = (): string[] => [...currentPlugin().criticalScripts];
 
-/** 某阶段必须出现的计算函数 —— 由垂类包提供 */
-export const stageCalcs = (stage: Stage): readonly string[] => currentPack().stageCalcs[stage] ?? [];
+/** 某阶段必须出现的计算函数 —— 由插件提供 */
+export const stageCalcs = (stage: Stage): readonly string[] => currentPlugin().stageCalcs[stage] ?? [];
 
 export const GAP_REASON_CODES = ["source_failed", "source_partial", "upstream_not_meaningful", "upstream_missing",
   "insufficient_periods", "not_supported_market", "optional_skipped", "other"] as const;
 
-/** report.md 必须出现的章节标题 —— 由垂类包提供 */
-export const reportSections = (): readonly string[] => currentPack().reportSections;
+/** report.md 必须出现的章节标题 —— 由插件提供 */
+export const reportSections = (): readonly string[] => currentPlugin().reportSections;
 
 /** 合规 gate:命中即视为投资动作建议(AGENTS.md §0 第 3 条) */
 export const GATE_PATTERNS: string[] = [

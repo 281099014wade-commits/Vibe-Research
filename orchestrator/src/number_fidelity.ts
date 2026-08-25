@@ -10,7 +10,7 @@
  *
  * ⚠️ 下面这些正则里的每一条豁免,都对应一次真实误伤(速率标签 1.6T、公告文号、HTTP 状态码、
  * 域名里的数字、时间窗口标签、主体编号…)。**改它们之前先看注释,不要"清理"掉。**
- * 领域相关的那部分词表已移入 DomainPack(金融的见 `finance/lexicon.ts`),这里只留机制。
+ * 领域相关的那部分词表已移入 Plugin(金融的见 `finance/lexicon.ts`),这里只留机制。
  */
 /**
  * 只声明**本模块真正用到的字段**,不绑死 merge.ts 或 hardtest 的完整类型 ——
@@ -74,10 +74,10 @@ export function numberBound(token: number, pool: number[]): boolean {
 export function claimNumbers(line: string, symbol?: string): number[] { return claimTokens(line, symbol).map((t) => t.n); }
 /** 数字及其书写形态(含紧随的单位字符,用于在字符串证据——如公告标题——里做原文匹配) */
 /**
- * **领域词表契约**(DomainPack 的一个插槽)。机制通用、词表随垂类而变 ——
+ * **领域词表契约**(Plugin 的一个插槽)。机制通用、词表随垂类而变 ——
  * 金融的在 `finance/lexicon.ts`;餐饮 AgentOS 会提供完全不同的一份。
  */
-export interface DomainLexicon {
+export interface Lexicon {
   //! 契约:所有正则必须是**原生 RegExp 字面量 / `new RegExp(...)`**,不许是子类、Proxy、
   //! 或带自定义 `flags`/`source` getter 的对象 —— 注册期会多次读取它们的属性。
   /** 金额语境(数值之前)——判断紧跟的字母后缀是金额单位还是类别标签 */
@@ -94,9 +94,9 @@ export interface DomainLexicon {
   subjectCodeIsSixDigits: boolean;
 }
 
-let activeLexicon: DomainLexicon | null = null;
+let activeLexicon: Lexicon | null = null;
 /** 注册时传进来的原始对象 —— 只用于"是不是同一份"的身份判断(活动词表本身是冻结快照) */
-let registeredSource: DomainLexicon | null = null;
+let registeredSource: Lexicon | null = null;
 
 /**
  * 注入领域词表。**入口处调用一次**(见 `finance/register.ts`)。
@@ -131,22 +131,22 @@ const cloneRe = (r: RegExp) => new RegExp(r.source, r.flags);
  * 🔴 `lex` 的字段各读一次了,但 `r.flags` / `r.source` 仍会被读多次 —— 一个带自定义 `flags`
  * getter 的正则可以在校验途中**重入注册另一份词表**,内层注册成功、外层继续跑完再覆盖,
  * "已注册过另一份就不许覆盖"这条约束就被绕过了(Codex lexicon-r8)。
- * ⚠️ 这只对**敌意 / 带行为的正则**成立;契约本来就要求原生正则(见 `DomainLexicon` 文档)。
+ * ⚠️ 这只对**敌意 / 带行为的正则**成立;契约本来就要求原生正则(见 `Lexicon` 文档)。
  * 守卫三行,顺带防住无意的重入,加上不亏。
  */
 let registering = false;
 
-export function setDomainLexicon(lex: DomainLexicon): void {
-  if (registering) throw new Error("setDomainLexicon 不支持重入(注册过程中不许再次注册)");
+export function setLexicon(lex: Lexicon): void {
+  if (registering) throw new Error("setLexicon 不支持重入(注册过程中不许再次注册)");
   registering = true;
   try {
-    setDomainLexiconInner(lex);
+    setLexiconInner(lex);
   } finally {
     registering = false;
   }
 }
 
-function setDomainLexiconInner(lex: DomainLexicon): void {
+function setLexiconInner(lex: Lexicon): void {
   // 🔴 同源幂等判断必须在**所有校验之前**:放在后面的话,"注册后外部改了原对象、再注册一次"
   //    会先在校验处抛错,而不是安静返回 —— 那就不是幂等(Codex lexicon-r4)。
   if (registeredSource === lex) return;
@@ -199,7 +199,7 @@ function setDomainLexiconInner(lex: DomainLexicon): void {
 }
 
 /** 仅供测试:清掉已注册的词表(生产路径不该用) */
-export function resetDomainLexicon(): void { activeLexicon = null; registeredSource = null; }
+export function resetLexicon(): void { activeLexicon = null; registeredSource = null; }
 /**
  * 当前活动词表;未注入直接抛错(不给静默默认值)。
  *
@@ -216,13 +216,13 @@ export function resetDomainLexicon(): void { activeLexicon = null; registeredSou
  * ⇒ 现状:**内部调用方只读,不要改它**。要利用它得先能在进程内执行代码,
  *   那时攻击者已有更直接的手段 —— 在本产品的信任边界内可接受(Codex lexicon-r7~r9 反复讨论过)。
  */
-export function currentLexicon(): DomainLexicon {
-  if (!activeLexicon) throw new Error("未注入 DomainLexicon:入口处应先调用 setDomainLexicon(见 finance/register.ts)");
+export function currentLexicon(): Lexicon {
+  if (!activeLexicon) throw new Error("未注入 Lexicon:入口处应先调用 setLexicon(见 finance/register.ts)");
   return activeLexicon;
 }
 
-/** 类别标签(如 1.6T / 800G)不是数字主张——但只在"有类别语境、无金额语境"时剥;两个语境正则都由 DomainPack 提供(Codex 审查 voice-r1/r2) */
-export function stripSpeedLabels(s: string, lex: DomainLexicon = currentLexicon()): string {
+/** 类别标签(如 1.6T / 800G)不是数字主张——但只在"有类别语境、无金额语境"时剥;两个语境正则都由 Plugin 提供(Codex 审查 voice-r1/r2) */
+export function stripSpeedLabels(s: string, lex: Lexicon = currentLexicon()): string {
   return s.replace(/(?<![\d.])\d+(?:\.\d+)?\s?[TG](?:bps|b)?(?![A-Za-z0-9])/g, (m, off: number, str: string) => {
     const before = str.slice(Math.max(0, off - 12), off);
     const after = str.slice(off + m.length, off + m.length + 12);
@@ -230,7 +230,7 @@ export function stripSpeedLabels(s: string, lex: DomainLexicon = currentLexicon(
     return lex.categoryLabelContext.test(before) || lex.categoryLabelContext.test(after) ? " " : m;
   });
 }
-export function claimTokens(line: string, symbol?: string, lex: DomainLexicon = currentLexicon()): { n: number; raw: string }[] {
+export function claimTokens(line: string, symbol?: string, lex: Lexicon = currentLexicon()): { n: number; raw: string }[] {
   // 先剥离 id、日期、年份 / FY、6 位代码、字母前缀代码(C39)、序号 / 计数 / ×N / 季度标记 / 情景锚点记号(30x);年份与代码只在独立数字时剥离,不能咬进 19826269128.43 这类长数字
   // 先剥 URL(链接里的数字不是主张)与速率标签(1.6T / 800G / 3.2T / 400Gbps 是产品类别名,不是数字主张);
   // 但金额语境不剥:"$1.6T" / "1.6T 美元" / "800G 元" 前有货币符号或后接金额 / 百分比单位时仍是数字主张(Codex 审查 voice-r1)
@@ -242,14 +242,14 @@ export function claimTokens(line: string, symbol?: string, lex: DomainLexicon = 
   line = line.replace(/\d{4}-\d{2}-\d{2}[\sT]{0,3}\d{1,2}:\d{2}(?::\d{2})?/g, " ");
   let s = stripSpeedLabels(line.replace(/https?:\/\/[^\s)\]]+/g, " ").replace(/(HTTP|状态码|status)\s?[1-5]\d{2}(?!\d)/gi, " ").replace(/(?<![\d.])(19|20)\d{2}-\d{3,6}(?![\d.-])/g, " ").replace(/(?<![\d.])1260H\b/g, " ").replace(/(?<![\w.])[\w-]+(?:\.[\w-]+)*\.(?:com|cn|net|org|io|co|hk|tw|jp|kr|de|uk|info|biz|tv|me|ai|app)(?:\.[a-z]{2})?(?![\w.])/gi, " ")).replace(/(ev-[0-9a-f]{6,}|calc-[0-9a-f]{16})(?![0-9a-zA-Z_])/g, " ").replace(/\d{4}-\d{2}-\d{2}/g, " ").replace(/\d{4}Q[1-4]|\d{4}H[12]/g, " ")
     .replace(/FY\s?\d{4}/g, " ").replace(/(?<![\d.])(19|20)\d{2}(?![\d.])\s*[年]?/g, " ")// 主体编号默认剥掉,**但后面紧跟单位就是真数字**(踩坑实例见 finance/lexicon.ts)
-    // 主体编号剥离的条件由 DomainPack 的 subjectCodePatterns 给出,或**等于本次运行的主体编号**。
+    // 主体编号剥离的条件由 Plugin 的 subjectCodePatterns 给出,或**等于本次运行的主体编号**。
     // 单位白名单永远补不全(辆 / 平方米 / 千瓦…—— Codex commodity-r3),所以裸的、又不是本次主体编号的数字一律当真主张交给绑定校验
     ;
   for (const re of lex.subjectCodePatterns) s = s.replace(re, " ");
   s = s
     .replace(/(?<![\d.])[A-Za-z]\d+(?![\d.])/g, " ")
     .replace(/第\s*\d+\s*[次条行名]|\d+\s*[次条行个家名项]\b|×\s*\d+|\d+\s*季度?|Q\d|(?<![\d.])\d+(?:\.\d+)?x\b/g, " ")
-    // 时间**窗口标签**不是数字主张(窗口长度 ≠ 数据点)—— 具体词表由 DomainPack 提供,踩坑记录见 finance/lexicon.ts
+    // 时间**窗口标签**不是数字主张(窗口长度 ≠ 数据点)—— 具体词表由 Plugin 提供,踩坑记录见 finance/lexicon.ts
     // 只有**后接窗口词**才算窗口标签;"回款周期约 30 天" / "交付周期约 45 日" 是真主张,不能剥(Codex commodity-r2)
     .replace(lex.windowLabelPattern, " ");
   if (lex.subjectCodeIsSixDigits && symbol && /^\d{6}$/.test(symbol)) s = s.replace(new RegExp(`(?<![\\d.])${symbol}(?![\\d.])`, "g"), " ");  // 本次主体编号在正文里裸写也当编号
@@ -360,7 +360,7 @@ export interface FidelityResult {
  */
 export function checkNumberFidelity(report: string, evById: Map<string, EvidenceItem>,
                                     calcById: Map<string, CalcRecord>, symbol?: string,
-                                    quoted: string[] = [], lex: DomainLexicon = currentLexicon()): FidelityResult {
+                                    quoted: string[] = [], lex: Lexicon = currentLexicon()): FidelityResult {
   // `quoted` = 可**逐字引用**的历史文本(知识档案召回内容、knowledge_conflicts 的 claim)。
   // 报告写"旧前瞻 CAGR 59.09% 不再适用,本次为 58.85%"时,59.09% 是对档案的**引用**,
   // 本次运行的证据里当然没有它 —— 不把这类纳入可绑定池,就会把"如实标注新旧差异"这个**正确行为**判成违规。

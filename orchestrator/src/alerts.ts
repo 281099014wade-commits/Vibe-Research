@@ -5,7 +5,7 @@
  * 用法:node orchestrator/src/alerts.ts --symbol 300308 [--market SZ] [--base <run-id>] [--new <run-id>] [--fields <字段1,字段2,...>]
  * 缺省:new = 该主体最新 complete 运行,base = 其前一次。
  */
-import { currentPack } from "./domain.ts";
+import { currentPlugin } from "./plugin.ts";
 import fs from "node:fs";
 import path from "node:path";
 
@@ -15,7 +15,7 @@ import { parseArgs } from "./run.ts";
 import { repoRootFromHere, serviceContext } from "./service.ts";
 
 
-// **composition root**:垂类包在入口注册,Core 模块一律不 import 它
+// **composition root**:插件在入口注册,Core 模块一律不 import 它
 // (Core 消费者靠副作用 import 硬接某个包,换垂类时靠入口 import 恢复不了 —— ESM 会缓存)。
 import "./finance/register.ts";
 export interface EvidenceLite { id: string; field: string; value: unknown; unit: string; period: string; adjustment?: string; record_key?: string; source: string; script?: string }
@@ -23,8 +23,8 @@ export interface EvidenceLite { id: string; field: string; value: unknown; unit:
 export const alignKey = (e: EvidenceLite) => [e.field, e.period, e.unit, e.adjustment ?? "", e.record_key ?? "", e.source ?? ""].join("|");
 export interface AlertDiff { key: string; field: string; period: string; unit: string; kind: "changed" | "added" | "removed"; base?: EvidenceLite; next?: EvidenceLite }
 
-/** 变化提醒默认盯的字段**由垂类包提供** */
-const defaultFields = (): readonly string[] => currentPack().alertFields;
+/** 变化提醒默认盯的字段**由插件提供** */
+const defaultFields = (): readonly string[] => currentPlugin().alertFields;
 
 export function loadRunEvidence(runDir: string): EvidenceLite[] {
   const merged = readJsonIfExists<EvidenceLite[] | { evidence: EvidenceLite[] }>(path.join(runDir, "evidence.json"));

@@ -5,11 +5,11 @@ import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 
 
-import "../src/finance/register.ts";   // 测试文件也是入口:垂类包要先注册
+import "../src/finance/register.ts";   // 测试文件也是入口:插件要先注册
 /**
  * **Core 词汇纯净度棘轮**(架构审计 2026-08-24 的第一件事)。
  *
- * 战略:做垂类行业 AgentOS(Core + DomainPack),第一个是金融,后面按行业铺开。
+ * 战略:做垂类行业 AgentOS(Core + Plugin),第一个是金融,后面按行业铺开。
  * 审计结论:当前是「金融产品内部包含一批可抽取的通用机制」,**不是**可挂载 FinancePack / RestaurantPack 的 Core;
  * 验收标准是「**Core 中不再出现 A股 / EPS / PE / TTM / 申万行业等词汇**」。
  *
@@ -36,7 +36,7 @@ const CJK_TERMS = [ "申万", "扣非", "归母", "估值", "财报", "股价", 
 
 /** 明确属于 finance-pack、不参与本检查的文件(它们本来就该是行业实现) */
 /**
- * 曾经的**文件名白名单**。现在全部物理搬进 `src/finance/`,由 `PACK_DIRS` 的目录边界覆盖 ——
+ * 曾经的**文件名白名单**。现在全部物理搬进 `src/finance/`,由 `PLUGIN_DIRS` 的目录边界覆盖 ——
  * 审计点名过:文件名白名单挡不住"把通用编排继续写进 src/stages.ts",目录边界才挡得住。
  */
 export const FINANCE_FILES: string[] = [];
@@ -53,13 +53,13 @@ export const FINANCE_FILES: string[] = [];
  * 全局上限:所有 Core 文件的行业词**总数**。**已经清到 0,从此零容忍。**
  *
  * 沿革:67(词表有盲区,数不全)→ 146(ASCII 改大小写不敏感)→ 149(修好 A股 正则)
- * → 126(stages / schemas 抽进 DomainPack)→ 83(语义槽位 + 报价规则进包)
+ * → 126(stages / schemas 抽进 Plugin)→ 83(语义槽位 + 报价规则进包)
  * → 69(阶段显示名 / 议题映射 / 提醒字段 / 列标签进包)→ 18(注释措辞中性化)→ **0**。
  *
  * 🔴 **"0" 是什么意思,不是什么意思**:
  * - 是:`src/`(除已声明的 pack 目录)里**不再出现这张词表上的任何词**;
  *   阶段、脚本、计算函数、议题、章节、证据枚举、标准列、语义槽位、报价判定、基准期,
- *   全部经 `DomainPack` 注入。
+ *   全部经 `Plugin` 注入。
  * - **不是**:Core 已经与垂类完全无关。证据契约里的 `symbol` / `market` / `period` /
  *   `adjustment` 仍带着证券味道;`knowledge.ts` 的档案模板、`stages.ts` 的提示词
  *   仍是金融写法(后者本就在 pack 文件清单里)。**词表只测得到它认识的词。**
@@ -102,8 +102,8 @@ export function countDomainTerms(text: string): Record<string, number> {
   return out;
 }
 
-/** 已声明的 DomainPack 目录:整目录属于垂类实现,不参与 Core 纯净度检查 */
-export const PACK_DIRS = ["finance"];
+/** 已声明的 Plugin 目录:整目录属于垂类实现,不参与 Core 纯净度检查 */
+export const PLUGIN_DIRS = ["finance"];
 
 /**
  * 待检查的 Core 文件(**递归**,相对 `src/` 的路径)。
@@ -116,9 +116,9 @@ function coreFiles(dir = SRC, prefix = ""): string[] {
   for (const e of fs.readdirSync(dir, { withFileTypes: true }).sort((a, b) => (a.name < b.name ? -1 : 1))) {
     const rel = prefix ? `${prefix}/${e.name}` : e.name;
     if (e.isDirectory()) {
-      // 🔴 按**相对路径**精确排除,不是按目录名:`PACK_DIRS.includes(e.name)` 会让任意层级的
-      //    `src/core/finance/` 也白白拿到豁免,而它根本不是已声明的 DomainPack(Codex lexicon-r2 P1)
-      if (!PACK_DIRS.includes(rel)) out.push(...coreFiles(path.join(dir, e.name), rel));
+      // 🔴 按**相对路径**精确排除,不是按目录名:`PLUGIN_DIRS.includes(e.name)` 会让任意层级的
+      //    `src/core/finance/` 也白白拿到豁免,而它根本不是已声明的插件目录(Codex lexicon-r2 P1)
+      if (!PLUGIN_DIRS.includes(rel)) out.push(...coreFiles(path.join(dir, e.name), rel));
     } else if (e.name.endsWith(".ts") && !FINANCE_FILES.includes(rel)) {
       out.push(rel);
     }

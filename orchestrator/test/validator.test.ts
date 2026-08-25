@@ -13,7 +13,7 @@ import { validateCalcRecord, validateEvidenceItem, validateFetchEnvelope, valida
 import { loadLedgerFromDisk, saveLedger } from "../src/fetchrun.ts";
 
 
-import "../src/finance/register.ts";   // 测试文件也是入口:垂类包要先注册
+import "../src/finance/register.ts";   // 测试文件也是入口:插件要先注册
 function tmpRun(): string {
   const d = fs.mkdtempSync(path.join(os.tmpdir(), "vra-run-"));
   for (const s of ["raw", "fetch", "calcs", "stages"]) fs.mkdirSync(path.join(d, s), { recursive: true });

@@ -6,7 +6,7 @@ import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 
-import { currentPack } from "./domain.ts";
+import { currentPlugin } from "./plugin.ts";
 import { HOME_PREFIXES, packCriticalScripts, reportSections, stageCalcs, stageScripts, fetchEnv,
   type RunConfig, type RunStatus, type Stage, type StageStatus } from "./config.ts";
 import { loadLedgerFromDisk, type Ledger } from "./fetchrun.ts";
@@ -169,7 +169,7 @@ export function validateFetchIntegrity(run: RunView): ValidationResult {
 /** 确定性报价判定(SOP §2),不信任 agent 自填 */
 export type QuoteDecision = "normal" | "pre_open" | "stale" | "unknown_unverified" | "missing";
 /**
- * 确定性报价判定 —— **规则本身由垂类包提供**(`DomainPack.quoteDecision`)。
+ * 确定性报价判定 —— **规则本身由插件提供**(`Plugin.quoteDecision`)。
  *
  * "什么叫数据陈旧"是彻头彻尾的垂类问题 —— 判据随垂类完全不同;
  * 换个垂类(比如餐饮的当日营业数据)判据完全不同。Core 只负责**在该判的时候去问包**,
@@ -178,11 +178,11 @@ export type QuoteDecision = "normal" | "pre_open" | "stale" | "unknown_unverifie
 export function deriveQuoteDecision(run: RunView): { decision: QuoteDecision; reason: string } {
   // 包的返回类型是结构化的 { decision: string };这里收窄回 Core 的联合类型。
   // 包给出未知取值时按"无法核实"处理,而不是让一个野字符串流进状态机。
-  const r = currentPack().quoteDecision(run);
+  const r = currentPlugin().quoteDecision(run);
   const known: QuoteDecision[] = ["normal", "pre_open", "stale", "unknown_unverified", "missing"];
   return known.includes(r.decision as QuoteDecision)
     ? { decision: r.decision as QuoteDecision, reason: r.reason }
-    : { decision: "unknown_unverified", reason: `垂类包给出未知的报价判定 ${JSON.stringify(r.decision)}:${r.reason}` };
+    : { decision: "unknown_unverified", reason: `插件给出未知的报价判定 ${JSON.stringify(r.decision)}:${r.reason}` };
 }
 
 /** 阶段校验(同步、纯文件) */
@@ -276,20 +276,20 @@ export function validateStage(stage: Stage, run: RunView): ValidationResult {
 }
 
 /**
- * 语义槽位 v2:验证"输入选对了"——引用对的证据字段 / 期间、对的上游计算(按口径角色,角色由垂类包定义),
+ * 语义槽位 v2:验证"输入选对了"——引用对的证据字段 / 期间、对的上游计算(按口径角色,角色由插件定义),
  * 且实参值 == 所引用证据值(单位参数 == 证据单位)、下游实参 == 上游计算 output.value(单位 == output.unit)。
  */
 /**
- * 口径角色。**具体有哪些角色由垂类包定义**(`DomainPack.roles`),Core 只知道"角色是个字符串"。
+ * 口径角色。**具体有哪些角色由插件定义**(`Plugin.roles`),Core 只知道"角色是个字符串"。
  * 与阶段名同理:退化成 `string` 换来可插拔,代价由注册期校验补上。
  */
 export type Role = string;
-/** 口径角色**由垂类包提供**(`DomainPack.roles`) */
-const rolesOf = (): readonly string[] => currentPack().roles;
-/** 哪些 market 代表"全市场"(此时 symbol 必须是 MARKET)—— 由垂类包提供 */
-const marketWide = (): readonly string[] => currentPack().evidence.marketWideCodes;
-/** 哪些 market **只**用于全市场证据(该市场的个体用别的代码)—— 由垂类包提供 */
-const marketWideOnly = (): readonly string[] => currentPack().evidence.marketWideOnlyCodes;
+/** 口径角色**由插件提供**(`Plugin.roles`) */
+const rolesOf = (): readonly string[] => currentPlugin().roles;
+/** 哪些 market 代表"全市场"(此时 symbol 必须是 MARKET)—— 由插件提供 */
+const marketWide = (): readonly string[] => currentPlugin().evidence.marketWideCodes;
+/** 哪些 market **只**用于全市场证据(该市场的个体用别的代码)—— 由插件提供 */
+const marketWideOnly = (): readonly string[] => currentPlugin().evidence.marketWideOnlyCodes;
 type Fy = "T" | "T+2" | "T+years";
 export interface Slot {
   fn: string;
@@ -311,8 +311,8 @@ export interface Slot {
   distinctBy?: "field";
   requiredGroups?: string[];
 }
-/** 语义槽位表**由垂类包提供**(`DomainPack.semanticSlots`);Core 只保留"怎么走这张表"的机制 */
-const slotsOf = (stage: string): Slot[] => (currentPack().semanticSlots[stage] ?? []) as Slot[];
+/** 语义槽位表**由插件提供**(`Plugin.semanticSlots`);Core 只保留"怎么走这张表"的机制 */
+const slotsOf = (stage: string): Slot[] => (currentPlugin().semanticSlots[stage] ?? []) as Slot[];
 
 /** 口径角色:quarterize 看其引用证据的唯一 field;其他函数沿上游计算递归(必须唯一) */
 export function roleOf(c: CalcRecord, run: RunView, depth = 0): Role | null {
@@ -326,11 +326,11 @@ export function roleOf(c: CalcRecord, run: RunView, depth = 0): Role | null {
 }
 
 /**
- * 基准期(语义槽位里 `fy: "T"` 的那个 T)。**怎么定由垂类包说了算**
- * (`DomainPack.baselinePeriod`)—— 金融看当前财年,别的垂类可能是别的口径。
+ * 基准期(语义槽位里 `fy: "T"` 的那个 T)。**怎么定由插件说了算**
+ * (`Plugin.baselinePeriod`)—— 金融看当前财年,别的垂类可能是别的口径。
  */
 export function fiscalT(run: RunView): number | null {
-  return currentPack().baselinePeriod(run);
+  return currentPlugin().baselinePeriod(run);
 }
 const fyLabel = (n: number) => `FY${n}`;
 function resolveFy(fy: Fy | undefined, T: number | null, inputs: Record<string, unknown>): string | null {

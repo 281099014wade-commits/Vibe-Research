@@ -10,7 +10,7 @@ import { readJson, sha256File, writeJson } from "../src/fsutil.ts";
 import { endpointsById, loadRegistry } from "../src/registry.ts";
 import { validateFetchEnvelope } from "../src/schemas.ts";
 
-import "../src/finance/register.ts";   // 测试文件也是入口:垂类包要先注册
+import "../src/finance/register.ts";   // 测试文件也是入口:插件要先注册
 import {
   THERMO_FILE_REL, THERMO_GUARD, THERMO_MAX_OBS, THERMO_RAW_NAME, THERMO_SCRIPT,
   appendThermoLedger, applyThermometerHistory, backfillThermoLedger, buildDeltaEvidence, extractObservations, historyFieldsOf, injectedObservations,

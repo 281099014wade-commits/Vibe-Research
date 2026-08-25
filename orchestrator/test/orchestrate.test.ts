@@ -17,7 +17,7 @@ import { CodexRunner, EventsLog, codexOptionsFor, type AgentRunner, type TurnOut
 import { validateManifest } from "../src/schemas.ts";
 
 
-import "../src/finance/register.ts";   // 测试文件也是入口:垂类包要先注册
+import "../src/finance/register.ts";   // 测试文件也是入口:插件要先注册
 const TS = "2026-08-21T10:00:00+08:00";
 const ev = (id: string, field: string, value: unknown, extra: Record<string, unknown> = {}) => ({ id, symbol: "300308", market: "SZ", field, value, unit: "元", currency: "CNY",
   period: "2026-08-21", as_of: "2026-08-21", source: "tencent", endpoint: "qt", fetched_at: TS, adjustment: "none", raw_ref: null, ...extra });

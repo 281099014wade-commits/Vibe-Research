@@ -2,7 +2,7 @@
  * **金融的"基准期 T"**:语义槽位里 `fy: "T"` / `"T+2"` 指的是哪一年。
  *
  * 取 `fetch_estimates.extra.current_fy`(形如 FY2026);缺失则退回一致预期证据里最早的财年。
- * 换个垂类"基准期"可能是营业年度、季度、甚至一次活动 ⇒ 规则进包(`DomainPack.baselinePeriod`)。
+ * 换个垂类"基准期"可能是营业年度、季度、甚至一次活动 ⇒ 规则进包(`Plugin.baselinePeriod`)。
  */
 import type { RunView } from "../validator.ts";
 

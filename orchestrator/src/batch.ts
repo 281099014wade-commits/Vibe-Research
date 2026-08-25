@@ -4,7 +4,7 @@
  * 汇总只转录各运行的状态 / 标准产出列的 calc id / 证据数 / 冲突数 / 报告路径,不做任何横向数值比较(派生量归 calc)。
  * 用法:node orchestrator/src/batch.ts --symbols 300308,002463 [--market SZ] [--endpoints full|core] [--knowledge on|off] [--python P] [--batch-id X] [--no-agent] [--overwrite]
  */
-import { currentPack } from "./domain.ts";
+import { currentPlugin } from "./plugin.ts";
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
@@ -15,14 +15,14 @@ import { parseArgs } from "./run.ts";
 import { assertKnowledgeFlag, assertMarket, assertScope, repoRootFromHere, researchEnv, serviceContext } from "./service.ts";
 
 
-// **composition root**:垂类包在入口注册,Core 模块一律不 import 它
+// **composition root**:插件在入口注册,Core 模块一律不 import 它
 // (Core 消费者靠副作用 import 硬接某个包,换垂类时靠入口 import 恢复不了 —— ESM 会缓存)。
 import "./finance/register.ts";
 export interface BatchItem { symbol: string; run_id: string; exit_code: number | null; status: string | null; evidence_count: number | null; calculation_count: number | null; conflicts: number | null; standard_columns: Record<string, string> | null; report: string | null; viewer: string | null; duration_ms: number; error?: string }
 
-/** 标准列与表头显示名**由垂类包提供** —— 换个垂类这张表的列完全不同 */
-const cols = (): readonly string[] => currentPack().standardColumns;
-const label = (k: string): string => currentPack().standardColumnLabels[k] ?? k;
+/** 标准列与表头显示名**由插件提供** —— 换个垂类这张表的列完全不同 */
+const cols = (): readonly string[] => currentPlugin().standardColumns;
+const label = (k: string): string => currentPlugin().standardColumnLabels[k] ?? k;
 
 export function batchSummaryMarkdown(batchId: string, items: BatchItem[]): string {
   const L = [`# 批量研究汇总 · ${batchId}`, "", "> 只转录各运行产物(状态 / 标准产出列 calc id / 证据与冲突数),不做横向比较;每个主体的结论以其 report.md 为准。", "",
@@ -41,10 +41,10 @@ export function batchSummaryMarkdown(batchId: string, items: BatchItem[]): strin
 
 export function collectRun(runDir: string, symbol: string, runId: string, exitCode: number | null, durationMs: number, error?: string): BatchItem {
   const m = readJsonIfExists<Record<string, unknown>>(path.join(runDir, "manifest.json"));
-    // 标准列住在哪个阶段的产物里,**由垂类包说了算**。
+    // 标准列住在哪个阶段的产物里,**由插件说了算**。
   // 🔴 这里原本硬编码 `"valuation.json"` —— 纯净度词表全是中文与几个缩写,**看不见英文阶段名**,
   //    所以它一路躲过了棘轮。词表只测得到它认识的词(见 core_purity.test.ts 顶部的说明)。
-  const val = readJsonIfExists<Record<string, unknown>>(path.join(runDir, "stages", `${currentPack().standardColumnsStage}.json`));
+  const val = readJsonIfExists<Record<string, unknown>>(path.join(runDir, "stages", `${currentPlugin().standardColumnsStage}.json`));
   return { symbol, run_id: runId, exit_code: exitCode, status: (m?.status as string) ?? null, evidence_count: (m?.evidence_count as number) ?? null, calculation_count: (m?.calculation_count as number) ?? null,
     conflicts: Array.isArray(m?.evidence_conflicts) ? (m!.evidence_conflicts as unknown[]).length : null, standard_columns: (val?.standard_columns as Record<string, string>) ?? null,
     report: fs.existsSync(path.join(runDir, "report.md")) ? path.join(runDir, "report.md") : null, viewer: fs.existsSync(path.join(runDir, "viewer.html")) ? path.join(runDir, "viewer.html") : null, duration_ms: durationMs, ...(error ? { error } : {}) };

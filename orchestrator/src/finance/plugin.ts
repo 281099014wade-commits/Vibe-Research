@@ -1,14 +1,14 @@
 /**
- * **金融垂类包**:Core 需要知道的、随垂类而变的全部东西都在这里。
+ * **金融插件**:Core 需要知道的、随垂类而变的全部东西都在这里。
  *
  * 这些常量原先散在 `config.ts`(阶段、脚本、计算函数、报告章节)与 `schemas.ts`
  * (证据枚举、标准列、议题)里 —— 换个垂类它们**每一条都要重写**,所以属于包不属于 Core。
  *
  * 🔴 改这里之前先想清楚:新增 / 改名一个阶段,要**同时**改 `stages`、`stageScripts`、
- * `stageCalcs`、`extraTopics` 四处。漏改哪一处,`registerDomainPack` 会在注册时当场报出来
+ * `stageCalcs`、`extraTopics` 四处。漏改哪一处,`registerPlugin` 会在注册时当场报出来
  * (键集必须与 stages 完全一致)—— 这是故意的,别去放宽那个校验。
  */
-import type { DomainPack } from "../domain.ts";
+import type { Plugin } from "../plugin.ts";
 import { FINANCE_LEXICON } from "./lexicon.ts";
 import { financeQuoteDecision } from "./quote_freshness.ts";
 import { financeBaselinePeriod } from "./fiscal_year.ts";
@@ -18,7 +18,7 @@ import { FINANCE_ROLES, FINANCE_SLOTS } from "./semantic_slots.ts";
 export const FINANCE_STAGES = ["profile", "financials", "estimates", "valuation", "risk", "report"] as const;
 export type FinanceStage = (typeof FINANCE_STAGES)[number];
 
-export const FINANCE_PACK: DomainPack = {
+export const FINANCE_PLUGIN: Plugin = {
   id: "finance",
   stages: FINANCE_STAGES,
 
@@ -79,7 +79,7 @@ export const FINANCE_PACK: DomainPack = {
   /** 语义槽位表(每阶段每个计算函数"输入该怎么选") */
   semanticSlots: FINANCE_SLOTS,
   /** "报价是否陈旧"的判定:交易日历 / 盘前 / 停牌 */
-  quoteDecision: financeQuoteDecision as DomainPack["quoteDecision"],
+  quoteDecision: financeQuoteDecision as Plugin["quoteDecision"],
   /** 阶段显示名(也是允许拼进文件路径的白名单) */
   stageLabels: {
     profile: "公司画像", financials: "财务", estimates: "一致预期",
@@ -113,7 +113,7 @@ export const FINANCE_PACK: DomainPack = {
   selfTestCalc: { fn: "forward_pe", args: { price: 100, eps_forecast: 5 }, expect: 20 },
 
   /** 基准期 = 当前财年 T */
-  baselinePeriod: financeBaselinePeriod as DomainPack["baselinePeriod"],
+  baselinePeriod: financeBaselinePeriod as Plugin["baselinePeriod"],
 
   lexicon: FINANCE_LEXICON,
 };

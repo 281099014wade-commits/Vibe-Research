@@ -8,7 +8,7 @@ import { DEFAULT_PRODUCT_CONFIG, PRODUCT_CONFIG_FILE, loadProductConfig } from "
 import { configFromArgs } from "../src/run.ts";
 
 
-import "../src/finance/register.ts";   // 测试文件也是入口:垂类包要先注册
+import "../src/finance/register.ts";   // 测试文件也是入口:插件要先注册
 function tmpRepo(): string { return fs.mkdtempSync(path.join(os.tmpdir(), "vra-pc-")); }
 
 test("产品配置:无文件 → 内置默认;相对路径相对产品根解析", () => {

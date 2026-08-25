@@ -16,7 +16,7 @@ import { canaryNumberPresent, canaryWordPresent, claimTokens, cnNumeralToNumber 
 import { checkAgentTrace, commandSafetyErrors } from "../src/validator.ts";
 
 
-import "../src/finance/register.ts";   // 测试文件也是入口:垂类包要先注册
+import "../src/finance/register.ts";   // 测试文件也是入口:插件要先注册
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 
 test("市场声音层:注册表两个端点挂在 risk(optional)、CN、默认启用、模块 / mapper 可被 Python 导入", () => {

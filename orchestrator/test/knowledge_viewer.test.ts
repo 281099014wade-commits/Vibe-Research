@@ -13,7 +13,7 @@ import { loadRun } from "../src/validator.ts";
 import { APPENDIX_REL, VIEWER_REL, renderAppendix, collectViewerData, writeViewer } from "../src/viewer.ts";
 
 
-import "../src/finance/register.ts";   // 测试文件也是入口:垂类包要先注册
+import "../src/finance/register.ts";   // 测试文件也是入口:插件要先注册
 const TS = "2026-08-22T10:00:00+08:00";
 
 function fakeRun(): { cfg: ReturnType<typeof makeConfig>; ledger: Record<string, unknown>; manifest: Manifest } {

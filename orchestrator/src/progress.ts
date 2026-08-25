@@ -15,13 +15,13 @@
  * - 不打印本机绝对路径(事件里带路径的字段一律不取),与事件流本身的脱敏口径一致。
  * - 不碰 stdout:批处理 / MCP / HTTP API 都靠 stdout 的 JSON,**加一个字节都可能破坏调用方**。
  */
-import { currentPack } from "./domain.ts";
+import { currentPlugin } from "./plugin.ts";
 import fs from "node:fs";
 import path from "node:path";
 import { redact } from "./service.ts";
 
-/** 阶段显示名**由垂类包提供**。同时是**白名单** —— 只有这些 stage 允许被拼进文件路径(见 stageSummary) */
-const stageLabels = (): Record<string, string> => currentPack().stageLabels as Record<string, string>;
+/** 阶段显示名**由插件提供**。同时是**白名单** —— 只有这些 stage 允许被拼进文件路径(见 stageSummary) */
+const stageLabels = (): Record<string, string> => currentPlugin().stageLabels as Record<string, string>;
 
 /** stages/<stage>.json 读取上限:超过就当没有 summary。显示层不为一个坏文件把事件循环卡住(Codex progress-r1 P2) */
 const MAX_STAGE_FILE_BYTES = 2 * 1024 * 1024;

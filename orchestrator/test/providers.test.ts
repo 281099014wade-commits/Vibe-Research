@@ -11,7 +11,7 @@ import { assertAuth, codexProviderConfig, listProviderIds, loadProviderProfile, 
 import { codexOptionsFor } from "../src/runner.ts";
 
 
-import "../src/finance/register.ts";   // 测试文件也是入口:垂类包要先注册
+import "../src/finance/register.ts";   // 测试文件也是入口:插件要先注册
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 
 test("providers:产品模板全部可加载且通过 schema;openai 为 responses 原生;国产模板 chat + api_key + requires_openai_auth=false;不含密钥", () => {

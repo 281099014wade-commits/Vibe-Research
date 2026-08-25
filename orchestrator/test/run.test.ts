@@ -6,7 +6,7 @@ import { codexEnv, codexEnvFor, makeConfig, defaultRunId, interpreterRoot, stage
 import { buildGateRewritePrompt, buildStagePrompt } from "../src/finance/stages.ts";
 
 
-import "../src/finance/register.ts";   // 测试文件也是入口:垂类包要先注册
+import "../src/finance/register.ts";   // 测试文件也是入口:插件要先注册
 test("parseArgs:键值 / 开关 / 混合", () => {
   const a = parseArgs(["--symbol", "300308", "--no-agent", "--max-retries", "1", "--stages", "profile,risk", "--overwrite"]);
   assert.equal(a.symbol, "300308");
