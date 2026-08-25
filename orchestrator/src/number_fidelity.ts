@@ -25,6 +25,7 @@ export interface FidelityCalc {
 type EvidenceItem = FidelityEvidence;
 type CalcRecord = FidelityCalc;
 import { resultProjection } from "./calc_projection.ts";
+import { currentPlugin } from "./plugin.ts";
 
 /** 从引用 id 收集可解释的数值(证据值、计算输出、计算 details / inputs 的数值叶子) */
 export function numbersOf(ids: string[], evById: Map<string, EvidenceItem>, calcById: Map<string, CalcRecord>): { nums: number[]; texts: string[] } {
@@ -474,7 +475,7 @@ export function checkNumberFidelity(report: string, evById: Map<string, Evidence
 /** 各阶段 knowledge_conflicts 的 claim / refuted_by 文本 —— 报告引用"旧值"时的可追溯来源 */
 export function quotedHistory(stageOf: (s: string) => Record<string, unknown> | null): string[] {
   const out: string[] = [];
-  for (const st of ["profile", "financials", "estimates", "valuation", "risk", "report"]) {
+  for (const st of currentPlugin().stages) {   // 阶段清单由契约给,不写死(全审 r4)
     const kc = (stageOf(st) as { knowledge_conflicts?: unknown } | null)?.knowledge_conflicts;
     if (!Array.isArray(kc)) continue;
     for (const c of kc) {

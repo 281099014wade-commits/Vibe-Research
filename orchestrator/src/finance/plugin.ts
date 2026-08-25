@@ -13,6 +13,11 @@ import { FINANCE_LEXICON } from "./lexicon.ts";
 import { financeQuoteDecision } from "./quote_freshness.ts";
 import { financeBaselinePeriod } from "./fiscal_year.ts";
 import { FINANCE_ROLES, FINANCE_SLOTS } from "./semantic_slots.ts";
+import { FINANCE_STAGE_VALIDATORS } from "./stage_validators.ts";
+import { CHOKE_FILE_REL, loadChokeTable, scanChokepoints, writeChokeFile } from "./chokepoint.ts";
+import { buildGateRewritePrompt, buildStagePrompt } from "./stages.ts";
+import { INDUSTRY_FILE_REL, applyIndustryGate, detectIndustryTags, loadIndustryTags, writeIndustryFile } from "./industry.ts";
+import { appendThermoLedger, applyThermometerHistory, thermoDir, thermoLedgerOverview } from "./thermo_history.ts";
 
 /** 阶段顺序:摸清公司 → 财务 → 一致预期 → 估值 → 风险 → 成文 */
 export const FINANCE_STAGES = ["profile", "financials", "estimates", "valuation", "risk", "report"] as const;
@@ -108,6 +113,100 @@ export const FINANCE_PLUGIN: Plugin = {
 
   /** 标准列住在估值阶段的产物里 */
   standardColumnsStage: "valuation",
+  /**
+   * 阶段专属字段(Core 只做合并,见 Plugin.stageSchemas)。
+   * 这些原本写死在 Core 的 `schemas.ts` 里 —— 报价判定 / 不可替代性标签 / 反证 / 裁决点 /
+   * 数据源冲突全是金融概念,换个垂类既拿不到自己的约束、又被强塞这些(全审 r4-P1)。
+   */
+  // 卡口事件分类(确定性,不拉新数据):在这两个阶段取数后扫公司自己的公告 / 新闻信封。
+  // 原本这段连同"哪些阶段"一起写死在 Core 的主循环里(全审 r4-P1)。
+  /** 沪深北与空串都按 CN 取数;未知取值抛错,绝不猜(原本写死在 Core 的 registry.ts) */
+  buildStagePrompt: (stage, cfg, opts) => buildStagePrompt(stage as never, cfg as never, opts as never),
+  buildRewritePrompt: (cfg, hits) => buildGateRewritePrompt(cfg as never, hits as never),
+  /** 产业标签门控:按公司命中的标签决定这一阶段实际跑哪些端点(原本 Core 直接 import 这段) */
+  transformFetch: (cfg, stage, ledger, log) => applyThermometerHistory(cfg as never, stage as never, ledger as never, log),
+  afterRun: (ctx) => {
+    const t = appendThermoLedger(ctx.cfg as never, ctx.ledger as never, ctx.log);
+    ctx.record("thermo_archived", { endpoints: t.endpoints, appended: t.appended, skipped: t.skipped.length, corrupt_moved: t.corrupt_moved.length });
+  },
+  doctorChecks: ({ dataRoot }) => {
+    const rows = thermoLedgerOverview({ dataRoot });
+    const bad = rows.filter((r) => r.unreadable || r.dropped > 0);
+    return [{
+      id: "thermo_history", title: "温度计历史序列", status: bad.length ? "warn" : "ok",
+      detail: rows.length
+        ? rows.map((r) => `${r.endpoint}:${r.observations} 条 ${r.first ?? "-"}→${r.last ?? "-"}${r.unreadable ? " 🔴不可读" : ""}${r.dropped ? ` ⚠️无效 ${r.dropped}` : ""}`).join(";")
+        : `${thermoDir({ dataRoot })} 尚无序列(首次完整运行归档后生成;或 node orchestrator/src/finance/thermo_history.ts backfill)`,
+      fix: bad.length ? "不可读的文件会在下次归档时移到 .corrupt 旁路重建;无效条目已被忽略——若是手工编辑过序列文件,按 schema 修回或删掉该条" : undefined,
+    }];
+  },
+  beforeFetch: (ctx) => {
+    const planned = [...ctx.planned];
+    // 只有存在带产业标签的端点时才走门控 —— 否则每次取数都白读一次标签表
+    if (!planned.some((id) => ((ctx.endpoints[id] as { industry_tags?: string[] } | undefined)?.industry_tags ?? []).length)) return planned;
+    const table = loadIndustryTags(ctx.repoRoot);   // 缺失 / 损坏直接抛 → 运行失败出声,不当"零标签"
+    const det = detectIndustryTags(ctx.runDir, table);
+    const gate = applyIndustryGate(planned, ctx.endpoints as never, det.tags);
+    const f = writeIndustryFile(ctx.runDir, table, det, gate);
+    ctx.protect(INDUSTRY_FILE_REL);
+    ctx.record("industry_tags", { tags: f.tags, matched: f.matched, skipped: f.skipped, signals: f.signals });
+    ctx.log("industry.gate", { tags: f.tags, matched: f.matched, skipped: f.skipped, signals: f.signals });
+    return gate.included;
+  },
+  marketRegion: (market: string): string => {
+    const m = (market || "").toUpperCase();
+    if (m === "US") return "US";
+    if (m === "HK") return "HK";
+    if (m === "" || m === "SH" || m === "SZ" || m === "BJ" || m === "CN") return "CN";
+    throw new Error(`未知市场 ${market}(只接受 SH/SZ/BJ/CN/US/HK 或空)`);
+  },
+  afterFetch: (ctx) => {
+    if (ctx.stage !== "risk" && ctx.stage !== "report") return;
+    const cp = scanChokepoints(ctx.runDir, loadChokeTable(ctx.repoRoot));
+    writeChokeFile(ctx.runDir, cp);
+    ctx.protect(CHOKE_FILE_REL);
+    ctx.record("chokepoints", { scanned: cp.scanned, hits: cp.hits.length, by_category: cp.by_category });
+    ctx.log("chokepoint.scan", { scanned: cp.scanned, hits: cp.hits.length, by_category: cp.by_category, scripts: cp.scripts });
+  },
+  stageValidators: FINANCE_STAGE_VALIDATORS,
+  stageSchemas: {
+    profile: {
+      properties: {
+        quote_decision: { type: "string", enum: ["normal", "pre_open", "stale", "unknown_unverified"] },
+        quote_decision_reason: { type: "string", minLength: 1 },
+        moat_tag: { type: "string", enum: ["tech_moat", "capacity_moat", "both", "待补"] },
+      },
+      required: ["quote_decision", "quote_decision_reason", "moat_tag"],
+    },
+    risk: {
+      properties: {
+        counter_evidence: {
+          type: "array", minItems: 1,
+          items: { type: "object", additionalProperties: false, required: ["claim", "counter"],
+            properties: { claim: { type: "string", minLength: 1 }, counter: { type: "string", minLength: 1 },
+              evidence_ids: { type: "array", items: { type: "string", pattern: "^(ev-[0-9a-f]{6,}|calc-[0-9a-f]{16})$" } } } },
+        },
+        decision_points: {
+          type: "array", minItems: 3,
+          items: { type: "object", additionalProperties: false, required: ["what_would_change", "next_data_point"],
+            properties: { what_would_change: { type: "string", minLength: 1 }, next_data_point: { type: "string", minLength: 1 } } },
+        },
+        source_conflicts: {
+          type: "array",
+          items: { type: "object", additionalProperties: false, required: ["field", "kind", "values"],
+            properties: { field: { type: "string", minLength: 1 }, period: { type: "string" },
+              kind: { type: "string", enum: ["source", "cross_check"] }, note: { type: "string" },
+              values: { type: "array", minItems: 2,
+                items: { type: "object", additionalProperties: false, required: ["source", "value", "ref_id"],
+                  properties: { source: { type: "string", minLength: 1 }, value: {}, unit: { type: "string" },
+                    ref_id: { type: "string", pattern: "^(ev-[0-9a-f]{6,}|calc-[0-9a-f]{16})$" }, note: { type: "string" } } } } } },
+        },
+      },
+      required: ["counter_evidence", "decision_points", "source_conflicts"],
+    },
+  },
+  reportStage: "report",
+  topicsSourceStage: "risk",
 
   /** doctor 的 calc 自检:前瞻 PE = 100 / 5 = 20 */
   selfTestCalc: { fn: "forward_pe", args: { price: 100, eps_forecast: 5 }, expect: 20 },

@@ -11,7 +11,8 @@ import { currentPlugin } from "../src/plugin.ts";
 import { archiveRun, buildArchiveMarkdown, companyDir, recallKnowledge, safeFmValue, sensitiveHits, shDate, shouldRecall, truncateBySection } from "../src/knowledge.ts";
 import type { Manifest } from "../src/merge.ts";
 import { loadRun } from "../src/validator.ts";
-import { APPENDIX_REL, VIEWER_REL, renderAppendix, collectViewerData, writeViewer } from "../src/viewer.ts";
+import { APPENDIX_REL, VIEWER_REL, renderAppendix, collectViewerData, scrubForTest, writeViewer } from "../src/viewer.ts";
+import { EventsLog } from "../src/runner.ts";
 
 
 import "../src/finance/register.ts";   // 测试文件也是入口:插件要先注册
@@ -289,4 +290,90 @@ test("knowledge:反斜杠+竖线不能击穿转义 / max 异常值 / 兜底保�
   // 只有 1 节 tail 时仍只保最后一节
   const r1 = truncateBySection(body3, 400, ["新甲"]);
   assert.ok(r1.text.includes("最后一节") && !r1.text.includes("倒数第二节"), "1 节 tail 就只保最后一节");
+});
+
+test("viewer / 附录:生成后必须过合规复验,且不再声称'不含任何建议'(全审 r3-P1-3)", () => {
+  const { cfg, ledger, manifest } = fakeRun();
+  // 把建议塞进阶段产物的自由文本 —— 附录与 HTML 都会把它抄过去
+  const sp = path.join(cfg.runDir, "stages", "risk.json");
+  if (fs.existsSync(sp)) {
+    const rec = JSON.parse(fs.readFileSync(sp, "utf8"));
+    writeJson(sp, { ...rec, summary: `${rec.summary ?? ""} 建议逢低买入并加仓至三成。` });
+  }
+  const run = loadRun(cfg.runDir, ledger as never);
+  const v = writeViewer(cfg, run, manifest);
+  const appendix = fs.readFileSync(v.appendixPath, "utf8");
+  const html = fs.readFileSync(v.htmlPath, "utf8");
+  assert.ok(!appendix.includes("建议逢低买入") && !html.includes("建议逢低买入"), "命中的字符串必须被替换掉");
+  // 🔴 结构不能被破坏:第一版按行删除,把整个 `<script id="data">` 数据块删没了,页面直接报废
+  //    (修复复审 r1-P2-4)。现在改成数据层逐字符串替换,结构完全不动。
+  const m = /<script id="data" type="application\/json">([\s\S]*?)<\/script>/.exec(html);
+  assert.ok(m, "数据块必须还在(第一版会把它整行删掉)");
+  assert.doesNotThrow(() => JSON.parse(m![1].replace(/\\u003c/g, "<")), "数据块必须仍是合法 JSON");
+  assert.ok(html.includes("〔已按产出红线移除〕"), "命中的字符串该留下占位,而不是悄悄消失");
+  // 🔴 声称必须与实现一致:原文写着"不含任何判断与建议"而代码从不复验
+  assert.ok(!appendix.includes("不含任何判断与建议") && !html.includes("不含任何投资动作建议"),
+    "不许再声称代码做不到的事");
+  assert.ok(appendix.includes("已过合规复验") && html.includes("已过合规复验"));
+});
+
+test("events 脱敏:主目录用户名 / 内网地址 / user:pass 都不许进事件流(全审 r3-P1-4)", () => {
+  const d = fs.mkdtempSync(path.join(os.tmpdir(), "vra-red-"));
+  const log = new EventsLog(path.join(d, "events.jsonl"), []);
+  log.append({ type: "command", command: "cat /Users/alice/x", output_tail: "proxy http://10.0.0.8:3128",
+    url: "https://user:pw@api.example.com/v1", host: "http://build-host.local:4000" });
+  const txt = fs.readFileSync(path.join(d, "events.jsonl"), "utf8");
+  for (const leaked of ["/Users/alice", "10.0.0.8", "user:pw@", "build-host.local"]) {
+    assert.ok(!txt.includes(leaked), `仍泄露 ${leaked}:${txt}`);
+  }
+  for (const marker of ["[USER]", "[PRIVATE_IP]", "[REDACTED_USERINFO]", "[INTERNAL_HOST]"]) {
+    assert.ok(txt.includes(marker), `缺 ${marker}`);
+  }
+  // 摘要必须基于脱敏后内容(否则审计哈希对不上)
+  assert.equal(sha256File(path.join(d, "events.jsonl")), log.digest());
+});
+
+test("viewer 净化:对象键也要查,结构性字符串不许动(修复复审 r2-P1-1 / P2-3)", () => {
+  const { cfg, ledger, manifest } = fakeRun();
+  const run = loadRun(cfg.runDir, ledger as never);
+  const raw = collectViewerData(cfg, run, manifest) as unknown as Record<string, unknown>;
+  // 🔴 键本身载着建议(calc 的 inputs / output.details 是自由形状)——第二版只查值,键原样外传
+  (raw as { calcs?: { inputs?: Record<string, unknown> }[] }).calcs?.push({ inputs: { 建议建仓: "30%" } } as never);
+  // 🔴 结构性字符串恰好命中英文规则 —— 第二版会把它整串换掉,证据就追不回去了
+  (raw as { run: Record<string, unknown> }).run.run_id = "BUY";
+  const v = writeViewer(cfg, run, manifest);
+  const html = fs.readFileSync(v.htmlPath, "utf8");
+  const m = /<script id="data" type="application\/json">([\s\S]*?)<\/script>/.exec(html);
+  assert.ok(m, "数据块必须还在");
+  const data = JSON.parse(m![1].replace(/\\u003c/g, "<"));
+  assert.equal(data.run.run_id, cfg.runId, "run_id 这类身份字段不该被净化改写");
+  // 直接验函数行为(collectViewerData 每次重算,上面的注入进不了 writeViewer)
+  const probe = scrubForTest({ run: { run_id: "BUY", raw_ref: "raw/BUY" }, note: "建议买入", bad: { 建议建仓: "30%" } });
+  assert.equal(probe.value.run.run_id, "BUY", "身份字段原样");
+  assert.equal(probe.value.run.raw_ref, "raw/BUY", "路径原样");
+  assert.equal(probe.value.note, "〔已按产出红线移除〕", "自由文本要净化");
+  assert.ok(!Object.keys(probe.value.bad).includes("建议建仓"), "命中的键也要换掉");
+  assert.ok(Object.keys(probe.value.bad)[0].startsWith("〔已移除键-"), "占位键要带编号,避免多个键碰撞丢数据");
+});
+
+test("viewer 净化的两个边界:占位键避开原有键;只受控字段才放行(修复复审 r3-P2)", () => {
+  // 🔴 占位键要避开**原有键**,否则会覆盖别人的数据(编号只保证彼此不撞是不够的)
+  const r = scrubForTest({ "〔已移除键-1〕": "原有审计数据", 建议买入: "另一项数据" });
+  const keys = Object.keys(r.value);
+  assert.equal(keys.length, 2, `不许覆盖已有键:${JSON.stringify(r.value)}`);
+  assert.equal((r.value as Record<string, unknown>)["〔已移除键-1〕"], "原有审计数据");
+
+  // 🔴 source / endpoint / field 这些 schema 上只要求"非空字符串",不是受控字段 —— 必须净化
+  const free = scrubForTest({ source: "建议买入并建仓三成", endpoint: "fetch_quote", field: "close" });
+  assert.equal(free.value.source, "〔已按产出红线移除〕", "不受控字段必须过 gate");
+  assert.equal(free.value.endpoint, "fetch_quote", "正常值不该被动");
+  // 真正受控的身份字段照旧不碰
+  const ident = scrubForTest({ run_id: "BUY", raw_ref: "raw/BUY", function: "stop-loss", adjustment: "none" });
+  assert.deepEqual(ident.value, { run_id: "BUY", raw_ref: "raw/BUY", function: "stop-loss", adjustment: "none" });
+
+  // 🔴 键名不等于位置:自由形状里的同名 `status` 装得下一句建议,只按键名放行就是后门(复审 r4-P2)
+  const nested = scrubForTest({ extra_findings: [{ topic: "其他", status: "建议建仓三成" }], status: "ok" });
+  const nestedItem = (nested.value as { extra_findings: { status: string }[] }).extra_findings[0];
+  assert.equal(nestedItem.status, "〔已按产出红线移除〕", "自由形状里的 status 必须过 gate");
+  assert.equal((nested.value as { status: string }).status, "ok", "受控形状的枚举值不该被动");
 });

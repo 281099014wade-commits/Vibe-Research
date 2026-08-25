@@ -21,7 +21,6 @@ import { parseArgs } from "./run.ts";
 import { fetchEndpoint, redact, repoRootFromHere, safePath, serviceContext } from "./service.ts";
 import { SKILLS_MAX_SCAN_DEPTH, installCommandFor, listForeignSkillPaths, resolveHomeDir, skillsIsolationStatus } from "./skills_isolation.ts";
 import { preflightInstructions } from "./instructions_root.ts";
-import { thermoDir, thermoLedgerOverview } from "./finance/thermo_history.ts";
 
 
 // **composition root**:插件在入口注册,Core 模块一律不 import 它
@@ -258,9 +257,11 @@ export function runDoctor(opts: { repoRoot?: string; env?: NodeJS.ProcessEnv; ex
   }
 
   // 9. calc 自检
-  if (python && pyOk) {
-    // 自检用哪个计算、期望值多少,**由插件提供** —— Core 只负责"跑一次、比一下"
-    const st = currentPlugin().selfTestCalc;
+  const selfTest = currentPlugin().selfTestCalc;
+  if (python && pyOk && selfTest) {
+    // 自检用哪个计算、期望值多少,**由插件提供** —— Core 只负责"跑一次、比一下";
+    // 垂类没有确定性计算库时 selfTestCalc 为 null,这一项直接跳过(不是错)
+    const st = selfTest;
     const r = exec(python, [path.join(repoRoot, "calc", "cli.py"), st.fn, "--args", JSON.stringify(st.args)], { cwd: repoRoot, timeoutMs: 60_000 });
     let ok = false, detail = "";
     try { const j = JSON.parse(r.stdout) as { output?: { status?: string; value?: number }; calc_version?: string }; ok = j.output?.status === "ok" && j.output?.value === st.expect; detail = `calc ${j.calc_version ?? "?"}:${st.fn} → ${j.output?.value}(期望 ${st.expect})`; } catch { detail = `calc CLI 输出不可解析(exit=${r.status};${sub(r.stderr || r.stdout)})`; }
@@ -283,16 +284,12 @@ export function runDoctor(opts: { repoRoot?: string; env?: NodeJS.ProcessEnv; ex
     } catch (e) { add({ id: "data_root", title: "数据根写权限", status: "fail", detail: `${dataRoot}:${e instanceof Error ? e.message : String(e)}`, fix: "检查目录权限;数据根内不得有符号链接" }); }
   }
 
-  // 11.5 温度计历史序列(用户数据区;只读概览:损坏 / 无效条目要出声,没有序列不是错)
-  if (!dataRootOk) add({ id: "thermo_history", title: "温度计历史序列", status: "skip", detail: "数据根边界未通过" });
+  // 11.5 垂类自己的体检项:由插件贡献,Core 只负责并进报告(原本这里直接 import 金融的温度计模块)
+  if (!dataRootOk) add({ id: "plugin_checks", title: "垂类体检项", status: "skip", detail: "数据根边界未通过" });
   else {
     try {
-      const rows = thermoLedgerOverview({ dataRoot });
-      const bad = rows.filter((r) => r.unreadable || r.dropped > 0);
-      add({ id: "thermo_history", title: "温度计历史序列", status: bad.length ? "warn" : "ok",
-        detail: rows.length ? rows.map((r) => `${r.endpoint}:${r.observations} 条 ${r.first ?? "-"}→${r.last ?? "-"}${r.unreadable ? " 🔴不可读" : ""}${r.dropped ? ` ⚠️无效 ${r.dropped}` : ""}`).join(";") : `${thermoDir({ dataRoot })} 尚无序列(首次完整运行归档后生成;或 node orchestrator/src/finance/thermo_history.ts backfill)`,
-        fix: bad.length ? "不可读的文件会在下次归档时移到 .corrupt 旁路重建;无效条目已被忽略——若是手工编辑过序列文件,按 schema 修回或删掉该条" : undefined });
-    } catch (e) { add({ id: "thermo_history", title: "温度计历史序列", status: "warn", detail: sub(e instanceof Error ? e.message : String(e)) }); }
+      for (const c of currentPlugin().doctorChecks?.({ dataRoot, repoRoot }) ?? []) add(c as never);
+    } catch (e) { add({ id: "plugin_checks", title: "垂类体检项", status: "warn", detail: sub(e instanceof Error ? e.message : String(e)) }); }
   }
 
   // 12. .gitignore

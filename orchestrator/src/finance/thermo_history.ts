@@ -35,7 +35,6 @@ import { validateFetchEnvelope } from "../schemas.ts";
 
 // **composition root**:插件在入口注册,Core 模块一律不 import 它
 // (Core 消费者靠副作用 import 硬接某个包,换垂类时靠入口 import 恢复不了 —— ESM 会缓存)。
-import "./register.ts";
 export const THERMO_DIR_REL = path.join("knowledge", "thermometers");
 export const THERMO_SCRIPT = "thermo_history";
 export const THERMO_FILE_REL = path.join("fetch", `${THERMO_SCRIPT}.json`);

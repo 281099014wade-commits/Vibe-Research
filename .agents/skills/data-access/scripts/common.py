@@ -261,9 +261,36 @@ def finish(result: dict, out_dir: Optional[str] = None) -> None:
     sys.exit({"ok": 0, "partial": 2}.get(status, 3))
 
 
+_HOME_USER_RE = re.compile(r"(/Users/|/home/|C:\\\\Users\\\\)([^/\\\\\"'\s:]+)")
+_PRIVATE_IP_RE = re.compile(r"\b(?:10(?:\.\d{1,3}){3}|192\.168(?:\.\d{1,3}){2}|172\.(?:1[6-9]|2\d|3[01])(?:\.\d{1,3}){2}|127(?:\.\d{1,3}){3})\b")
+_USERINFO_RE = re.compile(r"\b([a-z][a-z0-9+.-]*://)[^/@\s:]+:[^/@\s]*@", re.I)
+_KEY_RE = re.compile(r"\bsk-[A-Za-z0-9_-]{12,}\b")
+_EMAIL_RE = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
+
+
+def redact_text(text: str) -> str:
+    """
+    错误 / 诊断文本的脱敏。
+
+    🔴 全审 r3-P1-5 / P2-6:信封的 errors 与 extra.traceback_tail **原样进产物、并经 MCP / API 回传**。
+       实际漏过的东西:`VRA_SEC_CONTACT` 里的**真名与邮箱**(SEC 要求 UA 带联系方式,拒绝时会把它拼进
+       错误消息)、第三方 SDK traceback 里的 URL token / 代理地址 / 主目录模块路径。
+    ⚠️ 只在**写进信封时**脱敏,不改动实际请求 —— 与 core/retrieval 那次同一条纪律:
+       脱敏必须发生在副作用之后、外传之前;拿脱敏后的值去发请求会 403。
+    ⚠️ 纵深防御,不是安全边界:自由文本里的敏感信息枚举不干净。
+    """
+    if not text:
+        return text
+    out = _USERINFO_RE.sub(r"\1[REDACTED_USERINFO]@", text)
+    out = _KEY_RE.sub("[REDACTED_KEY]", out)
+    out = _EMAIL_RE.sub("[REDACTED_EMAIL]", out)
+    out = _HOME_USER_RE.sub(r"\1[USER]", out)
+    return _PRIVATE_IP_RE.sub("[PRIVATE_IP]", out)
+
+
 def record_error(result: dict, source: str, endpoint: str, err: Exception) -> None:
     result["errors"].append({"source": source, "endpoint": endpoint,
-                             "error": f"{type(err).__name__}: {str(err)[:200]}", "at": now_iso()})
+                             "error": redact_text(f"{type(err).__name__}: {str(err)[:200]}"), "at": now_iso()})
 
 
 def parse_symbol_or_exit(symbol: str, script: str, out_dir: Optional[str] = None) -> tuple[str, str]:

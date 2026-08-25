@@ -5,6 +5,7 @@
  */
 import fs from "node:fs";
 import path from "node:path";
+import { currentPlugin } from "./plugin.ts";
 
 export type ScopeKind = "core" | "full";
 export type StageLevel = "required" | "optional";
@@ -53,12 +54,19 @@ export function loadRegistry(repoRoot: string): Registry | null {
   if (!fs.existsSync(p)) return null;
   const reg = JSON.parse(fs.readFileSync(p, "utf8")) as Registry;
   if (!reg || typeof reg.version !== "string" || !Array.isArray(reg.endpoints)) throw new Error(`注册表结构非法:${p}`);
+  const stageNames = [...currentPlugin().stages];
   const seen = new Set<string>();
   for (const e of reg.endpoints) {
     if (!e?.id || !e.module || !e.function || !Array.isArray(e.market)) throw new Error(`注册表端点缺字段(id/module/function/market):${JSON.stringify(e).slice(0, 120)}`);
     if (seen.has(e.id)) throw new Error(`注册表端点 id 重复:${e.id}`);
     seen.add(e.id);
-    for (const [st, lvl] of Object.entries(e.stages ?? {})) if (lvl !== "required" && lvl !== "optional") throw new Error(`端点 ${e.id} 阶段 ${st} 的级别非法:${String(lvl)}`);
+    for (const [st, lvl] of Object.entries(e.stages ?? {})) {
+      if (lvl !== "required" && lvl !== "optional") throw new Error(`端点 ${e.id} 阶段 ${st} 的级别非法:${String(lvl)}`);
+      // 🔴 阶段名也要校验:`buildStagePlan` 用 `includes(st)` 静默跳过未知阶段 ——
+      //    拼错一个字母(或插件改名后注册表没跟上),这个端点就**永远不会被执行**,
+      //    而运行照样 complete、没有 warning、没有 skip 事件(全审 r2-P1-4)。
+      if (!stageNames.includes(st)) throw new Error(`端点 ${e.id} 挂在不存在的阶段 ${st} 上(插件声明的阶段:${stageNames.join(" / ")});拼错的阶段名会让这个端点永远不执行`);
+    }
     // 产业温度计端点按标签门控,未命中会被整体跳过 → 只能是 optional(required 会被 validator 判"未执行")
     if (Array.isArray(e.industry_tags) && e.industry_tags.length && Object.values(e.stages ?? {}).includes("required")) throw new Error(`端点 ${e.id} 带 industry_tags 却是 required:按产业标签门控的端点只能 optional`);
     if (e.history_fields !== undefined && !(Array.isArray(e.history_fields) && e.history_fields.length > 0 && e.history_fields.every((x) => typeof x === "string" && /^[a-z0-9_]{1,80}$/.test(x)))) throw new Error(`端点 ${e.id} 的 history_fields 非法:须为非空的小写字段名数组`);
@@ -66,13 +74,9 @@ export function loadRegistry(repoRoot: string): Registry | null {
   return reg;
 }
 
-/** 运行市场 → 注册表市场区域:SH/SZ/BJ/CN/空(由脚本按代码归一) → CN;US;HK;其它一律拒绝(绝不猜市场) */
-export function regionOf(market: string): "CN" | "US" | "HK" {
-  const m = (market || "").toUpperCase();
-  if (m === "US") return "US";
-  if (m === "HK") return "HK";
-  if (m === "" || m === "SH" || m === "SZ" || m === "BJ" || m === "CN") return "CN";
-  throw new Error(`未知市场 ${market}(只接受 SH/SZ/BJ/CN/US/HK 或空)`);
+/** 运行市场 → 注册表端点作用域标签。映射本身是垂类知识,由契约给(Plugin.marketRegion);未知取值抛错,绝不猜 */
+export function regionOf(market: string): string {
+  return currentPlugin().marketRegion(market);
 }
 
 /** 阶段计划:按注册表顺序;core 只含 legacy;full 含所有启用且市场匹配的端点 */

@@ -79,8 +79,17 @@ export function mergeEvidence(fetch: Record<string, FetchEnvelope>): { evidence:
   for (const script of Object.keys(fetch).sort()) {
     for (const e of fetch[script].evidence ?? []) {
       const prev = byId.get(e.id);
-      if (!prev) byId.set(e.id, e);
-      else if (JSON.stringify(prev.value) !== JSON.stringify(e.value)) idConflicts.push(`${e.id} (${e.field}) 同 id 值不一致:${JSON.stringify(prev.value)} vs ${JSON.stringify(e.value)}`);
+      if (!prev) { byId.set(e.id, e); continue; }
+      // 🔴 只比 value 会**静默折叠**两条不同的事实(全审 r1-P2-6):证据 id 的生成口径不含
+      //    market / unit / currency / adjustment,于是同一字段值为 10 的两条(口径 A 与口径 B)
+      //    会拿到同一个 id、数值又相同 ⇒ 不报冲突、丢掉后来那条。「1 元」与「1 亿元」同理。
+      //    ⚠️ 不做整条逐字段相等:`fetched_at` / `raw_ref` / `note` 在多个信封里携带同一证据时
+      //    本来就会不同,那样会把正常情况全判成冲突。只比**决定事实语义**的字段 ——
+      //    与冲突检测自己用的事实键口径对齐。
+      const factKey = (x: EvidenceItem) => JSON.stringify([x.symbol, x.market, x.field, x.period, x.unit, x.currency, x.adjustment, x.record_key ?? null, x.value]);
+      if (factKey(prev) !== factKey(e)) {
+        idConflicts.push(`${e.id} (${e.field}) 同 id 但事实不一致:${factKey(prev)} vs ${factKey(e)}`);
+      }
     }
   }
   return { evidence: [...byId.values()], idConflicts };

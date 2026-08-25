@@ -14,11 +14,9 @@ import { readJsonIfExists } from "./fsutil.ts";
 import { recallKnowledge, type KnowledgeRecall } from "./knowledge.ts";
 import { loadProductConfig } from "./productConfig.ts";
 import { REGISTRY_REL, loadRegistry, type EndpointDef } from "./registry.ts";
+import { currentPlugin } from "./plugin.ts";
 
 
-// **composition root**:插件在入口注册,Core 模块一律不 import 它
-// (Core 消费者靠副作用 import 硬接某个包,换垂类时靠入口 import 恢复不了 —— ESM 会缓存)。
-import "./finance/register.ts";
 export interface ServiceContext { repoRoot: string; dataRoot: string; python: string; node: string; providerEnvKey: string | null }
 
 export function repoRootFromHere(): string {
@@ -40,7 +38,8 @@ export class ServiceError extends Error {
 
 const SYMBOL_RE = /^[A-Za-z0-9.\-]{1,12}$/;       // 主体代码:数字 / 字母 / 点 / 连字符,长度 1-12
 const SYMBOL_FREE_RE = /^[^\s\/\\]{1,40}$/;       // raw 类端点(关键词 / 指数)允许中文,但不允许路径分隔符与空白
-const MARKETS = new Set(["", "SH", "SZ", "BJ", "CN", "US", "HK"]);
+/** 合法市场取值由契约给(Plugin.evidence.markets)+ 空串;Core 不写死垂类代码(全审 r4) */
+const markets = (): Set<string> => new Set(["", ...currentPlugin().evidence.markets]);
 const SESSION_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 /** 注册表未声明、但 mapper 通用读取的参数键 */
 const GLOBAL_ARG_KEYS = new Set(["limit", "date"]);
@@ -59,7 +58,7 @@ export function assertSymbol(symbol: unknown, kind: string | undefined): string 
 
 export function assertMarket(market: unknown): string {
   const m = String(market ?? "").toUpperCase();
-  if (!MARKETS.has(m)) throw new ServiceError("bad_market", `非法市场 ${show(market)}(只接受 SH/SZ/BJ/CN/US/HK 或空)`);
+  if (!markets().has(m)) throw new ServiceError("bad_market", `非法市场 ${show(market)}(只接受 SH/SZ/BJ/CN/US/HK 或空)`);
   return m;
 }
 

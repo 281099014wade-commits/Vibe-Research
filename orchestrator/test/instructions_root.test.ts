@@ -287,6 +287,8 @@ test("根路径不许含空白:带空格的数据根会让执行层拒掉所有�
   const spaced = path.join(tmp("vra-ir-sp-"), "Application Support", "VibeResearch");
   fs.mkdirSync(spaced, { recursive: true });
   assert.throws(() => makeConfig({ symbol: "1", repoRoot: app, dataRoot: spaced, python: "false" }), /不能含空格/);
+  // 根目录本身也不行:dataRoot="/" 时钩子边界会拼成 "//",每次调用都判不一致并放行(全审 r1-P3-7)
+  assert.throws(() => makeConfig({ symbol: "1", repoRoot: app, dataRoot: "/", python: "false" }), /不能是文件系统根目录/);
   // 无空格照常
   assert.doesNotThrow(() => makeConfig({ symbol: "1", repoRoot: app, dataRoot: tmp("vra-ir-ok-"), python: "false" }));
 });

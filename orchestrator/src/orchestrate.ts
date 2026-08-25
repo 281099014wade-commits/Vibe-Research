@@ -13,19 +13,16 @@ import { ledgerSummary, loadLedgerFromDisk, type FetchExecutor, type Ledger } fr
 import { PLAN_REL, planFileOf } from "./registry.ts";
 import { archiveRun, recallKnowledge, shouldRecall } from "./knowledge.ts";
 import { FixtureError, fixtureFreshness, readFixture, seedRunDir, verifyFixture, type FixtureManifest } from "./fixture.ts";
-import { appendThermoLedger } from "./finance/thermo_history.ts";
-import { INDUSTRY_FILE_REL, applyIndustryGate, detectIndustryTags, loadIndustryTags, writeIndustryFile } from "./finance/industry.ts";
-import { CHOKE_FILE_REL, loadChokeTable, scanChokepoints, writeChokeFile } from "./finance/chokepoint.ts";
 import { writeViewer } from "./viewer.ts";
 import { atomicWrite, ensureDirs, nowIso, sha256File, sha256Text, writeJson } from "./fsutil.ts";
 import { complianceGate, normalizeReportStatus } from "./gate.ts";
 import { HOOK_CONTEXT_REL, clearStopFailed, installHooks, readHookLog, readStopFailed, summarizeHookLog, uninstallHooks, writeHookContext } from "./hooks.ts";
 import { installSkillsIsolation } from "./skills_isolation.ts";
 import { CONSTITUTION_FILENAME, ensureInstructionsRoot } from "./instructions_root.ts";
+import { currentPlugin } from "./plugin.ts";
 import { rawHashes, writeConflicts, writeManifest, writeMergedArtifacts, type Manifest, type StageRecord } from "./merge.ts";
 import type { AgentRunner } from "./runner.ts";
 import { turnReplySchema, validateManifest } from "./schemas.ts";
-import { buildGateRewritePrompt, buildStagePrompt } from "./finance/stages.ts";
 import { allCriticalFetchFailed, checkAgentTrace, deriveQuoteDecision, deriveStageStatus, loadRun, summarizeErrorsForAgent, validateFetchIntegrity,
   validateFinalArtifacts, validateProtectedArtifacts, validateReport, validateStage, type AgentTrace, type CalcVerifier, type ProtectedExpectation,
   type ValidationResult } from "./validator.ts";
@@ -44,13 +41,30 @@ export function exitCodeFor(status: RunStatus): number {
 }
 
 export function deriveRunStatus(input: { stages: StageRecord[]; gateOk: boolean; reportExists: boolean; quoteDecision: string | null;
-  criticalAllFailed: boolean; partial: boolean }): RunStatus {
+  criticalAllFailed: boolean; partial: boolean; hooksIneffective?: string | null }): RunStatus {
   const c: RunStatus[] = [];
   if (!input.reportExists || !input.gateOk || input.criticalAllFailed || input.stages.some((s) => s.status === "failed")) c.push("failed");
   if (input.quoteDecision === "stale") c.push("stale");
+  // 🔴 执行层没生效 ⇒ 不许宣称 complete(全审 r2-P1-1)。
+  //    钩子 enabled + installed 却**零调用**、或每次调用都报上下文错误,都意味着 PreToolUse / Stop
+  //    那层纪律**全程没起作用**,而产出看起来完全正常 —— 我真跑分离安装时就撞到过
+  //    (5 次调用 5 次 error、阶段照样 complete,只有 manifest 里一个计数字段写着 5)。
+  //    ⚠️ 判 incomplete 不判 failed:研究结果本身可能是好的,只是少了一层保证,该让人知道。
+  if (input.hooksIneffective) c.push("incomplete");
   if (input.partial || input.stages.some((s) => s.status !== "complete")) c.push("incomplete");
   c.push("complete");
   return STATUS_PRIORITY.find((s) => c.includes(s)) ?? "incomplete";
+}
+
+/**
+ * 钩子这一层到底有没有真的在跑。返回 null = 正常;返回字符串 = 失效原因。
+ * ⚠️ 只在**真有 agent 轮次**时判:`--no-agent` 与纯播种运行本来就没有 turn,零调用是正常的。
+ */
+export function hooksIneffectiveReason(input: { enabled: boolean; installed: boolean; agentTurns: number; invocations: number; errors: number }): string | null {
+  if (!input.enabled || !input.installed || input.agentTurns === 0) return null;
+  if (input.invocations === 0) return "钩子已安装但整轮零调用:执行层(PreToolUse / Stop)实际没有生效";
+  if (input.errors > 0) return `钩子有 ${input.errors} 次调用报错(多为上下文与 cwd 不一致):这些调用一律放行,该层纪律在这些点上没生效`;
+  return null;
 }
 
 function sh(cmd: string, args: string[], cwd: string): string {
@@ -161,6 +175,7 @@ export async function runResearch(cfg: RunConfig, deps: Deps, onlyStages?: Stage
 }
 
 async function runResearchInner(cfg: RunConfig, deps: Deps, onlyStages?: Stage[]): Promise<RunResult> {
+  const REPORT_STAGE = currentPlugin().reportStage as Stage;   // 报告阶段由契约给,Core 不写死阶段名(全审 r4)
   const { runner } = deps;
   const sdk = deps.sdkVersion();
   let calcVersion = "unknown";
@@ -231,6 +246,8 @@ async function runResearchInner(cfg: RunConfig, deps: Deps, onlyStages?: Stage[]
     writeHookContext(cfg, stage, attempt);
     protectedFiles[HOOK_CONTEXT_REL] = sha256File(path.join(cfg.runDir, HOOK_CONTEXT_REL));
   };
+  /** 真实跑过的 agent 轮次数:零调用只有在**有过 turn** 时才算钩子失效(--no-agent / 纯播种运行本来就没有) */
+  let agentTurns = 0;
   /** turn 后汇总钩子日志(诊断,不可信);Stop 钩子留下终止标记 → 该 turn 视为失败(缺产物不许正常收工) */
   const hookSummary = (stage: Stage, attempt: number): string | null => {
     if (!cfg.hooksEnabled) return null;
@@ -283,26 +300,22 @@ async function runResearchInner(cfg: RunConfig, deps: Deps, onlyStages?: Stage[]
   for (const stage of stagesToRun) {
     const scripts = cfg.stagePlan[stage];
     let toFetch = [...scripts.required, ...scripts.optional];
-    // 产业温度计门控(第 13 层):带 industry_tags 的端点只在主体命中对应产业标签时才取;判定用首阶段已落盘的分类信封
-    if (toFetch.some((id) => (cfg.endpoints[id]?.industry_tags ?? []).length)) {
-      const table = loadIndustryTags(cfg.repoRoot);  // 缺失 / 损坏直接抛 → 运行失败出声,不当"零标签"
-      const det = detectIndustryTags(cfg.runDir, table);
-      const gate = applyIndustryGate(toFetch, cfg.endpoints, det.tags);
-      toFetch = gate.included;
-      const f = writeIndustryFile(cfg.runDir, table, det, gate);
-      protectedFiles[INDUSTRY_FILE_REL] = sha256File(path.join(cfg.runDir, INDUSTRY_FILE_REL));
-      manifest.industry_tags = { tags: f.tags, matched: f.matched, skipped: f.skipped, signals: f.signals };
-      runner.log(stage, "industry.gate", { tags: f.tags, matched: f.matched, skipped: f.skipped, signals: f.signals });
-    }
+    // 取数前的垂类门控:Core 无条件调用一次,由插件决定实际跑哪些端点(原本这段直接 import 金融模块)。
+    toFetch = currentPlugin().beforeFetch?.({
+      stage, runDir: cfg.runDir, repoRoot: cfg.repoRoot, planned: toFetch, endpoints: cfg.endpoints,
+      protect: (rel) => { protectedFiles[rel] = sha256File(path.join(cfg.runDir, rel)); },
+      record: (key, value) => { (manifest as unknown as Record<string, unknown>)[key] = value; },
+      log: (type, payload) => runner.log(stage, type, payload),
+    }) ?? toFetch;
     deps.fetchRunner(cfg, stage, toFetch, (t, p) => runner.log(stage, t, p), ledger);
-    // 卡口事件分类(确定性,不拉新数据):risk 阶段取数后扫公司自己的公告 / 新闻信封 → fetch/_chokepoints.json(受保护)
-    if (stage === "risk" || stage === "report") {
-      const cp = scanChokepoints(cfg.runDir, loadChokeTable(cfg.repoRoot));
-      writeChokeFile(cfg.runDir, cp);
-      protectedFiles[CHOKE_FILE_REL] = sha256File(path.join(cfg.runDir, CHOKE_FILE_REL));
-      manifest.chokepoints = { scanned: cp.scanned, hits: cp.hits.length, by_category: cp.by_category };
-      runner.log(stage, "chokepoint.scan", { scanned: cp.scanned, hits: cp.hits.length, by_category: cp.by_category, scripts: cp.scripts });
-    }
+    // 取数后的垂类后处理:Core **无条件调用一次**,由插件自己决定管不管这个阶段、做什么。
+    // 🔴 这里原本写死 `if (stage === "risk" || stage === "report")` 并直接 import 金融模块(全审 r4-P1)。
+    currentPlugin().afterFetch?.({
+      stage, runDir: cfg.runDir, repoRoot: cfg.repoRoot,
+      protect: (rel) => { protectedFiles[rel] = sha256File(path.join(cfg.runDir, rel)); },
+      record: (key, value) => { (manifest as unknown as Record<string, unknown>)[key] = value; },
+      log: (type, payload) => runner.log(stage, type, payload),
+    });
     // 取数后即刷新权威冲突集(risk / report 阶段的 agent 读 conflicts.json;validator 核对 risk.source_conflicts 覆盖)
     const conf = writeConflicts(cfg);
     protectedFiles["conflicts.json"] = sha256File(path.join(cfg.runDir, "conflicts.json"));
@@ -316,9 +329,10 @@ async function runResearchInner(cfg: RunConfig, deps: Deps, onlyStages?: Stage[]
       rec.attempts = attempt + 1;
       turnFailed = false;
       if (!cfg.noAgent) {
-        const prompt = buildStagePrompt(stage, cfg, { attempt, validatorErrors: lastErrors, stageStatusSoFar: statusSoFar, ledger });
+        const prompt = currentPlugin().buildStagePrompt(stage, cfg, { attempt, validatorErrors: lastErrors, stageStatusSoFar: statusSoFar, ledger });
         console.error(`[orchestrator] stage=${stage} attempt=${attempt + 1}/${maxAttempts}`);
         hookCtx(stage, attempt + 1);
+        agentTurns += 1;
         const turn = await runner.runTurn(stage, attempt + 1, prompt, turnReplySchema);
         const stopFail = hookSummary(stage, attempt + 1);
         trace.commands.push(...turn.commands.map((c) => c.command));
@@ -355,55 +369,59 @@ async function runResearchInner(cfg: RunConfig, deps: Deps, onlyStages?: Stage[]
 
   // 合规 gate:报告阶段 validator 已含 gate;这里是独立的最终一道闸 + 重写循环(重写后全量复验 report 阶段)
   const reportPath = path.join(cfg.runDir, "report.md");
-  if (cfg.scenario?.force_gate_hit && fs.existsSync(reportPath) && stagesToRun.includes("report")) {
+  if (cfg.scenario?.force_gate_hit && fs.existsSync(reportPath) && stagesToRun.includes(REPORT_STAGE)) {
     // 故障注入(仅硬测试):确定性制造一份命中 gate 的报告,验证"gate 拦截 → 重写 → 复验"链路本身(与 agent 是否自律无关)
     fs.appendFileSync(reportPath, "\n- 【硬测试注入文本】建议建仓并设目标价(此行用于触发合规 gate,重写时必须删除)\n");
-    runner.log("report", "scenario.gate_hit_injected", {});
+    runner.log(REPORT_STAGE, "scenario.gate_hit_injected", {});
   }
   let gate = complianceGate(fs.existsSync(reportPath) ? fs.readFileSync(reportPath, "utf8") : "");
-  const reportRec = stageRecords.find((s) => s.stage === "report");
+  const reportRec = stageRecords.find((s) => s.stage === REPORT_STAGE);
   let rewriteTurnFailed = false;
-  if (!gate.ok) runner.log("report", "gate.failed", { hits: gate.hits, will_rewrite: cfg.gateRetries > 0 && !cfg.noAgent && !!reportRec });
+  if (!gate.ok) runner.log(REPORT_STAGE, "gate.failed", { hits: gate.hits, will_rewrite: cfg.gateRetries > 0 && !cfg.noAgent && !!reportRec });
   for (let i = 0; i < cfg.gateRetries && !gate.ok && !cfg.noAgent && reportRec; i++) {
-    runner.log("report", "gate.rewrite", { attempt: i + 1, hits: gate.hits });
-    hookCtx("report", 100 + i);
-    const turn = await runner.runTurn("report", 100 + i, buildGateRewritePrompt(cfg, gate.hits), turnReplySchema);
-    const stopFail = hookSummary("report", 100 + i);
+    runner.log(REPORT_STAGE, "gate.rewrite", { attempt: i + 1, hits: gate.hits });
+    hookCtx(REPORT_STAGE, 100 + i);
+    agentTurns += 1;
+    const turn = await runner.runTurn(REPORT_STAGE, 100 + i, currentPlugin().buildRewritePrompt(cfg, gate.hits), turnReplySchema);
+    const stopFail = hookSummary(REPORT_STAGE, 100 + i);
     trace.commands.push(...turn.commands.map((c) => c.command));
     trace.fileChanges.push(...turn.fileChanges);
     rewriteTurnFailed = !!turn.failed || !!stopFail;
     if (stopFail) reportRec.errors.push(stopFail);
     if (turn.failed) reportRec.errors.push(`gate 重写 turn 失败:${turn.failed}`);
     const run = loadRun(cfg.runDir, ledger, planOf);
-    let rv = validateStage("report", run);
+    let rv = validateStage(REPORT_STAGE, run);
     const behaviour = checkAgentTrace(trace, cfg);
     if (!behaviour.ok) rv = { ok: false, errors: [...rv.errors, ...behaviour.errors], warnings: rv.warnings };
     const prot = validateProtectedArtifacts(cfg.runDir, protectedNow());
     if (!prot.ok) rv = { ok: false, errors: [...rv.errors, ...prot.errors], warnings: rv.warnings };
     if (rv.ok && run.calcs.length) { const v = deps.verify(cfg, run); if (!v.ok) rv = v; }
-    runner.log("report", "validator", { attempt: 100 + i + 1, ok: rv.ok, errors: rv.errors, warnings: rv.warnings });
+    runner.log(REPORT_STAGE, "validator", { attempt: 100 + i + 1, ok: rv.ok, errors: rv.errors, warnings: rv.warnings });
     reportRec.validator_ok = rv.ok;
     reportRec.errors = [...reportRec.errors.filter((e) => e.startsWith("gate 重写 turn 失败")), ...rv.errors];
     reportRec.attempts += 1;
     gate = complianceGate(fs.existsSync(reportPath) ? fs.readFileSync(reportPath, "utf8") : "");
-    if (!gate.ok) runner.log("report", "gate.failed", { hits: gate.hits, after_rewrite: i + 1 });
+    if (!gate.ok) runner.log(REPORT_STAGE, "gate.failed", { hits: gate.hits, after_rewrite: i + 1 });
   }
-  if (reportRec) reportRec.status = deriveStageStatus("report", reportRec.validator_ok && gate.ok, rewriteTurnFailed, loadRun(cfg.runDir, ledger, planOf));
+  if (reportRec) reportRec.status = deriveStageStatus(REPORT_STAGE, reportRec.validator_ok && gate.ok, rewriteTurnFailed, loadRun(cfg.runDir, ledger, planOf));
 
   // 最终状态(确定性)
   const finalRun = loadRun(cfg.runDir, ledger, planOf);
   const qd = deriveQuoteDecision(finalRun);
-  const reportInScope = stagesToRun.includes("report");
+  const reportInScope = stagesToRun.includes(REPORT_STAGE);
+  const hooksIneffective = hooksIneffectiveReason({ enabled: cfg.hooksEnabled, installed: manifest.hooks.installed, agentTurns,
+    invocations: manifest.hooks.invocations, errors: manifest.hooks.errors });
+  if (hooksIneffective) runner.log("orchestrator", "hooks.ineffective", { reason: hooksIneffective, agent_turns: agentTurns, invocations: manifest.hooks.invocations, errors: manifest.hooks.errors });
   let status = deriveRunStatus({ stages: stageRecords, gateOk: gate.ok, reportExists: reportInScope ? !!finalRun.report : true, quoteDecision: qd.decision,
-    criticalAllFailed: allCriticalFetchFailed(finalRun) && stagesToRun.includes("estimates"), partial });
+    criticalAllFailed: allCriticalFetchFailed(finalRun), partial, hooksIneffective });
 
   // 报告首行状态归一(不动正文),并核对一致性;最终校验失败 → 进入状态推导(产物不齐 / 校验不过不得宣称完成)
   const finalErrors: string[] = [];
   if (finalRun.report) {
     const n = normalizeReportStatus(finalRun.report, status);
-    if (n.changed) { atomicWrite(reportPath, n.text); runner.log("report", "report.status_normalized", { to: status }); }
+    if (n.changed) { atomicWrite(reportPath, n.text); runner.log(REPORT_STAGE, "report.status_normalized", { to: status }); }
     const rv = validateReport(loadRun(cfg.runDir, ledger, planOf), status);
-    if (!rv.ok) { runner.log("report", "report.final_check", { errors: rv.errors }); finalErrors.push(...rv.errors.map((e) => `report:${e}`)); }
+    if (!rv.ok) { runner.log(REPORT_STAGE, "report.final_check", { errors: rv.errors }); finalErrors.push(...rv.errors.map((e) => `report:${e}`)); }
   }
   const integrity = validateFetchIntegrity(loadRun(cfg.runDir, ledger, planOf));
   if (!integrity.ok) finalErrors.push(...integrity.errors.map((e) => `fetch:${e}`));
@@ -450,14 +468,18 @@ async function runResearchInner(cfg: RunConfig, deps: Deps, onlyStages?: Stage[]
     const viewRun = loadRun(cfg.runDir, ledger, planOf);
     try { const v = writeViewer(cfg, viewRun, manifest); manifest.viewer = { html: v.htmlPath, appendix: v.appendixPath }; runner.log("orchestrator", "viewer.written", { html: v.htmlPath, appendix: v.appendixPath }); }
     catch (e) { runner.log("orchestrator", "viewer.failed", { error: e instanceof Error ? e.message : String(e) }); }
-    if (stagesToRun.includes("report") && status !== "failed" && !isTestScenario) {
+    if (stagesToRun.includes(REPORT_STAGE) && status !== "failed" && !isTestScenario) {
       try { const a = archiveRun(cfg, viewRun, manifest); manifest.knowledge_archived = { latest: a.latestFile, run_file: a.runFile, gate_removed: a.gateRemoved.length }; runner.log("orchestrator", "knowledge.archived", { latest: a.latestFile, gate_removed: a.gateRemoved.length }); }
       catch (e) { runner.log("orchestrator", "knowledge.archive_failed", { error: e instanceof Error ? e.message : String(e) }); }
     } else runner.log("orchestrator", "knowledge.archive_skipped", { reason: isTestScenario ? "测试场景运行(scenario)含合成数据,不归档" : status === "failed" ? "运行 failed 不归档" : "未含 report 阶段" });
     // 温度计历史序列:与知识层同规矩(scenario / failed 不写),但不要求 report 阶段——risk 阶段已校验的温度计信封就够
     manifest.thermo_archived = null;
     if (status !== "failed" && !isTestScenario) {
-      try { const t = appendThermoLedger(cfg, ledger, (ty, p) => runner.log("orchestrator", ty, p)); manifest.thermo_archived = { endpoints: t.endpoints, appended: t.appended, skipped: t.skipped.length, corrupt_moved: t.corrupt_moved.length }; }
+      try {
+        currentPlugin().afterRun?.({ cfg, ledger,
+          record: (key, value) => { (manifest as unknown as Record<string, unknown>)[key] = value; },
+          log: (ty, p) => runner.log("orchestrator", ty, p) });
+      }
       catch (e) { runner.log("orchestrator", "thermo_history.archive_failed", { error: e instanceof Error ? e.message : String(e) }); }
     } else runner.log("orchestrator", "thermo_history.archive_skipped", { reason: isTestScenario ? "测试场景运行(scenario)含合成数据" : "运行 failed" });
   }

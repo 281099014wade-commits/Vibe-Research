@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
+import { GATE_REGEXPS, gateStagePatterns } from "../src/config.ts";
+import { stageComplianceErrors } from "../src/validator.ts";
 import { complianceGate, missingSections, normalizeReportStatus, referencedIds, reportStatusToken } from "../src/gate.ts";
 import { reportSections } from "../src/config.ts";
 
@@ -44,4 +46,65 @@ test("报告状态标记读取与归一", () => {
   assert.equal(reportStatusToken(n.text), "incomplete");
   assert.equal(normalizeReportStatus(n.text, "incomplete").changed, false);
   assert.equal(reportStatusToken("# 无状态"), null);
+});
+
+test("gate 正则规则:审计列出的绕过说法必须全拦,真实语料零误报(全审 r3-P1-1)", () => {
+  // 旧实现(26 个中文子串)对这些**一条都拦不住**
+  const BYPASS = ["当前价格值得买入", "可考虑介入", "建议继续持有", "跌破 50 元离场",
+    "合理价格看至 120 元", "BUY, target price RMB 120", "风险收益比合适,可以参与",
+    "评级:买入", "越跌越买", "go long here", "stop-loss 设在 80", "long position 建立"];
+  for (const s of BYPASS) assert.equal(complianceGate(s).ok, false, `应被拦:${s}`);
+
+  // 🔴 反向同样重要:这些是**合法内容**,拦了就等于拒掉正确的产出
+  const LEGIT = [
+    "报告不含投资动作建议、目标价、止损位或价格锚。",     // 免责声明里"提到"这些词
+    "近一年机构报告 38 篇,其中买入评级 31 篇、增持评级 7 篇;仅作覆盖分布线索。",
+    "四锚为 PE 情景,不是目标价或合理价。",
+    "margin_financing_buy | 6191310178 | 元",              // 字段名里的 buy 不算
+  ];
+  for (const s of LEGIT) {
+    const r = complianceGate(s, [], [], GATE_REGEXPS);   // 只看正则规则(子串表另有豁免机制)
+    assert.equal(r.ok, true, `不该被正则拦:${s} → ${JSON.stringify(r.hits)}`);
+  }
+});
+
+test("阶段产物 gate:词表收窄后既拦得住建议、又放得过免责与统计(全审 r3-P1-2)", () => {
+  const sub = gateStagePatterns();
+  assert.ok(!sub.includes("目标价") && !sub.includes("止损"), "会出现在'提及'语境的词必须去掉");
+  assert.ok(sub.includes("建仓") && sub.includes("建议买"), "明确动作词必须留着");
+  for (const bad of ["建议买入,目标价 120 元", "可考虑介入", "跌破 80 元止损", "建议建仓 30%"]) {
+    assert.equal(complianceGate(bad, sub, [], GATE_REGEXPS).ok, false, `应被拦:${bad}`);
+  }
+  for (const okText of ["报告不含投资动作建议、目标价、止损位。", "买入评级 31 篇、增持评级 7 篇"]) {
+    assert.equal(complianceGate(okText, sub, [], GATE_REGEXPS).ok, true, `不该被拦:${okText}`);
+  }
+  // 递归收集:建议藏在嵌套字段里也要抓到,而 id 类字段不参与
+  const rec = { stage: "risk", summary: "正常", gaps: [{ operation: "x", reason_code: "y", detail: "建议加仓至 30%" }],
+    evidence_ids: ["ev-abc123"], counter_evidence: [{ claim: "ok", counter: "ok" }] };
+  const errs = stageComplianceErrors("risk", rec);
+  assert.ok(errs.length >= 1, JSON.stringify(errs));  // 同一行可能同时命中子串与正则,条数不写死
+  assert.match(errs[0], /命中投资动作建议/);
+  assert.equal(stageComplianceErrors("risk", { ...rec, gaps: [] }).length, 0);
+});
+
+test("referencedIds 必须整 token 匹配:伪前缀引用不算(全审 r1-P2-4)", () => {
+  const real = "ev-abcdef123456";
+  // 有边界:正常引用认得出
+  assert.deepEqual(referencedIds(`营收 99 亿元(${real})`).evidence, [real]);
+  // 无边界时 `ev-abcdef123456xyz` 会截出合法前缀,伪引用就能满足"引用存在"
+  assert.deepEqual(referencedIds(`营收 99 亿元(${real}xyz)`).evidence, []);
+  assert.deepEqual(referencedIds(`x${real}`).evidence, []);
+  const c = "calc-0123456789abcdef";
+  assert.deepEqual(referencedIds(`(${c})`).calculation, [c]);
+  assert.deepEqual(referencedIds(`(${c}00)`).calculation, []);
+});
+
+test("gaps[].operation 也是自由文本,必须过 gate(修复复审 r1-P1-3)", () => {
+  // 🔴 它曾被当成"标识符"排除在 gate 之外 —— 但 schema 上只要求非空字符串,
+  //    建议写进去就能绕过阶段 gate 并原样进附录。判断标准是**取值受不受控**,不是名字像不像标识符。
+  const rec = { stage: "risk", summary: "正常", gaps: [{ operation: "建议买入并建仓三成", reason_code: "source_failed", detail: "x" }] };
+  assert.ok(stageComplianceErrors("risk", rec).length >= 1, JSON.stringify(stageComplianceErrors("risk", rec)));
+  // reason_code 是受控枚举,不该被当自由文本
+  const ok = { stage: "risk", summary: "正常", gaps: [{ operation: "fetch_x", reason_code: "source_failed", detail: "x" }] };
+  assert.deepEqual(stageComplianceErrors("risk", ok), []);
 });

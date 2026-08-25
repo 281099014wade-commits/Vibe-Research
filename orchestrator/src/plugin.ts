@@ -82,6 +82,50 @@ export interface ArchiveSection {
   readonly blocks: readonly ArchiveBlock[];
 }
 
+/** 传给阶段校验器的只读上下文:Core 不知道插件要看什么,把该阶段的产物与运行视图整个给它 */
+export interface StageValidationContext {
+  readonly stage: string;
+  /** 该阶段的产物(已过 schema) */
+  readonly output: Record<string, unknown>;
+  /** 运行视图(证据 / 计算 / 冲突 / 取数信封等);类型在 validator.ts,这里用结构化最小面避免成环 */
+  readonly run: {
+    readonly evidenceIds: ReadonlySet<string>;
+    readonly calcIds: ReadonlySet<string>;
+    readonly conflicts: readonly { field: string; period: string; values: { id: string }[] }[];
+    readonly fetch: Readonly<Record<string, { status?: string; extra?: unknown; evidence?: unknown[] }>>;
+    readonly runDir: string;
+  };
+}
+
+/**
+ * 取数之后的垂类后处理上下文。Core 每个阶段取数后**无条件调用一次**,由插件自己决定管不管这个阶段 ——
+ * 🔴 原本是 Core 里写死 `if (stage === "risk" || stage === "report")` 再直接 import 金融模块(全审 r4-P1)。
+ */
+export interface AfterFetchContext {
+  readonly stage: string;
+  readonly runDir: string;
+  readonly repoRoot: string;
+  /** 登记受保护产物(Core 负责算 sha256 并纳入认证) */
+  protect(relPath: string): void;
+  /** 往 manifest 写摘要字段。⚠️ 键必须已在 manifest schema 里声明,新垂类要加自己的键得同步改 schema */
+  record(key: string, value: unknown): void;
+  log(type: string, payload: Record<string, unknown>): void;
+}
+
+/** 取数前门控的上下文;返回值 = 本阶段实际要跑的脚本清单 */
+export interface BeforeFetchContext {
+  readonly stage: string;
+  readonly runDir: string;
+  readonly repoRoot: string;
+  /** 计划里本阶段要跑的脚本 */
+  readonly planned: readonly string[];
+  /** 注册表端点定义(垂类可能要看端点上的标签来决定跑不跑) */
+  readonly endpoints: Readonly<Record<string, unknown>>;
+  protect(relPath: string): void;
+  record(key: string, value: unknown): void;
+  log(type: string, payload: Record<string, unknown>): void;
+}
+
 export interface Plugin {
   /** 插件标识,用于报错与诊断("finance" / "restaurant") */
   readonly id: string;
@@ -115,6 +159,37 @@ export interface Plugin {
   /** 标准列的显示名(批量汇总表头);键必须**恰好**覆盖 standardColumns */
   readonly standardColumnLabels: Readonly<Record<string, string>>;
   /** 标准列住在哪个阶段的产物里(批量汇总从该阶段的 stages/<stage>.json 读) */
+  /**
+   * **报告阶段**的名字。Core 用它判"本次是否要出报告""哪个阶段产物是报告"等。
+   * 🔴 原本 Core 里直接写字面量 `"report"`(全审 r4):换个垂类若把终端阶段叫别的名字,
+   * 这些判断会全部落空 —— 而且**纯净度词表看不见英文阶段名**。
+   */
+  /**
+   * **阶段专属的产物字段**:每个阶段在通用骨架之外还要求什么字段(JSON Schema 片段 + 必填名单)。
+   *
+   * 🔴 全审 r4-P1:原本整段写死在 Core 的 `schemas.ts` 里 —— `if (stage === "profile")` 挂
+   * 报价判定与不可替代性标签、`if (stage === "risk")` 挂反证与裁决点。换个垂类时:
+   * 它的第一个阶段拿不到该有的字段约束,而契约又强制它提供这些金融概念。
+   * ⚠️ 纯净度词表**看不见**这类耦合(英文标识符 + 枚举值),所以它一直是"0 分"下的隐性欠债。
+   *
+   * Core 只做合并:通用骨架 + 这里声明的 properties / required,不认识任何具体字段名。
+   */
+  readonly stageSchemas: Readonly<Record<string, { readonly properties: Readonly<Record<string, unknown>>; readonly required: readonly string[] }>>;
+  /**
+   * **阶段专属的校验**:通用骨架校验之外,该阶段还要核对什么(返回错误清单)。
+   * 🔴 全审 r4-P2:原本 `if (stage === "profile")` 核报价新鲜度、`if (stage === "risk")` 核冲突与反证 ——
+   * 换个垂类时它自己的阶段即使声明了同类字段也**不会被核验**,而 Core 又会对不存在的阶段名空跑。
+   * Core 只负责调用,不认识任何具体字段。
+   */
+  /** 取数后的垂类后处理(可选)。Core 只负责在每个阶段调用一次,不知道它做什么 */
+  readonly afterFetch?: (ctx: AfterFetchContext) => void;
+  readonly stageValidators: Readonly<Record<string, (ctx: StageValidationContext) => string[]>>;
+  readonly reportStage: string;
+  /**
+   * **扩展议题的来源阶段**:报告里的扩展章节从哪个阶段产物的 topics 生成。
+   * 🔴 原本固定读 `run.stage("risk")` —— 换垂类后那些发现落在别的阶段,报告会**静默漏掉全部扩展章节**。
+   */
+  readonly topicsSourceStage: string;
   readonly standardColumnsStage: string;
   /** 口径角色(语义槽位按角色解析上游计算) */
   readonly roles: readonly string[];
@@ -130,6 +205,34 @@ export interface Plugin {
   //! 参数用 `unknown`:`RunView` 定义在 `validator.ts`,而本文件不能 import validator
   //! (会成 plugin → validator → plugin 的环)。调用处再收窄类型。
   readonly quoteDecision: (run: unknown) => { decision: string; reason: string };
+  /**
+   * **运行市场 → 注册表端点的作用域标签**。注册表用 `market: ["CN","US",…]` 标端点适用范围,
+   * 而运行时给的市场可能更细(沪深北都归 CN)。这套映射是垂类知识。
+   * 🔴 原本写死在 Core 的 `registry.ts`(全审 r4-P1);未知取值必须**抛错,绝不猜**。
+   */
+  readonly marketRegion: (market: string) => string;
+  /**
+   * **阶段提示词**与**合规重写提示词**的构造。这是垂类最核心的知识(每个阶段要 agent 做什么)。
+   * 🔴 原本 Core 主循环直接 import 金融的 `stages.ts`(全审 r4-P1)——
+   * 换个垂类时它的第一个阶段仍会拿到金融阶段提示词。
+   */
+  readonly buildStagePrompt: (stage: string, cfg: unknown, opts: unknown) => string;
+  readonly buildRewritePrompt: (cfg: unknown, hits: unknown) => string;
+  /**
+   * **取数前的门控**(可选):按垂类标签决定这一阶段实际要跑哪些端点。
+   * 🔴 原本 Core 直接 import 金融的 `industry.ts` —— 换垂类时它每次取数都会走产业标签逻辑。
+   */
+  readonly beforeFetch?: (ctx: BeforeFetchContext) => string[];
+  /**
+   * **取数执行完之后**对信封做的垂类加工(可选)。与 `afterFetch` 的区别:这个在取数执行器内部、
+   * 拿得到本次账本;`afterFetch` 在编排器层面。
+   * 🔴 原本 Core 的 `fetchrun.ts` 直接 import 金融的温度计历史(全审 r4-P1)。
+   */
+  readonly transformFetch?: (cfg: unknown, stage: string, ledger: unknown, log: (t: string, p: Record<string, unknown>) => void) => void;
+  /** **归档后**的垂类处理(可选)。原本 Core 直接 import 金融的温度计账本归档。 */
+  readonly afterRun?: (ctx: { cfg: unknown; ledger: unknown; record(key: string, value: unknown): void; log(type: string, payload: Record<string, unknown>): void }) => void;
+  /** 垂类自己的**体检项**(可选):doctor 会把它们并进报告。原本 doctor 直接 import 金融模块。 */
+  readonly doctorChecks?: (ctx: { dataRoot: string; repoRoot: string }) => { id: string; title: string; status: string; detail: string; fix?: string }[];
   /** 基准期(语义槽位里 `fy: "T"` 的那个 T)怎么定 —— 金融看当前财年,别的垂类可能完全不同 */
   readonly baselinePeriod: (run: unknown) => number | null;
   /** 阶段的显示名(进度条 / 日志)。同时是**白名单** —— 只有这些阶段允许被拼进文件路径 */
@@ -139,7 +242,8 @@ export interface Plugin {
   /** 变化提醒默认盯的证据字段 */
   readonly alertFields: readonly string[];
   /** doctor 的 calc 自检:跑哪个函数、什么入参、期望什么值 */
-  readonly selfTestCalc: { readonly fn: string; readonly args: Readonly<Record<string, unknown>>; readonly expect: number };
+  /** doctor 的自检计算;垂类若没有确定性计算库,给 `null`(第二垂类验收装置打红) */
+  readonly selfTestCalc: { readonly fn: string; readonly args: Readonly<Record<string, unknown>>; readonly expect: number } | null;
   /**
    * 研究档案的模板 —— 章节标题、每节放什么、哪几节在截断时优先保留,全随垂类变。
    * Core 只提供**通用渲染器**与截断 / 脱敏 / 合规 gate。
@@ -209,7 +313,7 @@ export const PLUGIN_SCHEMA = {
   type: "object",
   additionalProperties: false,          // 多写一个字段 = 拼错了名字,当场说,别静默忽略
   required: ["id", "stages", "stageScripts", "criticalScripts", "stageCalcs", "extraTopics", "reportSections",
-    "evidence", "standardColumns", "standardColumnLabels", "standardColumnsStage", "roles", "semanticSlots",
+    "evidence", "standardColumns", "standardColumnLabels", "standardColumnsStage", "stageSchemas", "stageValidators", "reportStage", "topicsSourceStage", "roles", "semanticSlots",
     "stageLabels", "topicSections", "alertFields", "selfTestCalc", "archive"],
   properties: {
     id: NONBLANK,
@@ -221,7 +325,9 @@ export const PLUGIN_SCHEMA = {
     criticalScripts: strArray(),
     stageCalcs: mapOf(strArray()),
     // 空数组会让该阶段的 extra_findings schema 变成"枚举为空",任何议题都过不了 —— 那是静默失效
-    extraTopics: mapOf(strArray({ minItems: 1 })),
+    // ⚠️ 不要求 minItems ≥ 1:阶段完全可以没有扩展议题(餐饮的"菜单"阶段就没有)。
+    //    金融包每个阶段恰好都有,于是这条一直没暴露 —— 第二个垂类的验收装置当场打红(全审 r4)。
+    extraTopics: mapOf(strArray()),
     reportSections: strArray({ minItems: 1, uniqueItems: true }),
     evidence: {
       type: "object", additionalProperties: false,
@@ -236,11 +342,18 @@ export const PLUGIN_SCHEMA = {
     standardColumns: strArray({ uniqueItems: true }),
     standardColumnLabels: mapOf(NONBLANK),
     standardColumnsStage: STAGE_NAME,
-    roles: strArray({ minItems: 1, uniqueItems: true }),
+    stageValidators: mapOf({ }),
+    stageSchemas: mapOf({ type: "object", additionalProperties: false, required: ["properties", "required"],
+      properties: { properties: { type: "object" }, required: strArray() } }),
+    reportStage: STAGE_NAME,
+    topicsSourceStage: STAGE_NAME,
+    // ⚠️ 允许为空:垂类可以没有"计算角色"这个概念(第二垂类验收装置打红)
+    roles: strArray({ uniqueItems: true }),
     semanticSlots: mapOf({ type: "array" }),
     stageLabels: mapOf(NONBLANK),
     topicSections: mapOf(NONBLANK),
-    alertFields: strArray({ minItems: 1 }),
+    // ⚠️ 允许为空:垂类可以没有预警字段
+    alertFields: strArray(),
     archive: {
       type: "object", additionalProperties: false, required: ["validDays", "maxFacts", "sections"],
       properties: {
@@ -261,15 +374,22 @@ export const PLUGIN_SCHEMA = {
         },
       },
     },
+    // ⚠️ 允许 null:垂类可以没有确定性计算库,那就没有自检计算(第二垂类验收装置打红)。
+    // 🔴 不能写成 `type: ["object","null"]` —— ajv 的 `required` 对 null 仍会判缺字段(实测)。
     selfTestCalc: {
-      type: "object", additionalProperties: false, required: ["fn", "args", "expect"],
-      properties: {
-        fn: NONBLANK,
-        args: { type: "object" },
-        // 🔴 **ajv v8 的 `type: "number"` 接受 NaN 与 Infinity**(实测 8.20.0,ajv v6 才带有限性检查)。
-        //    所以有限性要在 `checkRelations` 里手查 —— 别照旧版行为想当然。
-        expect: { type: "number" },
-      },
+      oneOf: [
+        { type: "null" },
+        {
+          type: "object", additionalProperties: false, required: ["fn", "args", "expect"],
+          properties: {
+            fn: NONBLANK,
+            args: { type: "object" },
+            // 🔴 **ajv v8 的 `type: "number"` 接受 NaN 与 Infinity**(实测 8.20.0,ajv v6 才带有限性检查)。
+            //    所以有限性要在 `checkRelations` 里手查 —— 别照旧版行为想当然。
+            expect: { type: "number" },
+          },
+        },
+      ],
     },
   },
 } as const;
@@ -404,12 +524,16 @@ interface Decl {
   standardColumns: string[];
   standardColumnLabels: Record<string, string>;
   standardColumnsStage: string;
+  stageSchemas: Record<string, { properties: Record<string, unknown>; required: string[] }>;
+  stageValidators: Record<string, (ctx: StageValidationContext) => string[]>;
+  reportStage: string;
+  topicsSourceStage: string;
   roles: string[];
   semanticSlots: Record<string, unknown[]>;
   stageLabels: Record<string, string>;
   topicSections: Record<string, string>;
   alertFields: string[];
-  selfTestCalc: { fn: string; args: Record<string, unknown>; expect: number };
+  selfTestCalc: { fn: string; args: Record<string, unknown>; expect: number } | null;
   archive: Plugin["archive"];
 }
 
@@ -426,8 +550,40 @@ function checkRelations(d: Decl): void {
     if (!d.stages.includes(k)) throw new Error(`Plugin.semanticSlots 出现了不存在的阶段 ${k}`);
   }
   if (!d.stages.includes(d.standardColumnsStage)) throw new Error(`Plugin.standardColumnsStage ${JSON.stringify(d.standardColumnsStage)} 不是已声明的阶段`);
+  for (const key of ["stageSchemas", "stageValidators"] as const) {
+    for (const st of Object.keys(d[key])) {
+      if (!d.stages.includes(st)) throw new Error(`Plugin.${key} 出现了不存在的阶段 ${st}`);
+    }
+  }
+  // 🔴 值也要校验,否则是典型的"注册期能过、运行期才炸"(修复复审 r1-P1-1 / P1-2):
+  //    · stageValidators 的值若不是函数 → 跑到该阶段才 TypeError;
+  //    · stageSchemas 的内层若不是合法 JSON Schema → 首次编译该阶段 schema 时整轮异常退出。
+  for (const [st, fn] of Object.entries(d.stageValidators)) {
+    if (typeof fn !== "function") throw new Error(`Plugin.stageValidators.${st} 必须是函数,收到 ${typeof fn}`);
+  }
+  for (const [st, ext] of Object.entries(d.stageSchemas)) {
+    // ⚠️ 明确禁止 `$ref`:注册期只能拿扩展这一块当根去编译,而运行期的根是**合并后**的完整 schema
+    //    ⇒ 指向核心字段的 `$ref`(如 `#/properties/summary`)在注册期解析不了、会被**误拒**;
+    //    要真支持就得在注册期复刻合并逻辑,而合并的另一半此时还没注册完(修复复审 r2-P2-1)。
+    //    跨扩展边界引用本身也脆:核心骨架一改,插件的引用就悄悄指向别处。
+    if (JSON.stringify(ext.properties).includes('"$ref"')) {
+      throw new Error(`Plugin.stageSchemas.${st} 不支持 $ref —— 注册期无法解析跨核心骨架的引用,请把片段展开写全`);
+    }
+    try {
+      new AjvCtor({ allErrors: true, strict: false }).compile({ type: "object", properties: ext.properties, required: [...ext.required] });
+    } catch (e) {
+      throw new Error(`Plugin.stageSchemas.${st} 不是合法 JSON Schema(注册期编译失败,否则会拖到首次运行才炸):${e instanceof Error ? e.message : String(e)}`);
+    }
+    for (const k of ext.required) {
+      if (!(k in ext.properties)) throw new Error(`Plugin.stageSchemas.${st}.required 里的 ${k} 没有对应的 properties 定义`);
+    }
+  }
+  for (const k of ["reportStage", "topicsSourceStage"] as const) {
+    if (!d.stages.includes(d[k])) throw new Error(`Plugin.${k} ${JSON.stringify(d[k])} 不是已声明的阶段`);
+  }
+  if (d.stages[d.stages.length - 1] !== d.reportStage) throw new Error(`Plugin.reportStage 必须是 stages 的最后一个阶段(报告要在别的阶段都跑完之后出):stages 末位是 ${JSON.stringify(d.stages[d.stages.length - 1])}`);
   // ⚠️ 这条严格说属于**形状层**,只因 ajv v8 收 NaN / Infinity 才落在这里(见 PLUGIN_SCHEMA 的说明)
-  if (!Number.isFinite(d.selfTestCalc.expect)) throw new Error("Plugin.selfTestCalc.expect 必须是有限数(不能是 NaN / Infinity)");
+  if (d.selfTestCalc && !Number.isFinite(d.selfTestCalc.expect)) throw new Error("Plugin.selfTestCalc.expect 必须是有限数(不能是 NaN / Infinity)");
 
   for (const key of ["marketWideCodes", "marketWideOnlyCodes"] as const) {
     for (const c of d.evidence[key]) if (!d.evidence.markets.includes(c)) throw new Error(`Plugin.evidence.${key} 里的 ${c} 不在 markets 中`);
@@ -508,6 +664,20 @@ function register(plugin: Plugin): void {
   // 🔴 函数插槽也**只读一次**:先校验 `plugin.quoteDecision` 再从 `plugin.quoteDecision` 建快照,
   //    带 getter 的插件就能第一次给函数、第二次给字符串(Codex ajv-r1 P1)。
   const quoteDecision = plugin.quoteDecision;
+  const marketRegion = plugin.marketRegion;
+  const transformFetch = plugin.transformFetch;
+  if (transformFetch !== undefined && typeof transformFetch !== "function") throw new Error("Plugin.transformFetch 必须是函数或不提供");
+  const afterRun = plugin.afterRun;
+  if (afterRun !== undefined && typeof afterRun !== "function") throw new Error("Plugin.afterRun 必须是函数或不提供");
+  const doctorChecks = plugin.doctorChecks;
+  if (doctorChecks !== undefined && typeof doctorChecks !== "function") throw new Error("Plugin.doctorChecks 必须是函数或不提供");
+  const beforeFetch = plugin.beforeFetch;
+  if (beforeFetch !== undefined && typeof beforeFetch !== "function") throw new Error("Plugin.beforeFetch 必须是函数或不提供");
+  const buildRewritePrompt = plugin.buildRewritePrompt;
+  const buildStagePrompt = plugin.buildStagePrompt;
+  // 可选函数插槽:同样**只读一次**,且不进 ajv 投影(那里 additionalProperties:false,函数过不去)
+  const afterFetch = plugin.afterFetch;
+  if (afterFetch !== undefined && typeof afterFetch !== "function") throw new Error("Plugin.afterFetch 必须是函数或不提供");
   const baselinePeriod = plugin.baselinePeriod;
   const lexicon = plugin.lexicon;
   // 🔴 `stageScripts` 也只读一次:多余字段检查与 decl 投影**共用这一份**。
@@ -529,21 +699,26 @@ function register(plugin: Plugin): void {
     standardColumns: cp(plugin.standardColumns),
     standardColumnLabels: tableOnce("standardColumnLabels", plugin.standardColumnLabels),
     standardColumnsStage: plugin.standardColumnsStage,
+    stageSchemas: deepFrozen("stageSchemas", plugin.stageSchemas),
+    stageValidators: tableOnce("stageValidators", plugin.stageValidators),
+    reportStage: plugin.reportStage,
+    topicsSourceStage: plugin.topicsSourceStage,
     roles: cp(plugin.roles),
     semanticSlots: tableOnce("semanticSlots", plugin.semanticSlots),
     stageLabels: tableOnce("stageLabels", plugin.stageLabels),
     topicSections: tableOnce("topicSections", plugin.topicSections),
     alertFields: cp(plugin.alertFields),
-    selfTestCalc: { fn: st?.fn, args: st?.args, expect: st?.expect },
+    // null(垂类没有确定性计算库)要原样传给 ajv —— 拆成 { fn: undefined } 会被判成"缺字段的对象"
+    selfTestCalc: st == null ? null : { fn: st.fn, args: st.args, expect: st.expect },
     // 档案模板整棵**深拷贝一次**:它是纯声明数据,后面既要校验又要进快照
     archive: deepFrozen("archive", plugin.archive),
   };
   // 函数插槽 JSON Schema 表达不了,单独查(放在 ajv 之前:类型错时先给出更直白的信息)
-  for (const [k, fn] of [["quoteDecision", quoteDecision], ["baselinePeriod", baselinePeriod]] as const) {
+  for (const [k, fn] of [["quoteDecision", quoteDecision], ["baselinePeriod", baselinePeriod], ["marketRegion", marketRegion], ["buildStagePrompt", buildStagePrompt], ["buildRewritePrompt", buildRewritePrompt]] as const) {
     if (typeof fn !== "function") throw new Error(`Plugin.${k} 必须是函数`);
   }
   // ⓪ 原对象的键集:ajv 只看得到投影后的 `decl`,多余字段得在这里比
-  assertNoExtraKeys("", plugin, [...(PLUGIN_SCHEMA.required as readonly string[]), "quoteDecision", "baselinePeriod", "lexicon"]);
+  assertNoExtraKeys("", plugin, [...(PLUGIN_SCHEMA.required as readonly string[]), "quoteDecision", "baselinePeriod", "marketRegion", "buildStagePrompt", "buildRewritePrompt", "lexicon", "afterFetch", "beforeFetch", "transformFetch", "afterRun", "doctorChecks"]);
   assertNoExtraKeys("evidence", ev, ["markets", "adjustments", "marketWideCodes", "marketWideOnlyCodes"]);
   assertNoExtraKeys("selfTestCalc", st, ["fn", "args", "expect"]);
   assertNoExtraKeys("archive", decl.archive, ["validDays", "maxFacts", "sections"]);
@@ -561,7 +736,7 @@ function register(plugin: Plugin): void {
   checkRelations(d);
   // ③ 自由形状字段的深层 JSON 性 + 深冻结
   const slots = mapValues(d.semanticSlots, (v, k) => deepFrozen(`semanticSlots.${k}`, v)) as Record<string, readonly unknown[]>;
-  const args = deepFrozen("selfTestCalc.args", d.selfTestCalc.args);
+  const args = d.selfTestCalc ? deepFrozen("selfTestCalc.args", d.selfTestCalc.args) : null;
 
   const draft = {
     id: d.id,
@@ -582,14 +757,26 @@ function register(plugin: Plugin): void {
     standardColumns: Object.freeze([...d.standardColumns]),
     standardColumnLabels: Object.freeze({ ...d.standardColumnLabels }),
     standardColumnsStage: d.standardColumnsStage,
+    stageSchemas: d.stageSchemas,
+    stageValidators: d.stageValidators,
+    afterFetch,
+    reportStage: d.reportStage,
+    topicsSourceStage: d.topicsSourceStage,
     roles: Object.freeze([...d.roles]),
     semanticSlots: Object.freeze(slots),
     quoteDecision,
+    marketRegion,
+    buildStagePrompt,
+    buildRewritePrompt,
+    beforeFetch,
+    transformFetch,
+    afterRun,
+    doctorChecks,
     baselinePeriod,
     stageLabels: Object.freeze({ ...d.stageLabels }),
     topicSections: Object.freeze({ ...d.topicSections }),
     alertFields: Object.freeze([...d.alertFields]),
-    selfTestCalc: Object.freeze({ fn: d.selfTestCalc.fn, args, expect: d.selfTestCalc.expect }),
+    selfTestCalc: d.selfTestCalc ? Object.freeze({ fn: d.selfTestCalc.fn, args: args as Record<string, unknown>, expect: d.selfTestCalc.expect }) : null,
     archive: d.archive,          // 摄入时已 deepFrozen
   };
 

@@ -7,7 +7,7 @@ import fs from "node:fs";
 import path from "node:path";
 
 import { currentPlugin } from "./plugin.ts";
-import { HOME_PREFIXES, packCriticalScripts, reportSections, stageCalcs, stageScripts, fetchEnv,
+import { GATE_REGEXPS, HOME_PREFIXES, gateStagePatterns, packCriticalScripts, reportSections, stageCalcs, stageScripts, fetchEnv,
   type RunConfig, type RunStatus, type Stage, type StageStatus } from "./config.ts";
 import { loadLedgerFromDisk, type Ledger } from "./fetchrun.ts";
 import { PLAN_REL, type EndpointDef, type PlanFile, type StagePlan } from "./registry.ts";
@@ -195,14 +195,31 @@ export function validateStage(stage: Stage, run: RunView): ValidationResult {
   // 1. 必需 / 可选取数脚本:必须由编排器执行过(账本),文件存在;status=failed 是合法数据缺口(不是校验错误)
   const scripts = run.plan[stage];
   const failedRequired: string[] = [];
+  const partialRequired: string[] = [];
   for (const s of scripts.required) {
     const env = run.fetch[s];
     if (!env || !run.ledger[s]) { errors.push(`必需取数 ${s} 未被编排器执行(无 fetch/${s}.json 或无账本)`); continue; }
     if (env.status === "failed") failedRequired.push(s);
-    if (env.status === "partial") warnings.push(`fetch/${s}.json status=partial:${String((env.extra as Record<string, unknown>)?.degraded ?? "")}`);
+    // 🔴 partial = 降级,必须**出声并落到缺口**,否则报告可以完全不提而阶段照样 complete(全审 r2-P1-2)。
+    //    ⚠️ 不直接判 failed:partial 本来就是"拿到一部分"的合法契约状态;
+    //    要求它出现在 gaps 里 —— 与"必需取数 failed 必须有对应 gap"同一口径。
+    if (env.status === "partial") {
+      const x = (env.extra ?? {}) as Record<string, unknown>;
+      warnings.push(`fetch/${s}.json status=partial:${String(x.degraded ?? "")}`);
+      // ⚠️ 只有端点**自己声明了丢了什么**(extra.degraded / missing)才要求进缺口。
+      //    实测 25 个真实 partial 信封里 24 个带 degraded;唯一不带的是"行情陈旧",
+      //    而它已经由 quote_decision 单独披露了 —— 再要一条 gap 是冗余,会把正常运行判红。
+      // 顶层 `missing` 也是信封契约的一部分(FetchEnvelope.missing),只查 extra 会漏(修复复审 r1-P2-5)
+      const declared = x.degraded || x.missing || (Array.isArray((env as { missing?: unknown[] }).missing) && (env as { missing?: unknown[] }).missing!.length);
+      if (declared) partialRequired.push(s);
+    }
   }
   const gateSkipped = new Set(readJsonIfExists<{ skipped?: string[] }>(path.join(run.runDir, "fetch", "_industry.json"))?.skipped ?? []);
-  for (const s of scripts.optional) if (!run.fetch[s] && !gateSkipped.has(s)) warnings.push(`可选取数 ${s} 无产物`);
+  for (const s of scripts.optional) {
+    if (!run.fetch[s] && !gateSkipped.has(s)) { warnings.push(`可选取数 ${s} 无产物`); continue; }
+    // "存在但 failed"旧实现连 warning 都没有 —— 只查了文件在不在(全审 r2-P2-5)
+    if (run.fetch[s]?.status === "failed") warnings.push(`可选取数 ${s} status=failed(降级;报告应在数据缺口里提及)`);
+  }
 
   // 2. 阶段 JSON
   const so = run.stage(stage);
@@ -224,10 +241,45 @@ export function validateStage(stage: Stage, run: RunView): ValidationResult {
   for (const s of failedRequired) {
     if (!(so.gaps ?? []).some((g) => g.operation === s)) errors.push(`必需取数 ${s} 失败,但 gaps 没有 operation=${s} 的条目`);
   }
+  for (const s of partialRequired) {
+    if (!(so.gaps ?? []).some((g) => g.operation === s)) errors.push(`必需取数 ${s} 是 partial(降级),但 gaps 没有 operation=${s} 的条目:降级必须在缺口里出声`);
+  }
 
   // 3. 必需 calc:该阶段 calculation_ids 中有该函数的记录,或 gaps 以 operation 精确说明
-  const stageCalcFns = new Set(run.calcs.filter((c) => c.record && so.calculation_ids?.includes(c.record.calculation_id ?? "")).map((c) => c.record!.function));
-  const gapOps = new Set((so.gaps ?? []).map((g) => g.operation));
+  // 🔴 只收**没有失败**的:`output.status="error"` 的记录也带着合法 calculation_id 与函数名,
+  //    旧实现只看"函数名出现过" ⇒「必须计算」退化成「存在一条同名调用记录」(全审 r1-P1-1)。
+  //    ⚠️ `not_meaningful` 仍算完成 —— 那是**确定的结论**(如分母为负导致该比率无意义),不是失败;
+  //    一刀切要求 ok 会误拒这类正当结果。
+  const stageCalcRecs = run.calcs.filter((c) => c.record && so.calculation_ids?.includes(c.record.calculation_id ?? ""));
+  const stageCalcFns = new Set(stageCalcRecs.map((c) => c.record!.function));
+  // 🔴 `output.status="error"` 的记录也带着合法 calculation_id 与函数名。旧实现只看"函数名出现过"
+  //    ⇒「必须计算」退化成「存在一条同名调用记录」(全审 r1-P1-1)。
+  //    ⚠️ `not_meaningful` 仍算完成 —— 那是**确定的结论**(如分母为负导致该比率无意义),不是失败。
+  //    ⚠️ 没写进 gaps 才报错(failed);如实写了就放行,由 deriveStageStatus 的 gap 分支降为 incomplete ——
+  //       "失败已披露"与"失败被藏起来"是两回事,不能都判 failed(修复复审 r1-P2-6)。
+  // gap 的 operation 允许带**角色**后缀(`quarterize:<角色>`),比的时候剥掉 —— 与 deriveStageStatus 同一口径
+  const gapOps = new Set((so.gaps ?? []).map((g) => gapOperationKey(g.operation)));
+  for (const c of stageCalcRecs.filter((c) => c.record?.output?.status === "error")) {
+    const fn = c.record!.function;
+    // ⚠️ 能解析出角色时,要求**同角色**的 gap:否则「角色 A 缺失」那条 gap 会把
+    //    「角色 B 计算出错」一起盖过去,失败就藏在不相干的缺口后面了(修复复审 r2-P2-2)。
+    //    解析不出角色(不是角色型计算)才退回裸函数名匹配。
+    const role = roleOf(c.record!, run);
+    if (role) {
+      if (!(so.gaps ?? []).some((g) => String(g.operation) === `${fn}:${role}`)) {
+        errors.push(`必需 calc ${fn}(角色 ${role})的输出 status=error,又没写 operation=${fn}:${role} 的 gaps:修好它,或如实声明为数据缺口`);
+      }
+      continue;
+    }
+    // ⚠️ 已如实写进 gaps 的不再判错 —— 那是"失败已披露"的正常路径,应该走 incomplete 降级,
+    //    而不是 failed(修复复审 r1-P2-6:第一版无条件报错,把既有的降级路径堵死了)。
+    //    与"必需取数 failed 必须有对应 gap"完全同一口径。
+    // ⚠️ 这里**只接受严格相等**的 gap:退回裸函数名匹配的话,`forward_cagr:随便写个角色`
+    //    也能把失败盖过去(修复复审 r3-P1)。不会误拦正当写法 —— 能确定角色的已走上面那条分支。
+    if (stageCalcs(stage).includes(fn) && !(so.gaps ?? []).some((g) => String(g.operation) === fn)) {
+      errors.push(`必需 calc ${fn} 的输出 status=error(不是可用结果),又没写进 gaps:修好它,或如实声明为数据缺口`);
+    }
+  }
   for (const fn of stageCalcs(stage)) {
     if (!stageCalcFns.has(fn) && !gapOps.has(fn)) errors.push(`阶段 ${stage} 缺少 calc ${fn}:calculation_ids 里没有该函数的记录,gaps 也没有 operation=${fn}`);
   }
@@ -251,28 +303,40 @@ export function validateStage(stage: Stage, run: RunView): ValidationResult {
   errors.push(...validateCalcSlots(stage, run, so).errors);
 
   // 6. 阶段专属
-  if (stage === "profile") {
-    const d = deriveQuoteDecision(run);
-    if (d.decision !== "missing" && so.quote_decision !== d.decision)
-      errors.push(`quote_decision 应为 ${d.decision}(${d.reason}),agent 写的是 ${String(so.quote_decision)}`);
-  }
-  if (stage === "risk") {
-    type SC = { field?: string; period?: string; kind?: string; values?: { ref_id?: string }[] };
-    const listed = ((so.source_conflicts as SC[] | undefined) ?? []);
-    for (const c of run.conflicts) {
-      const entry = listed.find((x) => x.field === c.field && (x.period === c.period || !x.period));
-      if (!entry) { errors.push(`risk.source_conflicts 未覆盖权威冲突 ${c.field}@${c.period}(见 conflicts.json)`); continue; }
-      if (entry.kind !== "source") errors.push(`risk.source_conflicts ${c.field}@${c.period} 是权威冲突,kind 必须为 "source"(实际 ${String(entry.kind)})`);
-      const refs = new Set((entry.values ?? []).map((v) => v.ref_id));
-      const missing = c.values.map((v) => v.id).filter((id) => !refs.has(id));
-      if (missing.length) errors.push(`risk.source_conflicts ${c.field}@${c.period} 的 values 未列出权威冲突全部证据 id(缺 ${missing.join(",")})`);
-    }
-    for (const ce of (so.counter_evidence as { evidence_ids?: string[] }[] | undefined) ?? []) {
-      for (const id of ce.evidence_ids ?? []) if (!run.evidenceIds.has(id) && !run.calcIds.has(id)) errors.push(`risk.counter_evidence 引用了不存在的 id ${id}`);
-    }
-  }
-  if (stage === "report") errors.push(...validateReport(run).errors);
+  // 阶段专属校验由**插件贡献**(Plugin.stageValidators):Core 只负责调用,不认识任何具体字段。
+  // 🔴 这里原本是 `if (stage === "profile")` 核报价新鲜度、`if (stage === "risk")` 核冲突与反证 ——
+  //    换个垂类时它自己的阶段不会被核验,而 Core 又对不存在的阶段名空跑(全审 r4-P2)。
+  const stageValidator = currentPlugin().stageValidators[stage];
+  if (stageValidator) errors.push(...stageValidator({ stage, output: so as Record<string, unknown>, run }));
+
+  if (stage === currentPlugin().reportStage) errors.push(...validateReport(run).errors);
+  // 阶段产物的自由文本也必须过合规:旧实现只查 report,而 viewer / 附录会把整个 record 抄给调用方
+  // ⇒ 建议写进 summary / notes / gaps[].detail 就能绕过产出红线(全审 r3-P1-2)。
+  errors.push(...stageComplianceErrors(stage, so));
   return ok(errors, warnings);
+}
+
+/** 递归收集所有字符串**值**(不含键);id / 引用类字段跳过 —— 它们是标识符,不是自由文本 */
+// ⚠️ 只排除**真正受约束**的字段:id / 引用是格式化标识符,stage / status / reason_code 是枚举。
+// 🔴 `operation` 曾被误列在这里 —— 它 schema 上只要求"非空字符串",建议写进去就能绕过阶段 gate
+//    并原样进附录(修复复审 r1-P1-3)。判断标准是"这个字段的取值受不受控",不是"名字像不像标识符"。
+const NON_PROSE_KEYS = new Set(["evidence_ids", "calculation_ids", "raw_ref", "id", "calculation_id", "stage", "status", "reason_code"]);
+export function proseStrings(v: unknown, key = ""): string[] {
+  if (typeof v === "string") return NON_PROSE_KEYS.has(key) ? [] : [v];
+  if (Array.isArray(v)) return v.flatMap((x) => proseStrings(x, key));
+  if (v && typeof v === "object") return Object.entries(v as Record<string, unknown>).flatMap(([k, x]) => proseStrings(x, k));
+  return [];
+}
+
+/**
+ * 阶段产物的合规检查。
+ * ⚠️ 用的是**收窄后的**词表(`gateStagePatterns()`)+ 全部正则规则:直接套报告那份词表会拒掉
+ * 免责声明与机构评级统计这类合法内容(实测 320 个真实产物 13 处误报,收窄后 0 处)。见 config.ts。
+ * ⚠️ 刻意**按值递归**而不是枚举字段名 —— 枚举字段名会把金融字段写进 Core,而且新增字段必然漏。
+ */
+export function stageComplianceErrors(stage: string, so: unknown): string[] {
+  const g = complianceGate(proseStrings(so).join("\n"), gateStagePatterns(), [], GATE_REGEXPS);
+  return g.hits.map((h) => `阶段 ${stage} 的产物文本命中投资动作建议(${h.pattern}):${h.text.slice(0, 100)}`);
 }
 
 /**
@@ -286,6 +350,21 @@ export function validateStage(stage: Stage, run: RunView): ValidationResult {
 export type Role = string;
 /** 口径角色**由插件提供**(`Plugin.roles`) */
 const rolesOf = (): readonly string[] => currentPlugin().roles;
+
+/**
+ * 把 gap 的 `operation` 归一成"它声称覆盖的必需项"。
+ *
+ * 只有**恰好 `<函数名>:<已声明角色>` 两段**才剥掉后缀;其余一律按整串比。
+ * 🔴 两次踩同一个坑:先是任何后缀都剥(编个角色就能把失败盖过去,r3-P1),
+ *    改成"后缀须是已声明角色"后仍用 `const [fn, role] = split(":")` —— 只看前两段,
+ *    追加第三段(`forward_cagr:<真角色>:任意尾巴`)照样蒙混过关(r4-P1)。
+ *    ⇒ 判定"是不是那个东西"要拿**整体**比,不能只看前缀对不对。
+ */
+const gapOperationKey = (operation: string): string => {
+  const op = String(operation);
+  const parts = op.split(":");
+  return parts.length === 2 && rolesOf().includes(parts[1]) ? parts[0] : op;
+};
 /** 哪些 market 代表"全市场"(此时 symbol 必须是 MARKET)—— 由插件提供 */
 const marketWide = (): readonly string[] => currentPlugin().evidence.marketWideCodes;
 /** 哪些 market **只**用于全市场证据(该市场的个体用别的代码)—— 由插件提供 */
@@ -419,7 +498,7 @@ export function validateReport(run: RunView, expectedStatus?: RunStatus): Valida
   if (miss.length) errors.push(`report.md 缺少章节:${miss.join(" / ")}`);
   // 扩展章节:risk 阶段落了哪些 topic 是既成事实 → 报告必须写出对应章节并引其证据。
   // 原来这条纪律只在提示词里,实测会被静默丢掉(见 report_sections.ts 顶部)。
-  errors.push(...extraSectionErrors(run.report, requiredExtraSections(run.stage("risk"))));
+  errors.push(...extraSectionErrors(run.report, requiredExtraSections(run.stage(currentPlugin().topicsSourceStage as never))));
   // 🔴 数字忠实度:报告写出的数字必须等于**同一行所引** evidence / calc 的值。
   //    在此之前 validateReport 只查"章节在不在、id 存不存在" —— 报告可以引一个**真实的 calc-id
   //    却写另一个数字**,仍判 complete(架构审计 2026-08-24 指出的最关键缺口)。
@@ -689,11 +768,26 @@ export function deriveStageStatus(stage: Stage, validatorOk: boolean, turnFailed
   if (requiredFailed) return "incomplete";
   if (so?.status === "skipped") return "skipped";
   if (so?.status === "incomplete") return "incomplete";
-  if ((so?.gaps ?? []).some((g) => stageCalcs(stage).includes(g.operation))) return "incomplete";
+  // 🔴 gap 的 operation 允许带角色后缀(`quarterize:revenue_cum`),语义槽位校验认它;
+  //    而这里旧实现只做**裸函数名**相等比较 ⇒ 带后缀的 gap 一条都匹配不上,
+  //    必需角色计算缺失时阶段仍可 complete(全审 r2-P1-3)。取冒号前那段比。
+  const gapFn = gapOperationKey;   // 与 validateStage 同一把尺(共用函数,避免两处口径漂移)
+  if ((so?.gaps ?? []).some((g) => stageCalcs(stage).includes(gapFn(g.operation)))) return "incomplete";
+
   return "complete";
 }
 
+/**
+ * 关键脚本是否**全部执行过且全部失败**。
+ * 🔴 调用方原本靠 `stagesToRun.includes("estimates")` 来避免"局部复核时把没执行的当失败" ——
+ * 那是把金融阶段名写死在 Core 里,换个垂类这条契约承诺就失效了(全审 r1-P1-2)。
+ * 正确口径是**看关键脚本本身在不在本次作用域内**:全都没账本 = 根本没执行(不是失败)。
+ */
 export function allCriticalFetchFailed(run: RunView): boolean {
+  // 插件没声明关键脚本 ⇒ 这个判据不适用(空数组上 every() 恒为 true,不设防会把每次运行都判 failed)
+  if (!run.critical.length) return false;
+  // 有关键脚本没被执行(局部复核 / 本次作用域不含它们)⇒ "全失败"不成立,不能拿没跑过的当失败
+  if (run.critical.some((s) => !run.ledger[s])) return false;
   return run.critical.every((s) => !run.fetch[s] || run.fetch[s].status === "failed");
 }
 

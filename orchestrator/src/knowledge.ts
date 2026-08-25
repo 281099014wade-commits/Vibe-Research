@@ -13,9 +13,6 @@ import type { Manifest } from "./merge.ts";
 import type { RunView, StageOutput } from "./validator.ts";
 
 
-// **composition root**:插件在入口注册,Core 模块一律不 import 它
-// (Core 消费者靠副作用 import 硬接某个包,换垂类时靠入口 import 恢复不了 —— ESM 会缓存)。
-import "./finance/register.ts";
 import { currentPlugin, type ArchiveBlock } from "./plugin.ts";
 
 // 档案模板(有效期 / 条数上限 / 分节与区块)由插件的 archive 契约声明,见 plugin.ts;

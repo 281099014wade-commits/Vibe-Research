@@ -88,7 +88,8 @@ export function runAlerts(opts: { symbol: string; market?: string; base?: string
   const ctx = serviceContext({ repoRoot: opts.repoRoot });
   if (!/^[A-Za-z0-9.\-]{1,12}$/.test(opts.symbol)) throw new Error(`非法代码 ${opts.symbol}`);
   const market = opts.market ? String(opts.market).toUpperCase() : undefined;
-  if (market && !["SH", "SZ", "BJ", "CN", "US", "HK"].includes(market)) throw new Error(`非法市场 ${opts.market}`);
+  // 合法市场取值由契约给(Plugin.evidence.markets),Core 不写死垂类代码(全审 r4)
+  if (market && !currentPlugin().evidence.markets.includes(market)) throw new Error(`非法市场 ${opts.market}`);
   const runsRoot = path.join(ctx.dataRoot, "runs");
   const cand = pickRuns(runsRoot, opts.symbol, market);
   const next = opts.next ?? cand[cand.length - 1];

@@ -40,6 +40,32 @@ export interface AgentRunner {
 const GENERIC_KEY_RE = /\bsk-[A-Za-z0-9_-]{12,}\b/g;
 
 /** events.jsonl 写入器:每条 fsync,维护全文 sha256 摘要;已知密钥值与常见 key 形态在落盘前脱敏(纵深防御,主防线是工具环境不含密钥) */
+/**
+ * 环境类脱敏:主目录路径中的**用户名**、内网地址、`user:pass@` 形式的凭据。
+ *
+ * 🔴 全审 r3-P1-4:`redact()` 原本只替换**已知密钥值**与 `sk-…`。而 events 会经 API / MCP
+ *    回传给调用方,里面有 `run.start` 展开的整份 cfg、agent 执行的完整命令、`file_change.path`、
+ *    命令 `output_tail`、SDK 异常消息 —— **一次普通运行就把用户名、仓库根、运行目录送出去**;
+ *    命令输出里若有 `http://10.0.0.8:8080` 也原样回传。
+ *
+ * ⚠️ 刻意只替换**用户名那一段**、保留路径其余部分:全删的话事件流会失去可读性(排障要看目录结构),
+ *    而泄露面主要是"这台机器的用户是谁"。同理内网地址只替换主机部分、保留端口形态。
+ * ⚠️ 这是**纵深防御不是安全边界**:自由文本里的敏感信息不可能靠正则枚举干净
+ *    (与 core/retrieval 那次同一口径:第三方凭据只能模式匹配,所以文档不承诺"绝不回显")。
+ */
+const HOME_USER_RE = /(\/Users\/|\/home\/|C:\\\\Users\\\\)([^/\\\\"'\s:]+)/g;
+const PRIVATE_HOST_RE = /\b(?:10(?:\.\d{1,3}){3}|192\.168(?:\.\d{1,3}){2}|172\.(?:1[6-9]|2\d|3[01])(?:\.\d{1,3}){2}|127(?:\.\d{1,3}){3})\b/g;
+const USERINFO_RE = /\b([a-z][a-z0-9+.-]*:\/\/)[^/@\s:]+:[^/@\s]*@/gi;
+const INTERNAL_HOST_RE = /\b([a-z][a-z0-9+.-]*:\/\/)(localhost|[a-z0-9-]+\.(?:local|internal|lan|corp|intranet))\b/gi;
+
+export function redactEnvironment(text: string): string {
+  return text
+    .replace(USERINFO_RE, "$1[REDACTED_USERINFO]@")
+    .replace(HOME_USER_RE, "$1[USER]")
+    .replace(PRIVATE_HOST_RE, "[PRIVATE_IP]")
+    .replace(INTERNAL_HOST_RE, "$1[INTERNAL_HOST]");
+}
+
 export class EventsLog {
   private readonly hash = crypto.createHash("sha256");
   private readonly path: string;
@@ -48,7 +74,8 @@ export class EventsLog {
   redact(text: string): string {
     let out = text;
     for (const sec of this.secrets) out = out.split(sec).join("[REDACTED]");
-    return out.replace(GENERIC_KEY_RE, "[REDACTED_KEY]");
+    out = out.replace(GENERIC_KEY_RE, "[REDACTED_KEY]");
+    return redactEnvironment(out);
   }
   append(obj: unknown): void {
     const line = this.redact(JSON.stringify(obj)) + "\n";

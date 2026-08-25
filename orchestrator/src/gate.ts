@@ -2,7 +2,7 @@
  * 合规 gate(确定性后处理):最终报告命中"投资动作建议"类模式即拒绝交付(AGENTS.md §0 第 3 条;方案 §9)。
  * 纯函数:输入报告文本,输出命中清单。只有整行精确等于固定免责声明的行才豁免(防"不构成投资建议,但建议建仓")。
  */
-import { GATE_EXEMPT_LINES, GATE_PATTERNS } from "./config.ts";
+import { GATE_EXEMPT_LINES, GATE_PATTERNS, GATE_REGEXPS } from "./config.ts";
 
 export interface GateHit {
   line: number;
@@ -33,7 +33,12 @@ export function canonicalForGate(text: string): string {
   return t.replace(CJK_SEP_RE, "");
 }
 
-export function complianceGate(report: string, patterns: string[] = GATE_PATTERNS, exemptLines: string[] = GATE_EXEMPT_LINES): GateResult {
+export function complianceGate(
+  report: string,
+  patterns: string[] = GATE_PATTERNS,
+  exemptLines: string[] = GATE_EXEMPT_LINES,
+  regexps: { name: string; re: RegExp }[] = GATE_REGEXPS,
+): GateResult {
   const hits: GateHit[] = [];
   const exempt = new Set(exemptLines.map((l) => canonicalForGate(l.trim())));
   report.split(/\r?\n/).forEach((raw, i) => {
@@ -44,6 +49,11 @@ export function complianceGate(report: string, patterns: string[] = GATE_PATTERN
     for (const p of patterns) {
       if (canon.includes(p)) hits.push({ line: i + 1, pattern: p, text: line.slice(0, 160) });
     }
+    // 正则规则:子串表管不住的动作 + 语气 / 价位 / 英文(全审 r3-P1-1)。
+    // ⚠️ 一律不带 g 标志 —— 带 g 的正则 `test()` 会写 lastIndex,跨行复用同一个对象会漏判。
+    for (const { name, re } of regexps) {
+      if (re.test(canon)) hits.push({ line: i + 1, pattern: name, text: line.slice(0, 160) });
+    }
   });
   return { ok: hits.length === 0, hits };
 }
@@ -53,10 +63,16 @@ export function missingSections(report: string, sections: string[]): string[] {
   return sections.filter((s) => !new RegExp(`^#{1,3}\\s*.*${escapeRe(s)}`, "m").test(report));
 }
 
-/** 报告中引用的 ev- / calc- id */
+/**
+ * 报告中引用的 ev- / calc- id。
+ * 🔴 必须带**整 token 边界**:没有边界时 `ev-abcdef123456xyz` 会截出合法前缀 `ev-abcdef123456`,
+ * 于是"至少引用一条证据""引用的 id 存在"两项都被伪引用满足,而数字忠实度那边(边界严格)看不到这个 id、
+ * 不会去核对同行的数字 —— 报告可以带着无效引用通过(全审 r1-P2-4)。
+ * `report_sections.ts` 的 `citedIds()` 一直是严格的,这里是**同一概念的第二份实现没跟上**。
+ */
 export function referencedIds(report: string): { evidence: string[]; calculation: string[] } {
-  const ev = new Set(report.match(/ev-[0-9a-f]{6,}/g) ?? []);
-  const calc = new Set(report.match(/calc-[0-9a-f]{16}/g) ?? []);
+  const ev = new Set(report.match(/(?<![0-9A-Za-z_-])ev-[0-9a-f]{6,}(?![0-9A-Za-z_-])/g) ?? []);
+  const calc = new Set(report.match(/(?<![0-9A-Za-z_-])calc-[0-9a-f]{16}(?![0-9A-Za-z_-])/g) ?? []);
   return { evidence: [...ev], calculation: [...calc] };
 }
 

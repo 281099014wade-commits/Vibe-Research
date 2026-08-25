@@ -29,9 +29,6 @@ import fs from "node:fs";
 import path from "node:path";
 
 
-// **composition root**:插件在入口注册,Core 模块一律不 import 它
-// (Core 消费者靠副作用 import 硬接某个包,换垂类时靠入口 import 恢复不了 —— ESM 会缓存)。
-import "./finance/register.ts";
 export const FIXTURE_MANIFEST = "_fixture.json";
 /** 夹具收录的目录:fetch(含 _ledger / _plan)/ raw / calcs / stages —— loadRun 就是从这些派生证据与账本的 */
 export const FIXTURE_DIRS = ["fetch", "raw", "calcs", "stages"] as const;

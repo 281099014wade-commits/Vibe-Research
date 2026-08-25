@@ -12,12 +12,15 @@ import { test } from "node:test";
 import { stages, codexEnv, codexEnvFor, fetchEnv, makeConfig, type RunConfig, type Stage } from "../src/config.ts";
 import { saveLedger, type FetchExecutor } from "../src/fetchrun.ts";
 import { sha256File, writeJson } from "../src/fsutil.ts";
-import { deriveRunStatus, exitCodeFor, prepareRunDir, runResearch } from "../src/orchestrate.ts";
+import { hooksIneffectiveReason, deriveRunStatus, exitCodeFor, prepareRunDir, runResearch } from "../src/orchestrate.ts";
 import { CodexRunner, EventsLog, codexOptionsFor, type AgentRunner, type TurnOutcome } from "../src/runner.ts";
 import { validateManifest } from "../src/schemas.ts";
 
 
 import "../src/finance/register.ts";   // 测试文件也是入口:插件要先注册
+import { appendHookLog } from "../src/hooks.ts";
+import { loadRegistry } from "../src/registry.ts";
+import { mergeEvidence } from "../src/merge.ts";
 const TS = "2026-08-21T10:00:00+08:00";
 const ev = (id: string, field: string, value: unknown, extra: Record<string, unknown> = {}) => ({ id, symbol: "300308", market: "SZ", field, value, unit: "元", currency: "CNY",
   period: "2026-08-21", as_of: "2026-08-21", source: "tencent", endpoint: "qt", fetched_at: TS, adjustment: "none", raw_ref: null, ...extra });
@@ -89,6 +92,9 @@ class FakeRunner implements AgentRunner {
   eventsDigest(): string | null { return this.events?.digest() ?? null; }
   async runTurn(stage: Stage, attempt: number, prompt: string): Promise<TurnOutcome> {
     this.calls.push({ stage, attempt, prompt });
+    // 真引擎每个 turn 收工前会调 Stop 钩子 —— 假运行器也要模拟,否则"钩子零调用"会被
+    // 新的执行层有效性判定当成失效(全审 r2-P1-1)。这里写一条 allow,与真实 allow 路径同形。
+    if (this.cfg.hooksEnabled) appendHookLog(this.cfg.runDir, { ts: new Date().toISOString(), hook: "stop", decision: "allow" });
     this.behave(stage, attempt, this.cfg, prompt);
     return { finalResponse: "{}", usage: null, commands: [], fileChanges: [], itemCount: 0, durationMs: 1, failed: null, threadId: this.threadId };
   }
@@ -488,4 +494,56 @@ test("deriveRunStatus 优先级与退出码", () => {
   assert.equal(deriveRunStatus({ ...base, stages: ok.map((s, i) => (i === 1 ? { ...s, status: "failed" as const } : s)) }), "failed");
   assert.equal(deriveRunStatus({ ...base, stages: ok.map((s, i) => (i === 1 ? { ...s, status: "incomplete" as const } : s)), quoteDecision: "stale" }), "stale");
   assert.equal(exitCodeFor("complete"), 0); assert.equal(exitCodeFor("stale"), 2); assert.equal(exitCodeFor("failed"), 3);
+});
+
+test("执行层有效性:钩子零调用 / 全报错 → 运行不得宣称 complete(全审 r2-P1-1)", () => {
+  const base = { enabled: true, installed: true, agentTurns: 6, invocations: 5, errors: 0 };
+  assert.equal(hooksIneffectiveReason(base), null, "正常跑过就不该报");
+  assert.match(String(hooksIneffectiveReason({ ...base, invocations: 0 })), /零调用/);
+  // 🔴 我真跑分离安装时踩到的正是这个:5 次调用 5 次 error,阶段照样 complete
+  assert.match(String(hooksIneffectiveReason({ ...base, errors: 5 })), /没生效/);
+  // 没有 agent 轮次(--no-agent / 纯播种)时零调用是正常的,不许误报
+  assert.equal(hooksIneffectiveReason({ ...base, agentTurns: 0, invocations: 0 }), null);
+  assert.equal(hooksIneffectiveReason({ ...base, enabled: false, invocations: 0 }), null);
+  assert.equal(hooksIneffectiveReason({ ...base, installed: false, invocations: 0 }), null);
+
+  // 状态推导:执行层失效 → 至多 incomplete
+  const okStages = [{ stage: "profile", status: "complete" }] as never;
+  const args = { stages: okStages, gateOk: true, reportExists: true, quoteDecision: "normal", criticalAllFailed: false, partial: false };
+  assert.equal(deriveRunStatus(args), "complete");
+  assert.equal(deriveRunStatus({ ...args, hooksIneffective: "钩子零调用" }), "incomplete");
+});
+
+test("注册表:端点挂在不存在的阶段上必须当场拒绝(全审 r2-P1-4)", () => {
+  const repo = tmpRepo();
+  const regPath = path.join(repo, "datasources", "registry.json");
+  const reg = JSON.parse(fs.readFileSync(path.join(REAL_REPO, "datasources", "registry.json"), "utf8"));
+  writeJson(regPath, reg);
+  assert.doesNotThrow(() => loadRegistry(repo), "真实注册表必须能过");
+  // 拼错一个字母:旧实现会静默跳过,这个端点永远不执行而运行照样 complete
+  reg.endpoints[0].stages = { estimte: "optional" };
+  writeJson(regPath, reg);
+  assert.throws(() => loadRegistry(repo), /挂在不存在的阶段 estimte/);
+});
+
+test("证据合并:同 id 但事实不同必须报冲突,不许静默折叠(全审 r1-P2-6)", () => {
+  const base = { id: "ev-aaaaaa", symbol: "300308", market: "SZ", field: "close", value: 10,
+    unit: "元", currency: "CNY", period: "2026-08-25", as_of: "2026-08-25", source: "s", endpoint: "e",
+    fetched_at: TS, adjustment: "none", raw_ref: "raw/a.json" };
+  const envOf = (evidence: unknown[]) => ({ script: "x", symbol: "300308", market: "SZ", status: "ok",
+    fetched_at: TS, used_sources: [], evidence, extra: {}, errors: [] });
+
+  // 同一条证据在两个信封里重复携带(只有元数据不同)⇒ 正常,不该报冲突
+  const same = mergeEvidence({ a: envOf([base]) as never, b: envOf([{ ...base, fetched_at: "2026-08-25T11:00:00+08:00", raw_ref: "raw/b.json" }]) as never });
+  assert.deepEqual(same.idConflicts, []);
+  assert.equal(same.evidence.length, 1);
+
+  // 🔴 口径不同(adjustment)但数值相同:旧实现只比 value ⇒ 不报冲突、静默丢掉一条
+  const diffAdj = mergeEvidence({ a: envOf([base]) as never, b: envOf([{ ...base, adjustment: "qfq" }]) as never });
+  assert.equal(diffAdj.idConflicts.length, 1, JSON.stringify(diffAdj.idConflicts));
+  // 单位不同同理:「1 元」与「1 亿元」
+  const diffUnit = mergeEvidence({ a: envOf([base]) as never, b: envOf([{ ...base, unit: "亿元" }]) as never });
+  assert.equal(diffUnit.idConflicts.length, 1);
+  // 值不同仍然报
+  assert.equal(mergeEvidence({ a: envOf([base]) as never, b: envOf([{ ...base, value: 11 }]) as never }).idConflicts.length, 1);
 });

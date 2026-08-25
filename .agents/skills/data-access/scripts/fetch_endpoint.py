@@ -18,7 +18,7 @@ from typing import Any
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
-from common import atomic_write_json, finish, lib_versions, norm_ticker, now_iso, record_error, result_skeleton  # noqa: E402
+from common import atomic_write_json, finish, lib_versions, norm_ticker, now_iso, record_error, redact_text, result_skeleton  # noqa: E402
 from sources._http import DataNotAvailable, assert_us_ticker, capture, norm_hk  # noqa: E402
 
 REPO_ROOT = os.path.abspath(os.path.join(HERE, "..", "..", "..", ".."))
@@ -154,7 +154,7 @@ def main() -> None:
         res["extra"]["degraded"] = "该日 / 该标的无数据(非错误)"
     except Exception as e:  # noqa: BLE001
         record_error(res, ctx["source"], ctx["endpoint"], e)
-        res["extra"]["traceback_tail"] = traceback.format_exc()[-600:]
+        res["extra"]["traceback_tail"] = redact_text(traceback.format_exc()[-600:])
     res["extra"]["raw_files"] = [r.get("raw_ref") for r in ctx.get("raws", []) if r.get("raw_ref")]
     res["extra"]["provenance"] = lib_versions(*ep.get("libs", []))
     res["fetched_at"] = now_iso()

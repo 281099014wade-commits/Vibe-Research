@@ -5,8 +5,8 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { test } from "node:test";
 
-import { makeConfig } from "../src/config.ts";
-import { checkAgentTrace, deriveQuoteDecision, deriveStageStatus, loadRun, validateFetchIntegrity, validateStage } from "../src/validator.ts";
+import { packCriticalScripts, makeConfig } from "../src/config.ts";
+import { allCriticalFetchFailed, checkAgentTrace, deriveQuoteDecision, deriveStageStatus, loadRun, validateFetchIntegrity, validateStage } from "../src/validator.ts";
 import { detectSourceConflicts, mergeEvidence, rawHashes } from "../src/merge.ts";
 import { sha256File, writeJson } from "../src/fsutil.ts";
 import { validateCalcRecord, validateEvidenceItem, validateFetchEnvelope, validateStageOutput } from "../src/schemas.ts";
@@ -29,9 +29,10 @@ function envelope(script: string, status: "ok" | "partial" | "failed", evidence:
   return { script, symbol: "300308", market: "SZ", status, fetched_at: TS, primary_source: "tencent", used_sources: ["tencent"], evidence, extra, errors: [], missing: [] };
 }
 /** 写 fetch 文件并登记账本(模拟编排器执行) */
-function putFetch(d: string, script: string, status: "ok" | "partial" | "failed", evidence: unknown[], extra: Record<string, unknown> = {}) {
+function putFetch(d: string, script: string, status: "ok" | "partial" | "failed", evidence: unknown[], extra: Record<string, unknown> = {}, top: Record<string, unknown> = {}) {
   const f = path.join(d, "fetch", `${script}.json`);
-  writeJson(f, envelope(script, status, evidence, extra));
+  // top:信封**顶层**字段(如契约自带的 missing);与 extra 是两处,校验要同时看(修复复审 r1-P2-5)
+  writeJson(f, { ...envelope(script, status, evidence, extra), ...top });
   const ledger = loadLedgerFromDisk(d);
   // 假 raw:raw/fake.json 由第一个登记它的脚本"取得"(每条证据必有 raw_ref 规则)
   const rawP = path.join(d, "raw", "fake.json");
@@ -42,7 +43,7 @@ function putFetch(d: string, script: string, status: "ok" | "partial" | "failed"
 }
 const CALC_ID = "calc-0123456789abcdef";
 const CALC_ID2 = "calc-fedcba9876543210";
-function calc(fn: string, refs: { ref_type: "evidence" | "calculation"; ref_id: string }[], id = CALC_ID, status: "ok" | "not_meaningful" = "ok") {
+function calc(fn: string, refs: { ref_type: "evidence" | "calculation"; ref_id: string }[], id = CALC_ID, status: "ok" | "not_meaningful" | "error" = "ok") {
   return { calculation_id: id, function: fn, calc_version: "0.2.0", inputs: { a: 1 }, inputs_resolved: {}, inputs_refs: refs,
     output: { status, value: status === "ok" ? 1.5 : null, unit: "倍", reason: "", details: {} } };
 }
@@ -78,8 +79,9 @@ test("取数完整性:无账本 / sha 不符 / raw_ref 越界 / market-symbol �
   assert.ok(r.errors.some((e) => e.includes("market/symbol 不匹配")));
 });
 
-function profileRun(d: string, quoteExtra: Record<string, unknown>, calExtra: Record<string, unknown>, klineExtra?: Record<string, unknown>) {
-  putFetch(d, "fetch_profile", "ok", [ev("ev-aaaaa1", "total_market_cap", 11030)]);
+function profileRun(d: string, quoteExtra: Record<string, unknown>, calExtra: Record<string, unknown>, klineExtra?: Record<string, unknown>,
+                    profileOpts?: { status?: "ok" | "partial" | "failed"; extra?: Record<string, unknown>; top?: Record<string, unknown> }) {
+  putFetch(d, "fetch_profile", profileOpts?.status ?? "ok", [ev("ev-aaaaa1", "total_market_cap", 11030)], profileOpts?.extra ?? {}, profileOpts?.top ?? {});
   putFetch(d, "fetch_quote", quoteExtra.is_stale === true || quoteExtra.is_stale === "unknown" ? "partial" : "ok", [ev("ev-aaaaa2", "price", 943)], quoteExtra);
   putFetch(d, "fetch_trade_calendar", "ok", [ev("ev-aaaaa3", "last_trading_day", "2026-08-21", { market: "CN", symbol: "MARKET", currency: "n/a", adjustment: "not_applicable" })], calExtra);
   if (klineExtra) putFetch(d, "fetch_kline", "ok", [], klineExtra);
@@ -118,6 +120,18 @@ test("profile 阶段:缺账本 / 缺阶段文件 → 不过;quote_decision 与�
   writeJson(path.join(d, "stages", "profile.json"), { stage: "profile", status: "complete", summary: "ok", evidence_ids: ["ev-aaaaa1", "ev-aaaaa2"], calculation_ids: [], gaps: [], quote_decision: "stale", quote_decision_reason: "x", moat_tag: "待补" });
   r = validateStage("profile", loadRun(d));
   assert.deepEqual(r.errors, []);
+
+  // 🔴 阶段产物的自由文本必须过合规 gate:旧实现只在 report 阶段查,而 viewer / 附录会把整个
+  //    record 抄给调用方 ⇒ 建议写进 summary / gaps[].detail 就绕过了产出红线(全审 r3-P1-2)。
+  //    这条**必须走 validateStage 真实路径** —— 直接调 stageComplianceErrors 的话,
+  //    把 validateStage 里的调用删掉测试照样绿(变异测试当场证明过)。
+  const prof = JSON.parse(fs.readFileSync(path.join(d, "stages", "profile.json"), "utf8"));
+  writeJson(path.join(d, "stages", "profile.json"), { ...prof, summary: `${prof.summary} 建议逢低买入。` });
+  r = validateStage("profile", loadRun(d));
+  assert.ok(r.errors.some((e) => e.includes("命中投资动作建议")), JSON.stringify(r.errors));
+  // 免责声明式的"提及"不该被拦
+  writeJson(path.join(d, "stages", "profile.json"), { ...prof, summary: `${prof.summary} 本节不含目标价与止损位。` });
+  assert.deepEqual(validateStage("profile", loadRun(d)).errors, []);
 });
 
 test("financials 阶段:必需 calc 以 calculation_ids + operation 精确匹配;自由文本不放行;无 inputs_refs 不过", () => {
@@ -141,6 +155,58 @@ test("financials 阶段:必需 calc 以 calculation_ids + operation 精确匹配
   writeJson(path.join(d, "calcs", "03_bad.json"), { ...calc("ttm_yoy", []), calculation_id: CALC_ID2 });
   r = validateStage("financials", loadRun(d));
   assert.ok(r.errors.some((e) => e.includes("没有 inputs_refs")));
+
+  // 🔴 必需 calc 的输出是 error ⇒ 与"没算"等价,不许算作已完成(全审 r1-P1-1)。
+  //    旧实现只看"函数名出现过",于是「必须计算」退化成「存在一条同名调用记录」。
+  //    ⚠️ 这条必须走 validateStage 真实路径。
+  const d2 = tmpRun();
+  putFetch(d2, "fetch_financials", "ok", [ev("ev-bbbbb1", "net_profit_deducted_cum", 1e9)]);
+  writeJson(path.join(d2, "calcs", "01_quarterize.json"), calc("quarterize", [{ ref_type: "evidence", ref_id: "ev-bbbbb1" }], CALC_ID, "error"));
+  writeJson(path.join(d2, "stages", "financials.json"), { stage: "financials", status: "incomplete", summary: "ok", evidence_ids: ["ev-bbbbb1"], calculation_ids: [CALC_ID],
+    // ⚠️ 角色要对得上:出错的 quarterize 引用的是 net_profit_deducted_cum,gap 就得写这个角色 ——
+    //    写别的角色会把这次失败藏在不相干的缺口后面(修复复审 r2-P2-2)。
+    gaps: [gap("latest_quarter"), gap("ttm_sum"), gap("ttm_yoy"), gap("qoq"),
+      gap("quarterize:revenue_cum"), gap("quarterize:net_profit_parent_cum"), gap("quarterize:net_profit_deducted_cum")] });
+  // ⚠️ 没写进 gaps 才报错;如实写了就该放行,由状态推导降为 incomplete(修复复审 r1-P2-6):
+  //    "失败已披露"与"失败被藏起来"是两回事,不能都判 failed。
+  const r2 = validateStage("financials", loadRun(d2));
+  assert.ok(!r2.errors.some((e) => e.includes("status=error")), `如实写了 gap 就不该报错:${JSON.stringify(r2.errors)}`);
+  assert.equal(deriveStageStatus("financials", true, false, loadRun(d2)), "incomplete", "应降级而不是通过");
+  // 藏起来(把该函数的 gap 去掉)才报错
+  const hidden = JSON.parse(fs.readFileSync(path.join(d2, "stages", "financials.json"), "utf8"));
+  // 🔴 换成**别的角色**的 gap:旧实现只比裸函数名,这条就能把失败盖过去(修复复审 r2-P2-2)
+  writeJson(path.join(d2, "stages", "financials.json"), { ...hidden,
+    gaps: hidden.gaps.filter((g: { operation: string }) => g.operation !== "quarterize:net_profit_deducted_cum") });
+  assert.ok(validateStage("financials", loadRun(d2)).errors.some((e) => e.includes("status=error")), "角色对不上的 gap 不许盖过失败");
+  // 🔴 解析不出角色的退化路径也只接受**严格相等**:编个后缀不许盖过失败(修复复审 r3-P1)。
+  //    这里必须让**记录存在**(否则先被"缺少 calc"拦下,压根走不到 error 分支)且**解析不出角色**。
+  writeJson(path.join(d2, "calcs", "02_err.json"), { ...calc("ttm_yoy", [{ ref_type: "evidence", ref_id: "ev-bbbbb1" }], CALC_ID2, "error"), inputs: {} });
+  const fakeSuffix = { ...hidden, calculation_ids: [CALC_ID, CALC_ID2],
+    gaps: hidden.gaps.map((g: { operation: string }) => (g.operation === "ttm_yoy" ? { ...g, operation: "ttm_yoy:编出来的后缀" } : g)) };
+  writeJson(path.join(d2, "stages", "financials.json"), fakeSuffix);
+  const withFake = validateStage("financials", loadRun(d2));
+  assert.ok(withFake.errors.some((e) => e.includes("status=error")),
+    `带编造后缀的 gap 不该被当成已披露:${JSON.stringify(withFake.errors)}`);
+  // 写成严格相等的 gap 就放行(证明上一条不是被别的规则误拦)
+  writeJson(path.join(d2, "stages", "financials.json"), { ...fakeSuffix, gaps: hidden.gaps });
+  assert.ok(!validateStage("financials", loadRun(d2)).errors.some((e) => e.includes("status=error")),
+    "如实写 operation=ttm_yoy 的 gap 就该放行");
+  fs.rmSync(path.join(d2, "calcs", "02_err.json"));
+  // 🔴 追加第三段照样得拦:`<函数>:<真角色>:任意尾巴` —— 只看前两段就会被蒙混过关(复审 r4-P1)。
+  //    这条要落在**"缺少 calc"**那条路上(ttm_yoy 此时没有任何记录),它才是用归一化函数的地方。
+  writeJson(path.join(d2, "stages", "financials.json"), { ...hidden,
+    gaps: hidden.gaps.map((g: { operation: string }) => (g.operation === "ttm_yoy" ? { ...g, operation: "ttm_yoy:revenue_cum:任意尾巴" } : g)) });
+  assert.ok(validateStage("financials", loadRun(d2)).errors.some((e) => e.includes("缺少 calc ttm_yoy")),
+    "三段式 operation 不该被当成已覆盖必需计算");
+  // 正当的两段式(函数:已声明角色)仍要放行 —— 证明上一条不是把合法写法一起拦了
+  writeJson(path.join(d2, "stages", "financials.json"), { ...hidden,
+    gaps: hidden.gaps.map((g: { operation: string }) => (g.operation === "ttm_yoy" ? { ...g, operation: "ttm_yoy:revenue_cum" } : g)) });
+  assert.ok(!validateStage("financials", loadRun(d2)).errors.some((e) => e.includes("缺少 calc ttm_yoy")),
+    "两段式的正当写法不该被误拦");
+  writeJson(path.join(d2, "stages", "financials.json"), hidden);
+  // not_meaningful 是**确定的结论**(如分母为负),不是失败 → 不许因此判错
+  writeJson(path.join(d2, "calcs", "01_quarterize.json"), calc("quarterize", [{ ref_type: "evidence", ref_id: "ev-bbbbb1" }], CALC_ID, "not_meaningful"));
+  assert.ok(!validateStage("financials", loadRun(d2)).errors.some((e) => e.includes("status=error")));
 });
 
 test("必需取数 failed:合法缺口但阶段不得 complete,且 gaps 需 operation=脚本名", () => {
@@ -389,4 +455,41 @@ test("displayProjection / verifyCalcs:details 里结果形子对象的 display �
   const r2 = verifyCalcs(cfg, loadRun(cfg.runDir)); assert.equal(r2.ok, false); assert.match(r2.errors.join("\\n"), /结果投影不一致/);
   fs.writeFileSync(file, JSON.stringify(rec)); assert.equal(verifyCalcs(cfg, loadRun(cfg.runDir)).ok, true);
   assert.deepEqual(displayProjection({ status: "ok", value: 1, unit: "倍", reason: "", details: {} }), []);
+});
+
+test("关键脚本全失败的判据:只在**本次真的都执行过**时成立(全审 r1-P1-2)", () => {
+  const d = tmpRun();
+  // 一个关键脚本都没跑(局部复核)⇒ 不是"全失败",否则任何单阶段复核都会被判整轮 failed
+  assert.equal(allCriticalFetchFailed(loadRun(d)), false, "没执行 ≠ 失败");
+  const crit = [...packCriticalScripts()];
+  assert.ok(crit.length >= 2, "本用例要求插件至少声明两个关键脚本");
+  // 只跑了一部分 ⇒ 判据不成立
+  putFetch(d, crit[0], "failed", []);
+  assert.equal(allCriticalFetchFailed(loadRun(d)), crit.length === 1);
+  // 全部执行且全部失败 ⇒ 成立
+  for (const s of crit) putFetch(d, s, "failed", []);
+  assert.equal(allCriticalFetchFailed(loadRun(d)), true);
+  // 全部执行但有一个成功 ⇒ 不成立
+  putFetch(d, crit[0], "ok", [ev("ev-cccccc", "x", 1)]);
+  assert.equal(allCriticalFetchFailed(loadRun(d)), false);
+  // 🔴 没有关键脚本这个概念时也不成立 —— 空数组上 every() 恒为 true,不设防会把每次运行判 failed
+  const runNoCrit = { ...loadRun(d), critical: [] as string[] };
+  assert.equal(allCriticalFetchFailed(runNoCrit as never), false);
+});
+
+test("必需端点 partial:信封**顶层** missing 也算声明了降级(修复复审 r1-P2-5)", () => {
+  const cal = { session_phase: "non_trading_day", reference_quote_day: "2026-08-21", last_trading_day: "2026-08-21" };
+  const mk = (extra: Record<string, unknown>, top: Record<string, unknown> = {}) => {
+    const d = tmpRun();
+    profileRun(d, { is_stale: false, quote_date: "2026-08-21" }, cal, undefined, { status: "partial", extra, top });
+    writeJson(path.join(d, "stages", "profile.json"), { stage: "profile", status: "complete", summary: "ok",
+      evidence_ids: ["ev-aaaaa1", "ev-aaaaa2"], calculation_ids: [], gaps: [], quote_decision: "normal", quote_decision_reason: "x", moat_tag: "待补" });
+    return d;
+  };
+  const hits = (d: string) => validateStage("profile", loadRun(d)).errors.some((e) => e.includes("必须在缺口里出声"));
+  assert.equal(hits(mk({ degraded: "少了一部分" })), true, "extra.degraded 要求写进缺口");
+  // 🔴 顶层 missing 是 FetchEnvelope 契约自带的字段,只查 extra 会漏
+  assert.equal(hits(mk({}, { missing: ["eps_min", "eps_max"] })), true, "顶层 missing 也必须要求写进缺口");
+  // 两者都没有(如行情陈旧,已由 quote_decision 单独披露)→ 不强制写 gap
+  assert.equal(hits(mk({})), false, "没声明丢了什么就不强制");
 });

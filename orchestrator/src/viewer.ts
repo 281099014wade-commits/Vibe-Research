@@ -5,15 +5,13 @@
 import fs from "node:fs";
 import path from "node:path";
 
-import type { RunConfig } from "./config.ts";
+import { GATE_REGEXPS, gateStagePatterns, type RunConfig } from "./config.ts";
+import { complianceGate } from "./gate.ts";
 import { atomicWrite } from "./fsutil.ts";
 import type { Manifest } from "./merge.ts";
 import type { RunView } from "./validator.ts";
 
 
-// **composition root**:插件在入口注册,Core 模块一律不 import 它
-// (Core 消费者靠副作用 import 硬接某个包,换垂类时靠入口 import 恢复不了 —— ESM 会缓存)。
-import "./finance/register.ts";
 export const VIEWER_REL = "viewer.html";
 export const APPENDIX_REL = "report_appendix.md";
 
@@ -53,7 +51,7 @@ export function collectViewerData(cfg: Pick<RunConfig, "runId" | "symbol" | "mar
 export function renderAppendix(d: ViewerData): string {
   const L: string[] = [];
   L.push(`# 报告附录 · ${d.run.symbol}(${d.run.market})· 运行 ${d.run.run_id} · 状态 ${d.run.status}`, "");
-  L.push("> 本附录由编排器从已校验产物自动生成:每条证据 / 计算都可回溯到 raw 原始响应与计算 DAG;不含任何判断与建议。", "");
+  L.push("> 本附录由编排器从已校验产物自动生成:每条证据 / 计算都可回溯到 raw 原始响应与计算 DAG;生成后已过合规复验(命中行整行删除)。", "");
   L.push(`- 证据 ${d.run.evidence_count} 条 · 计算 ${d.run.calculation_count} 条 · 取数端点 ${d.ledger.length} 个 · 数据源冲突 ${d.conflicts.length} 条 · 端点范围 ${d.run.endpoint_scope ?? "?"}(注册表 ${d.run.registry_version ?? "?"})`, "");
   L.push("## A. 取数账本", "", "| 端点 | 状态 | 退出码 | 耗时 ms | raw 文件 | 注入 |", "|---|---|---|---|---|---|");
   for (const l of d.ledger) L.push(`| ${l.script} | ${l.status} | ${l.exit_code ?? "-"} | ${l.duration_ms} | ${l.raw_files} | ${l.injected ?? ""} |`);
@@ -111,7 +109,7 @@ export function renderHtml(d: ViewerData): string {
 <div class="meta">开始 ${esc(d.run.started_at)} · 结束 ${esc(d.run.finished_at)} · 证据 ${d.run.evidence_count} · 计算 ${d.run.calculation_count} · 冲突 ${d.conflicts.length} · 端点范围 ${esc(d.run.endpoint_scope ?? "?")} · 注册表 ${esc(d.run.registry_version ?? "?")} · 自包含页面,离线可开</div></header>
 <nav><button data-t="overview">总览</button><button data-t="report">报告</button><button data-t="evidence">证据</button><button data-t="calcs">计算 DAG</button><button data-t="conflicts">冲突</button><button data-t="stages">阶段产物</button><button data-t="ledger">取数账本</button></nav>
 <main>
-<section id="overview"><h2>总览</h2><p>本页只展示编排器已校验的产物;每条证据可回溯 raw 原始响应,每个计算列出输入引用(DAG)。不含任何投资动作建议。</p>
+<section id="overview"><h2>总览</h2><p>本页只展示编排器已校验的产物;每条证据可回溯 raw 原始响应,每个计算列出输入引用(DAG)。生成后已过合规复验(命中行整行删除)。</p>
 <h3>阶段</h3><div id="stagetbl_ov">${d.stages.map((s) => `<div>${esc(s.stage)} ${st(s.status)} <span class="muted">引用证据 ${s.evidence_ids} · 计算 ${s.calculation_ids} · 缺口 ${s.gaps.length}</span></div>`).join("")}</div>
 ${d.final_errors.length ? `<h3>最终校验错误</h3><pre>${esc(d.final_errors.join("\n"))}</pre>` : ""}</section>
 <section id="report"><h2>report.md</h2><pre id="reporttext"></pre></section>
@@ -125,15 +123,98 @@ ${d.final_errors.length ? `<h3>最终校验错误</h3><pre>${esc(d.final_errors.
 <script>${JS}</script></body></html>`;
 }
 
-export function writeViewer(cfg: Pick<RunConfig, "runDir" | "runId" | "symbol" | "market">, run: RunView, manifest: Manifest): { htmlPath: string; appendixPath: string } {
-  const data = collectViewerData(cfg, run, manifest);
+/**
+ * 合规复验:**在数据层逐个字符串替换**,而不是删掉渲染后的整行。
+ *
+ * 🔴 全审 r3-P1-3 说的是"附录与查看器在最终 gate 之后生成、却从不复检",而且它们自己写着
+ *    「不含任何判断与建议」—— 声称与代码不符。
+ * 🔴 但**第一版修法(整行删除)把查看器弄坏了**(修复复审 r1-P2-4):HTML 把整个 ViewerData
+ *    `JSON.stringify` 成**一行** `<script id="data">`,里面任意一条证据命中就会把整个数据块删掉,
+ *    页面 `getElementById("data")` 拿到 null 直接报废。
+ *    ⇒ 结构化产物不能按行删。改成在**数据进入渲染之前**逐个字符串脱敏:命中的字符串整条替换成
+ *    占位符,结构完全不动。附录与 HTML 因此共用同一份已净化的数据。
+ */
+const REDACTED_NOTE = "〔已按产出红线移除〕";
+
+/**
+ * 净化 ViewerData:命中产出红线的**自由文本**替换成占位符,结构与身份信息一律不动。
+ *
+ * 🔴 第一版按行删除,把整个 `<script id="data">` 数据块删没了(修复复审 r1-P2-4)。
+ * 🔴 第二版逐字符串替换又踩两个坑(修复复审 r2):
+ *    ① **对象键没查** —— `{"建议建仓": "30%"}` 的键原样外传(calc 的 inputs / output.details 是自由形状);
+ *    ② **结构性字符串被误替** —— `run_id: "BUY"`、`raw_ref: "raw/BUY"`、`function: "stop-loss"`
+ *       会命中英文规则,整串变占位符,**证据就追不回去了**。
+ * ⇒ 沿用 `proseStrings` 那套"取值受不受控"的判断:受控字段(id / 路径 / 函数名 / 枚举 / 数值型)跳过,
+ *   只净化自由文本。这是同一条纪律的第二次应用 —— 判断标准是**字段取值受不受控**,不是名字长什么样。
+ */
+/**
+ * **格式 / 枚举严格受控**的字段:取值形态由 schema 钉死(id 模式、枚举、日期、哈希、路径),
+ * 净化它们只会破坏溯源,而它们本身装不下一句建议。
+ * ⚠️ 只放行**真正受控**的 —— `source` / `endpoint` / `field` / `unit` / `record_key` 这些
+ * schema 上只要求"非空字符串",曾被误列在这里,`source: "建议买入并建仓三成"` 就能原样外传
+ * (修复复审 r3-P2)。判断标准始终是**取值受不受控**,不是"名字像不像标识符"。
+ */
+const STRUCTURAL_KEYS = new Set([
+  "id", "run_id", "calculation_id", "raw_ref", "function", "symbol", "market", "period",
+  "adjustment", "stage", "status", "reason_code", "ref_id", "ref_type",
+  "fetched_at", "as_of", "started_at", "finished_at", "sha256",
+]);
+
+/**
+ * 🔴 **键名不等于位置**:`status` 在 schema 固定位置是枚举,但 calc 的 `inputs` / `output.details`
+ * 是**自由形状** —— 嵌套对象里同样叫 `status` 的字段能装任意文本,只按键名放行就等于开了后门
+ * (`{"extra_findings":[{"status":"<一句建议>"}]}`,复审 r4-P2)。
+ * viewer 拿不到 schema 路径,所以再加一道**取值形状**闸:身份 / 枚举 / 日期 / 哈希 / 相对路径
+ * 都是"无空白的紧凑串",一句话不可能长这样。两个条件都满足才跳过净化。
+ * ⚠️ 形状放宽了就等于把后门开回来 —— 这里刻意**不允许空白**。
+ */
+const CONTROLLED_SHAPE = /^[\w.:@/+-]+$/u;
+
+export function scrubStrings<T>(value: T): { value: T; removed: number } {
+  let removed = 0;
+  const hit = (t: string) => !complianceGate(t, gateStagePatterns(), [], GATE_REGEXPS).ok;
+  const walk = (v: unknown, key: string): unknown => {
+    if (typeof v === "string") {
+      // 身份 / 路径 / 枚举:不碰,否则回溯链就断了 —— 但**键名与取值形状都得对上**(见 CONTROLLED_SHAPE)
+      if (STRUCTURAL_KEYS.has(key) && CONTROLLED_SHAPE.test(v)) return v;
+      if (hit(v)) { removed += 1; return REDACTED_NOTE; }
+      return v;
+    }
+    if (Array.isArray(v)) return v.map((x) => walk(x, key));
+    if (v && typeof v === "object") {
+      const entries = Object.entries(v as Record<string, unknown>);
+      const taken = new Set(entries.map(([k]) => k));   // 占位键还要避开**原有键**,否则会覆盖别人的数据
+      const out: Record<string, unknown> = {};
+      let n = 0;
+      for (const [k, x] of entries) {
+        let safeKey = k;
+        if (hit(k)) {
+          removed += 1;
+          do { safeKey = `〔已移除键-${++n}〕`; } while (taken.has(safeKey));
+          taken.add(safeKey);
+        }
+        out[safeKey] = walk(x, k);
+      }
+      return out;
+    }
+    return v;
+  };
+  return { value: walk(value, "") as T, removed };
+}
+
+export function writeViewer(cfg: Pick<RunConfig, "runDir" | "runId" | "symbol" | "market">, run: RunView, manifest: Manifest): { htmlPath: string; appendixPath: string; gateRemoved: number } {
+  const raw = collectViewerData(cfg, run, manifest);
+  const { value: data, removed } = scrubStrings(raw);
   const htmlPath = path.join(cfg.runDir, VIEWER_REL);
   const appendixPath = path.join(cfg.runDir, APPENDIX_REL);
   atomicWrite(htmlPath, renderHtml(data));
   atomicWrite(appendixPath, renderAppendix(data));
-  return { htmlPath, appendixPath };
+  return { htmlPath, appendixPath, gateRemoved: removed };
 }
 
 export function viewerExists(runDir: string): boolean {
   return fs.existsSync(path.join(runDir, VIEWER_REL));
 }
+
+/** 测试入口:直接验净化行为(走 writeViewer 的话数据是重算的,注入不进去) */
+export const scrubForTest = scrubStrings;

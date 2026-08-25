@@ -3,6 +3,7 @@ import { test } from "node:test";
 
 import { currentPlugin, registerPlugin, resetPlugin, type Plugin } from "../src/plugin.ts";
 import { FINANCE_PLUGIN } from "../src/finance/plugin.ts";
+import { stageOutputSchema } from "../src/schemas.ts";
 
 /**
  * `Plugin` 注册期校验的单测。
@@ -40,8 +41,16 @@ test("阶段名必须是安全路径段:它会被拼进 stages/<stage>.json", ()
   }
 });
 
-test("extraTopics 的某阶段为空 = 该阶段任何议题都过不了 schema(静默失效)", () => {
-  rejects(plugin({ extraTopics: { ...FINANCE_PLUGIN.extraTopics, report: [] } }), /不符契约[\s\S]*extraTopics/);
+test("extraTopics 某阶段为空是合法的,但该阶段不许写扩展发现(不是留一个空 enum)", () => {
+  // 🔴 原本这里要求 extraTopics 每阶段非空 —— 第二个垂类真的会有"没有扩展议题"的阶段
+  //    (餐饮的菜单阶段)。放宽的前提是 schema 那边把空议题表达成 maxItems: 0:
+  //    报错说的是"这个阶段不允许扩展发现",而不是"topic 不在允许值里"(后者看不出根因)。
+  fresh(plugin({ extraTopics: { ...FINANCE_PLUGIN.extraTopics, report: [] } }));
+  const sc = stageOutputSchema("report" as never) as { properties: Record<string, { maxItems?: number }> };
+  assert.equal(sc.properties.extra_findings.maxItems, 0, "没有议题的阶段不该允许写扩展发现");
+  fresh(FINANCE_PLUGIN);
+  const sc2 = stageOutputSchema("report" as never) as { properties: Record<string, { maxItems?: number }> };
+  assert.equal(sc2.properties.extra_findings.maxItems, 12);
 });
 
 test("两套 market code 是不同规则:Only ⊆ Codes ⊆ markets", () => {
@@ -176,7 +185,7 @@ test("槽位与自检入参要**深**冻结:只冻第一层的话内层仍是共
   slot.selector.field = "profit";
   args.input.value = 999;
   assert.equal((currentPlugin().semanticSlots.profile[0] as typeof slot).selector.field, "revenue");
-  assert.equal((currentPlugin().selfTestCalc.args as typeof args).input.value, 1);
+  assert.equal((currentPlugin().selfTestCalc!.args as typeof args).input.value, 1);
   resetPlugin();
   registerPlugin(FINANCE_PLUGIN);
 });
@@ -215,7 +224,7 @@ test("__proto__ 不会污染快照:深拷贝用 Object.create(null) 建对象", 
   const polluted = JSON.parse('{"__proto__":{"polluted":true}}') as Record<string, unknown>;
   resetPlugin();
   registerPlugin(plugin({ selfTestCalc: { fn: "forward_pe", args: polluted, expect: 20 } }));
-  const args = currentPlugin().selfTestCalc.args as Record<string, unknown>;
+  const args = currentPlugin().selfTestCalc!.args as Record<string, unknown>;
   // `__proto__` 成了普通自有属性,而不是把原型改掉
   assert.ok(Object.prototype.hasOwnProperty.call(args, "__proto__"));
   assert.equal(({} as Record<string, unknown>).polluted, undefined);

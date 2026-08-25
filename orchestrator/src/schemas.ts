@@ -137,36 +137,28 @@ export function stageOutputSchema(stage: Stage): Record<string, unknown> {
     // 知识层档案裁决(任何阶段都可写;claim 原话 / 反证或"无法裁决:原因" / 对口 ev- 或 calc- id)
     knowledge_conflicts: { type: "array", items: { type: "object", additionalProperties: false, required: ["claim", "refuted_by"], properties: { claim: { type: "string", minLength: 1 }, refuted_by: { type: "string", minLength: 1 }, evidence_ids: { type: "array", items: { type: "string", pattern: "^(ev-[0-9a-f]{6,}|calc-[0-9a-f]{16})$" } } } } },
     // Phase 1 M2:扩展数据发现(可选;每条必须引用 evidence / calc id;只报事实与数值,不得含交易信号)
-    extra_findings: { type: "array", maxItems: 12, items: { type: "object", additionalProperties: false, required: ["topic", "summary", "evidence_ids"], properties: { topic: { type: "string", enum: [...(extraTopics()[stage] ?? [])] }, summary: { type: "string", minLength: 1, maxLength: 600 }, evidence_ids: { type: "array", minItems: 1, maxItems: 40, items: { type: "string", pattern: "^(ev-[0-9a-f]{6,}|calc-[0-9a-f]{16})$" } } } } },
+    // ⚠️ 该阶段没有议题时**直接不允许**写扩展发现(maxItems: 0),而不是留一个空 enum ——
+    //    空 enum 的报错是"topic 不在允许值里",看不出根因是"这个阶段本来就没有议题"。
+    //    契约那边因此可以允许 extraTopics 某阶段为空(第二个垂类真的会有这种阶段)。
+    extra_findings: { type: "array", maxItems: (extraTopics()[stage] ?? []).length ? 12 : 0, items: { type: "object", additionalProperties: false, required: ["topic", "summary", "evidence_ids"], properties: { topic: { type: "string", enum: [...(extraTopics()[stage] ?? [])] }, summary: { type: "string", minLength: 1, maxLength: 600 }, evidence_ids: { type: "array", minItems: 1, maxItems: 40, items: { type: "string", pattern: "^(ev-[0-9a-f]{6,}|calc-[0-9a-f]{16})$" } } } } },
   };
   const required = ["stage", "status", "summary", "evidence_ids", "calculation_ids", "gaps"];
-  if (stage === "profile") {
-    props.quote_decision = { type: "string", enum: ["normal", "pre_open", "stale", "unknown_unverified"] };
-    props.quote_decision_reason = { type: "string", minLength: 1 };
-    props.moat_tag = { type: "string", enum: ["tech_moat", "capacity_moat", "both", "待补"] };
-    required.push("quote_decision", "quote_decision_reason", "moat_tag");
+  // 阶段专属字段由**插件贡献**(Plugin.stageSchemas):Core 只合并,不认识任何具体字段名。
+  // 🔴 这里原本是 `if (stage === "profile")` / `if (stage === "risk")` 两大段金融字段定义 ——
+  //    换个垂类既拿不到自己该有的约束、又被强塞金融概念(全审 r4-P1)。
+  const ext = currentPlugin().stageSchemas[stage];
+  if (ext) {
+    Object.assign(props, ext.properties);
+    required.push(...ext.required);
   }
-  if (stage === "valuation") {
+  // 契约已声明 standardColumnsStage,这里却写死字面量 —— 插件把标准列放别处时,
+  // 那个阶段的 schema 不允许该字段(additionalProperties:false),不写又完全没有完整性约束(全审 r1-P2-5)。
+  if (stage === currentPlugin().standardColumnsStage) {
     props.standard_columns = {
       type: "object", additionalProperties: false, required: [...standardColumns()],
       properties: Object.fromEntries(standardColumns().map((k) => [k, { type: "string", pattern: "^(calc-[0-9a-f]{16}|未获取[::].+)$" }])),
     };
     required.push("standard_columns");
-  }
-  if (stage === "risk") {
-    props.counter_evidence = {
-      type: "array", minItems: 1,
-      items: { type: "object", additionalProperties: false, required: ["claim", "counter"], properties: { claim: { type: "string", minLength: 1 }, counter: { type: "string", minLength: 1 }, evidence_ids: { type: "array", items: { type: "string", pattern: "^(ev-[0-9a-f]{6,}|calc-[0-9a-f]{16})$" } } } },
-    };
-    props.decision_points = {
-      type: "array", minItems: 3,
-      items: { type: "object", additionalProperties: false, required: ["what_would_change", "next_data_point"], properties: { what_would_change: { type: "string", minLength: 1 }, next_data_point: { type: "string", minLength: 1 } } },
-    };
-    props.source_conflicts = { type: "array", items: { type: "object", additionalProperties: false, required: ["field", "kind", "values"],
-      properties: { field: { type: "string", minLength: 1 }, period: { type: "string" }, kind: { type: "string", enum: ["source", "cross_check"] }, note: { type: "string" },
-        values: { type: "array", minItems: 2, items: { type: "object", additionalProperties: false, required: ["source", "value", "ref_id"],
-          properties: { source: { type: "string", minLength: 1 }, value: {}, unit: { type: "string" }, ref_id: { type: "string", pattern: "^(ev-[0-9a-f]{6,}|calc-[0-9a-f]{16})$" }, note: { type: "string" } } } } } } };
-    required.push("counter_evidence", "decision_points", "source_conflicts");
   }
   return { type: "object", additionalProperties: false, required, properties: props };
 }
@@ -205,7 +197,10 @@ export const manifestSchema = () => ({
       properties: { installed: { type: "boolean" }, config_toml: { type: "string" }, disabled_user_skills: { type: "integer", minimum: 0 }, bundled_disabled: { type: "boolean" }, max_context_tokens: { type: "integer", minimum: 1, maximum: 10000 }, truncated: { type: "boolean" } } },
     engine: { type: "object", additionalProperties: false, required: ["codex_path", "codex_home", "binary"],
       properties: { codex_path: { type: ["string", "null"] }, codex_home: { type: "string" }, binary: { type: ["string", "null"] } } },
-    run_id: { type: "string", pattern: "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$" }, symbol: { type: "string", minLength: 1 }, market: { type: "string", enum: ["SH", "SZ", "BJ", ""] },
+    run_id: { type: "string", pattern: "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$" }, symbol: { type: "string", minLength: 1 }, // ⚠️ 必须与 evidence / fetch 用同一份枚举。写死沪深四项时:插件声明支持 US/HK/TW,
+    //    取数与每条证据都能过动态 schema、阶段全部完成,**收尾却因 manifest.market 不在旧枚举里整轮判 failed**
+    //    (Codex 全审 r1 P1-3)。纯净度棘轮看不见这个——"SH"/"SZ" 不在垂类词表里。
+    market: { type: "string", enum: [...currentPlugin().evidence.markets, ""] },
     started_at: { type: "string", pattern: ISO_TS }, finished_at: { type: ["string", "null"], pattern: ISO_TS },
     status: { type: "string", enum: ["complete", "incomplete", "failed", "stale", "running"] },
     stages: { type: "array", items: { type: "object", additionalProperties: false, required: ["stage", "status", "attempts", "errors", "validator_ok"],

@@ -6,6 +6,8 @@ import { fileURLToPath } from "node:url";
 
 
 import "../src/finance/register.ts";   // 测试文件也是入口:插件要先注册
+import "../src/finance/register.ts";
+import { currentPlugin } from "../src/plugin.ts";
 /**
  * **Core 词汇纯净度棘轮**(架构审计 2026-08-24 的第一件事)。
  *
@@ -177,3 +179,69 @@ test("词表本身要可信:ASCII 词走词边界,不能命中 TYPE / OPEN 里�
   assert.deepEqual(countDomainTerms("PE 为 30 倍"), { PE: 1 });
   assert.deepEqual(countDomainTerms("扣非归母净利"), { 扣非: 1, 归母: 1, 净利: 1 });
 });
+
+/**
+ * composition root 守卫:只有**真入口**允许 import 垂类包的 register(副作用注册)。
+ *
+ * 🔴 全审 r4-P1:原本 9 个文件都无条件 `import "./finance/register.ts"` —— 库模块(service / viewer /
+ * knowledge / fixture)只要被引用就会**暗中激活金融包**。后果:换个垂类时这些入口仍跑金融;
+ * 同一进程先后用两个垂类会撞进程级单例;而且这层耦合**纯净度词表看不见**(全是英文标识符)。
+ */
+test("composition root:只有真入口可以 import 垂类包的 register", () => {
+  const srcDir = SRC;
+  const ENTRY_POINTS = new Set(["run.ts", "api.ts", "mcp.ts", "batch.ts", "alerts.ts", "doctor.ts"]);
+  const offenders: string[] = [];
+  const walk = (dir: string, rel = "") => {
+    for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+      const p = path.join(dir, e.name), r = rel ? `${rel}/${e.name}` : e.name;
+      if (e.isDirectory()) { if (!PLUGIN_DIRS.includes(r)) walk(p, r); continue; }
+      if (!e.name.endsWith(".ts")) continue;
+      const txt = fs.readFileSync(p, "utf8");
+      // 只看 import 语句,注释里提到路径不算
+      if (/^\s*import\s+["'][^"']*\/register\.ts["']/m.test(txt) && !ENTRY_POINTS.has(r)) offenders.push(r);
+    }
+  };
+  walk(srcDir);
+  assert.deepEqual(offenders, [], `这些不是入口,不该 import 垂类 register(改成由调用方注入):${offenders.join(", ")}`);
+});
+
+/**
+ * 🔴 词表看不见的那一类:**英文阶段名、市场代码、结构性 import**。
+ *
+ * 全审 r4 证明了「行业词 0」给的是**错误的安心感** —— 真正的耦合是
+ * `stage === "profile"`、`market: ["SH","SZ"]`、`import "./finance/xxx"` 这些,词表一个都数不到。
+ * 这条把它们变成机器可查的:**Core 不许出现插件声明的阶段名 / 市场代码字面量,也不许 import 垂类包**。
+ *
+ * ⚠️ 只查**代码**不查注释 —— 注释里写"这里原本是 `stage === \"profile\"`"是有价值的历史说明,
+ *    不是耦合;把它们也算进去只会逼人删掉解释。
+ */
+test("Core 不许出现垂类的阶段名 / 市场代码字面量,也不许 import 垂类包(词表看不见的那一类)", () => {
+  const stages = [...currentPlugin().stages];
+  const markets = [...currentPlugin().evidence.markets].filter((m) => m.length >= 2);
+  const offenders: string[] = [];
+  for (const rel of coreFiles()) {
+    const raw = fs.readFileSync(path.join(SRC, rel), "utf8");
+    const code = stripComments(raw);
+    for (const st of stages) {
+      // ⚠️ 只算**当阶段用**的字面量:比较 / 索引 / 数组元素。
+      //    实测有四处纯误报:URL 路径段 `parts[2] === "report"`(它是 HTTP 路由不是阶段)、
+      //    体检项 id `{ id: "report" }`、查看器的 HTML tab 名 `data-t="report"`。
+      //    把这些也算进去只会逼人去改毫无关系的代码 —— 棘轮误报会让人开始无视它。
+      const re = new RegExp(`(?:stage\\s*[=!]==?\\s*|includes\\(|\\bstage\\(|\\[)["'\`]${st}["'\`]|["'\`]${st}["'\`]\\s*(?:\\]|,\\s*["'\`](?:${stages.join("|")})["'\`])`, "g");
+      const n = (code.match(re) ?? []).length;
+      if (n) offenders.push(`${rel}: 阶段名字面量 "${st}" ×${n}`);
+    }
+    for (const m of markets) {
+      const re = new RegExp(`["']${m}["']`, "g");
+      const n = (code.match(re) ?? []).length;
+      if (n) offenders.push(`${rel}: 市场代码字面量 "${m}" ×${n}`);
+    }
+    if (/from\s+["'][^"']*\/(finance)\//.test(code)) offenders.push(`${rel}: import 了垂类包`);
+  }
+  assert.deepEqual(offenders, [], `Core 里不该有垂类字面量 / 垂类 import(改成从契约取):\n  ${offenders.join("\n  ")}`);
+});
+
+/** 去掉行注释与块注释(粗略但够用:只用来避免把历史说明当耦合) */
+function stripComments(text: string): string {
+  return text.replace(/\/\*[\s\S]*?\*\//g, "").split("\n").map((l) => l.replace(/\/\/.*$/, "")).join("\n");
+}

@@ -11,7 +11,7 @@ import path from "node:path";
 import { GATE_PATTERNS, fetchEnv, type RunConfig, type Scenario } from "./config.ts";
 import { fetchArgv } from "./registry.ts";
 import { listFiles, nowIso, readJsonIfExists, sha256File, writeJson } from "./fsutil.ts";
-import { applyThermometerHistory } from "./finance/thermo_history.ts";
+import { currentPlugin } from "./plugin.ts";
 
 export interface LedgerEntry {
   script: string;
@@ -173,7 +173,7 @@ export const runFetchScripts: FetchExecutor = (cfg, stage, scripts, log, ledger)
     log("fetch.executed", { script, status: entry.status, exit_code: entry.exit_code, duration_ms: entry.duration_ms, sha256: entry.sha256, raw_files: Object.keys(entry.raw_files).length, injected: entry.injected ?? null });
   }
   // 温度计历史比较(第 13 层时间维度):本阶段带 history_fields 的信封取完后,从用户数据区序列(或 scenario 注入)确定性生成 thermo_history 信封 + raw
-  applyThermometerHistory(cfg, stage, ledger, log);
+  currentPlugin().transformFetch?.(cfg, stage, ledger, log);
   // 动态冲突注入:在已取到的真实证据里找该 field 的最新一条,克隆其完整事实键(symbol/market/field/period/unit/adjustment/record_key),只改 id / source / value
   if (scenario.inject_conflict && !ledger["fetch_injected"]) {
     const { field, factor } = scenario.inject_conflict;

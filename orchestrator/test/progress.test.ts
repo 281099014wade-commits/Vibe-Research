@@ -131,7 +131,7 @@ test("自由文本里的绝对路径与密钥要抹掉(事件字段不取路径 
   assert.equal(clip("配置（/opt/app/conf.json）损坏", 200), "配置（<路径>）损坏");
   assert.equal(clip("「/usr/lib/x.so」缺失", 200), "「<路径>」缺失");
   // 中文目录名带全角括号:遇全角标点时"后面还有分隔符才继续",两个方向都要对
-  assert.equal(clip("读取失败：/Users/simon/Documents/客户（机密）/财报.json", 200), "读取失败：<路径>");
+  assert.equal(clip("读取失败：/Users/alice/Documents/客户（机密）/财报.json", 200), "读取失败：<路径>");
   assert.equal(clip("读取失败，/var/log/a.log 不存在", 200), "读取失败，<路径> 不存在");
   // 防误伤:这些都**不是**路径
   for (const [text, why] of [["速率 1.6T 与 800G", "速率"], ["2026/08/24 的数据", "日期"],
@@ -170,15 +170,15 @@ test("取数批次按阶段各存一份:不串数、补跑不累计", () => {
 
 
 test("带空格的绝对路径要整段抹掉,但正常句子不被过度吞", () => {
-  assert.equal(clip("失败:/Users/simon/Secret Project/api-key.txt 读不到", 200), "失败:<路径> 读不到");
+  assert.equal(clip("失败:/Users/alice/Secret Project/api-key.txt 读不到", 200), "失败:<路径> 读不到");
   assert.equal(clip("配置在 C:\\Users\\x\\My Docs\\a.json 里", 200), "配置在 <路径> 里");
-  assert.equal(clip("读取失败：C:/Users/simon/Documents/客户机密/财报.json", 200), "读取失败：<路径>", "盘符正斜杠写法");
+  assert.equal(clip("读取失败：C:/Users/alice/Documents/客户机密/财报.json", 200), "读取失败：<路径>", "盘符正斜杠写法");
   assert.equal(clip("/tmp/a/b 不存在", 200), "<路径> 不存在");
   // 目录名里带逗号 / 括号:只认空白会在标点处断掉、泄露后半段
-  assert.equal(clip("读取 /Users/simon/Documents/Acme, Inc/client/a.json 失败", 200), "读取 <路径> 失败");
+  assert.equal(clip("读取 /Users/alice/Documents/Acme, Inc/client/a.json 失败", 200), "读取 <路径> 失败");
   assert.equal(clip("(见 /var/log/x.log) 之后", 200), "(见 <路径>) 之后");
   // 目录名带括号(Report (Final))—— 右括号后直接接 / 时不能断在这里
-  assert.equal(clip("读取 /Users/simon/Documents/Report (Final)/client/a.json 失败", 200), "读取 <路径> 失败");
+  assert.equal(clip("读取 /Users/alice/Documents/Report (Final)/client/a.json 失败", 200), "读取 <路径> 失败");
   assert.equal(clip("申万行业端点失败,当前申万归属未获取。", 200), "申万行业端点失败,当前申万归属未获取。");
   assert.match(clip("硅光/光互连 与 CPO/LPO 两条路线", 200), /硅光\/光互连 与 CPO\/LPO 两条路线/);
 });
