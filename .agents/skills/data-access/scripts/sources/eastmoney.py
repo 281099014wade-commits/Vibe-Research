@@ -221,6 +221,12 @@ def board_fund_flow(board_type: str = "industry", period: str = "today", top_n: 
         return (d.get("diff") or []), int(d.get("total") or 0)
 
     items, total = page(1)
+    # 🔴 **别假设上游认你请求的页大小**。这里 pz=200,而东财实际每页只给 100 条 ——
+    #    原来的 `if len(more) < 200: break` 于是在第 2 页就停了:上游 total=496,我们只拿 200,
+    #    而且**界面上完全看不出来**(看着像"就这么多板块")。
+    #    实测:pn=1/2/3 各回 100 条、total 都报 496。
+    #    ⇒ 页大小以**第一页实际回了多少**为准;只有"这一页一条都没有"或已达 total/top_n 才停。
+    page_size = len(items) or 1
     pn = 2
     while len(items) < top_n and not (total and len(items) >= total):
         more, _ = page(pn)
@@ -228,7 +234,7 @@ def board_fund_flow(board_type: str = "industry", period: str = "today", top_n: 
             break
         items += more
         pn += 1
-        if len(more) < 200:
+        if len(more) < page_size:   # 不满一页 = 最后一页
             break
     total = max(total, len(items))
     rows = []
@@ -595,3 +601,41 @@ def market_stock_list(market: str = "us_nasdaq", sort_field: str = "f3", sort_de
                "volume": it.get("f5"), "amount": it.get("f6"), "amplitude": round(it["f7"] / 100, 2) if it.get("f7") not in (None, "-") else None, "high": it.get("f15"), "low": it.get("f16"), "open": it.get("f17"),
                "prev_close": it.get("f18")} for it in diff]
     return {"total": data.get("total", 0), "stocks": stocks, "market": market}
+
+
+# 沪深京 A 股(主板 / 创业板 / 科创板 / 北交所);与东财行情中心「沪深京 A 股」同一口径
+_A_SHARE_FS = "m:0 t:6,m:0 t:80,m:1 t:2,m:1 t:23,m:0 t:81 s:2048"
+
+
+def market_turnover_rank(top_n: int = 20) -> dict:
+    """全市场成交额榜(沪深京 A 股按成交额降序 TopN)。
+
+    ⚠️ 这是**客观公开榜单**(东财行情中心同款),只做客观展示 —— 非推荐、非预测、不评分。
+    🔴 分页按**第一页实际回了多少**推进,不假设上游认我们请求的 pz
+       (东财实测忽略 pz=200、每页只给 100;板块资金流就是这么少拿了一半,
+       导致"净流出最多"那一栏里全是净流入的板块)。
+    """
+    base = {"pz": "100", "po": "1", "np": "1", "fltt": "2", "invt": "2", "fid": "f6",
+            "fs": _A_SHARE_FS, "fields": "f12,f14,f2,f3,f6,f20,f21,f100"}
+
+    def page(pn: int):
+        d = _push2_json("/api/qt/clist/get", params={**base, "pn": str(pn)}, headers={"User-Agent": UA}, timeout=15).get("data") or {}
+        return (d.get("diff") or []), int(d.get("total") or 0)
+
+    items, total = page(1)
+    page_size = len(items) or 1
+    pn = 2
+    while len(items) < top_n and not (total and len(items) >= total):
+        more, _ = page(pn)
+        if not more:
+            break
+        items += more
+        pn += 1
+        if len(more) < page_size:
+            break
+
+    rows = [{"rank": i + 1, "code": str(it.get("f12", "")), "name": it.get("f14", ""),
+             "price": it.get("f2"), "pct": it.get("f3"), "amount": it.get("f6"),
+             "mcap": it.get("f20"), "float_cap": it.get("f21"), "industry": it.get("f100", "")}
+            for i, it in enumerate(items[:top_n])]
+    return {"total": max(total, len(items)), "returned": len(rows), "rows": rows}

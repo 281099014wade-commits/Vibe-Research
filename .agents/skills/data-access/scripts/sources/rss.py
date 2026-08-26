@@ -112,4 +112,8 @@ def rss_news(industry: Optional[str] = None, sources: Optional[list] = None, per
             hit = [k for k in red if k in (it["title"] + it.get("summary", ""))]
             items.append({"source": r["source"], "industry": r["industry"], **it, "redline": hit})
     items.sort(key=lambda x: x["published"], reverse=True)
-    return {"industry": industry, "sources_tried": len(pool), "sources_ok": len(pool) - len(failures), "items": items, "failures": failures, "recent_days": recent_days}
+    # industries 一起返回:界面要给用户切换行业,而**能切哪几个只有这份配置知道**。
+    # 让界面自己抄一份行业表 = 配置改了界面不知道,选项与真实源静默对不上。
+    return {"industry": industry, "sources_tried": len(pool), "sources_ok": len(pool) - len(failures),
+            "items": items, "failures": failures, "recent_days": recent_days,
+            "industries": [{"key": i.get("key"), "name": i.get("name")} for i in cfg.get("industries", []) if i.get("key")]}

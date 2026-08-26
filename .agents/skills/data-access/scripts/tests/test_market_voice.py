@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import subprocess
 import sys
 
 import pytest
@@ -103,10 +104,26 @@ def test_safe_url():
 
 
 def test_gate_words_and_trad_chars_match_orchestrator():
-    cfg = open(os.path.join(REPO, "orchestrator", "src", "config.ts"), encoding="utf-8").read()
-    start = cfg.index("GATE_PATTERNS: string[] = [")
-    block = cfg[start:cfg.index("];", start)]
-    assert re.findall(r'"([^"]+)"', block) == textsafe.GATE_WORDS, "textsafe.GATE_WORDS 必须与 config.ts GATE_PATTERNS 逐字一致"
+    # 红线词表 2026-08-26 从 Core 的 config.ts 搬进垂类包(Core 不再认识任何一个词)。
+    # 🔴 比的是**求值后的数组**,不是源码里的双引号文本(审计 gate-r1-P2)。
+    #    按文本解析时,只要在数组块里留一段与 Python 一致的注释 / 死代码,
+    #    真实规则改成拼接或展开也照样"通过" —— 那时这条测试比对的是谁也没在用的字符串。
+    ts = os.path.join(REPO, "orchestrator", "src", "finance", "gate_rules.ts")
+    # 🔴 用唯一前缀认自己那一行,不取"最后一行"(审计 gate-r2-P3):
+    #    node 的实验特性告警等杂音也可能落到 stdout,那时"最后一行"是告警而不是数据 ——
+    #    表现是 json.loads 抛一个看不出根因的解析错,或者更糟:恰好解析成了别的东西。
+    mark = "__GATE_PATTERNS__"
+    got = subprocess.run(
+        ["node", "--experimental-strip-types", "-e",
+         f"import({json.dumps(ts)}).then(m => console.log({json.dumps(mark)} + JSON.stringify(m.FINANCE_GATE.patterns)))"],
+        capture_output=True, text=True, timeout=60, cwd=REPO,
+    )
+    assert got.returncode == 0, f"求值 gate_rules.ts 失败:{got.stderr[-400:]}"
+    marked = [ln[len(mark):] for ln in got.stdout.splitlines() if ln.startswith(mark)]
+    # 恰好一行:0 行 = 什么都没打印出来(退出码却是 0),>1 行 = 打了两次,两种都不能当成功
+    assert len(marked) == 1, f"预期恰好一行 gate 输出,实际 {len(marked)} 行;stdout={got.stdout[-500:]!r} stderr={got.stderr[-300:]!r}"
+    assert json.loads(marked[0]) == textsafe.GATE_WORDS, \
+        "textsafe.GATE_WORDS 必须与 finance/gate_rules.ts 求值后的 FINANCE_GATE.patterns 逐字一致"
     assert "增持" not in textsafe.GATE_WORDS and "建议增持" in textsafe.GATE_WORDS
     gate = open(os.path.join(REPO, "orchestrator", "src", "gate.ts"), encoding="utf-8").read()
     m = re.search(r"TRAD_CHARS: Record<string, string> = \{([^}]+)\}", gate)

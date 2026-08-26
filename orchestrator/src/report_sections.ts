@@ -16,7 +16,7 @@
  * 🔴 边界:只要求**证据被引用**(有专属章节的还要求章节在场),**不要求任何具体结论**。
  *   章节内可以如实写明局限 / 数据不足 —— 本产品宁可写"没有",不可以编。
  *
- * 🔴 fail-safe 而非 fail-open(Codex sections-r1 P1-1 / P2-4):没有专属章节的 topic(数据日历 / 其他线索)
+ * 🔴 fail-safe 而非 fail-open(Codex sections-r1 P1-1 / P2-4):没有专属章节的议题(见插件的 topicMerge)
  *   与**映射表里没有的未知 topic**,都退化成"证据必须在报告里被引用"的全文要求 ——
  *   否则加了新 topic 却忘了登记映射,这层纪律会对它**静默失效**,而事故里丢的恰好就有「其他线索」。
  */
@@ -28,12 +28,28 @@ import { currentPlugin } from "./plugin.ts";
 export const topicSections = (): Record<string, string> => currentPlugin().topicSections as Record<string, string>;
 
 /**
- * 有 topic 但**没有专属章节**的两个 —— 不要求章节(否则会逼出一个无处安放的空章节),
- * 但**仍要求证据在报告全文里被引用**(见文件头 fail-safe 说明):
- * - 数据日历 → 内容并入「裁决点」(stages.ts:裁决点每行带下一个数据点的具体日期)
- * - 其他线索 → 兜底 topic,按内容并入相邻章节
+ * 有议题但**没有专属章节**的那几个 —— 不要求章节(否则会逼出一个无处安放的空章节),
+ * 但**仍要求证据在报告全文里被引用**(见文件头 fail-safe 说明)。
+ * 并入哪一章由插件声明(`topicMerge`);空串 = 不指定,按内容并入相邻章节。
  */
-export const TOPICS_WITHOUT_SECTION = ["数据日历", "其他线索"] as const;
+export const topicMerge = (): Record<string, string> => currentPlugin().topicMerge as Record<string, string>;
+export const topicsWithoutSection = (): string[] => Object.keys(topicMerge());
+/**
+ * 扩展章节插在骨架的哪两章之间。**"之前"那一章是推出来的**(骨架里 after 的下一章)——
+ * 让插件同时声明前后两章,只会多一个能互相矛盾的字段。after 是最后一章时就只说"之后"。
+ */
+const placement = (): string => {
+  const skeleton = currentPlugin().reportSections;
+  const after = currentPlugin().extraSectionsAfter;
+  const next = skeleton[skeleton.indexOf(after) + 1];
+  return next ? `「${after}」之后、「${next}」之前` : `「${after}」之后`;
+};
+
+/** 并到哪一章的人话:插件指定了就说并到哪一章,没指定就不多话 */
+const mergeHint = (topic: string): string => {
+  const into = topicMerge()[topic];
+  return into ? `「${into}」` : "内容相关的章节";
+};
 
 export interface ExtraFinding { topic?: unknown; evidence_ids?: unknown }
 /** 一个 topic 的证据要求。section 为 null = 不要求专属章节,只要求全文引用。 */
@@ -203,7 +219,7 @@ export function extraSectionErrors(report: string, req: ExtraRequirements): stri
   for (const t of req.unsectioned) {
     if (!t.evidenceIds.length) continue;
     if (!t.evidenceIds.some((id) => all.has(id))) {
-      errors.push(`report.md 全文没有引用 topic「${t.topic}」的任何证据 id(该 topic 无专属章节,内容应并入相关章节${t.topic === "数据日历" ? "——数据日历并入「裁决点」" : ""};应引其中之一:${t.evidenceIds.slice(0, 3).join(" / ")})`);
+      errors.push(`report.md 全文没有引用 topic「${t.topic}」的任何证据 id(该议题无专属章节,内容应并入${mergeHint(t.topic)};应引其中之一:${t.evidenceIds.slice(0, 3).join(" / ")})`);
     }
   }
   return errors;
@@ -223,7 +239,7 @@ export function extraSectionsPromptBlock(riskStageOutput: unknown): string {
     ? `${t.topic} 至少引 1 条(如 ${t.evidenceIds.slice(0, 2).join(" / ")})`
     : `${t.topic} **没有有效证据 id,不得编造**,只如实写明证据缺失`);
   const secLines = req.sections.map((r) => `   - ## ${r.section} —— ${r.topics.map(demand).join(";")}`);
-  const unsecLines = req.unsectioned.map((t) => `   - topic「${t.topic}」无专属章节,内容并入${t.topic === "数据日历" ? "「裁决点」" : "内容相关的章节"}:${demand(t)}`);
+  const unsecLines = req.unsectioned.map((t) => `   - topic「${t.topic}」无专属章节,内容并入${mergeHint(t.topic)}:${demand(t)}`);
   const n = req.sections.length;
-  return `\n【本次必须写出的扩展章节 —— 逐个核对,一个都不能省】risk 阶段已就以下主题落了证据,报告**必须**为每个有专属章节的主题写出对应章节(写法见上面各章节的要求,位置在「风险与反证」之后、「裁决点」之前):\n${[...secLines, ...unsecLines].join("\n")}\n   ⚠️ 每个标题**单独成章、不得与别的扩展章节合并**(如"市场、头条与招聘线索"这种合并写法不算数);章节内容可以如实写明数据不足或局限,**但不得整章省略**;写完后请自查这 ${n} 个章节标题是否都在报告里、每个**有有效证据 id 的** topic 是否都至少引了一条,**没有有效 id 的 topic 是否如实说明了证据缺失(不得编造 id)**。`;
+  return `\n【本次必须写出的扩展章节 —— 逐个核对,一个都不能省】risk 阶段已就以下主题落了证据,报告**必须**为每个有专属章节的主题写出对应章节(写法见上面各章节的要求,位置在${placement()}):\n${[...secLines, ...unsecLines].join("\n")}\n   ⚠️ 每个标题**单独成章、不得与别的扩展章节合并**(如"市场、头条与招聘线索"这种合并写法不算数);章节内容可以如实写明数据不足或局限,**但不得整章省略**;写完后请自查这 ${n} 个章节标题是否都在报告里、每个**有有效证据 id 的** topic 是否都至少引了一条,**没有有效 id 的 topic 是否如实说明了证据缺失(不得编造 id)**。`;
 }

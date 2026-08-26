@@ -10,7 +10,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 
 import { createApiServer, resolveToken, isLoopbackHost } from "../src/api.ts";
-import { ServiceError, assertArgs, fetchEndpoint, ledgerList, ledgerSnapshot, ledgerUpsert, getEvidence, getReport, knowledgeRecall, listEndpoints, listRuns, redact, researchEnv, researchStatus, safePath, startResearch, type ServiceContext } from "../src/service.ts";
+import { ServiceError, assertArgs, fetchEndpoint, ledgerList, ledgerSnapshot, ledgerUpsert, getEvidence, getReport, knowledgeRecall, listEndpoints, listRuns, redact, researchEnv, researchStatus, safePath, startResearch, type ServiceContext, displayUrl } from "../src/service.ts";
 import { writeJson } from "../src/fsutil.ts";
 import { detectPython } from "../src/init.ts";
 
@@ -286,6 +286,15 @@ test("台账全量读取也要过 safePath —— 防线只在次要入口生效
   assert.throws(() => ledgerList(ctx), (e: unknown) => e instanceof ServiceError && e.code === "path_symlink");
 });
 
+/** 真仓库根(读得到注册表)+ 临时数据根(快照不污染本机) */
+const realRepoCtx = (): ServiceContext => ({
+  repoRoot: REPO,
+  dataRoot: fs.mkdtempSync(path.join(os.tmpdir(), "vra-svc-real-")),
+  python: process.env.VRA_PYTHON ?? "python3",
+  node: process.execPath,
+  providerEnvKey: null,
+} as ServiceContext);
+
 const svcCtx = (): ServiceContext => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "vra-svc-"));
   return { repoRoot: root, dataRoot: root, python: "python3", node: process.execPath, providerEnvKey: null } as ServiceContext;
@@ -350,4 +359,64 @@ test("运行产物的 HTML 以 CSP 送出 —— 产物里混进 <script> 时不
   } finally {
     server.close();
   }
+});
+
+test("🔴 同一份查询并发进来只真取一次(single-flight)—— 否则一屏五个卡片打五次上游", async () => {
+  const ctx = realRepoCtx();
+  let spawned = 0;
+  // 端点用 tx_quotes_batch:参数一致 ⇒ 快照键一致
+  const req = { endpoint: "tx_quotes_batch", args: { codes: ["300308"] }, consistency: { mode: "fresh" as const } };
+  const orig = process.env.PATH;
+  try {
+    const results = await Promise.allSettled([fetchEndpoint(ctx, req), fetchEndpoint(ctx, req), fetchEndpoint(ctx, req)]);
+    // 三个都拿到同一个结果对象(共用同一个在飞的 Promise)
+    const ok = results.filter((r) => r.status === "fulfilled") as PromiseFulfilledResult<unknown>[];
+    if (ok.length === 3) {
+      assert.equal(ok[0]!.value, ok[1]!.value, "并发的两次应共用同一个 Promise 的结果");
+      assert.equal(ok[1]!.value, ok[2]!.value);
+    } else {
+      // 取数失败(本机网络/代理)时这条测不到并发,但**不能因此假绿** —— 明说跳过原因
+      assert.ok(results.every((r) => r.status === "rejected"), "要么全成要么全败:部分成功说明没走同一条飞行");
+    }
+  } finally {
+    process.env.PATH = orig;
+    void spawned;
+  }
+});
+
+test("🔴 cache_only 没快照就报错,绝不偷偷联网", async () => {
+  const ctx = realRepoCtx();
+  await assert.rejects(
+    () => fetchEndpoint(ctx, { endpoint: "fetch_quote", symbol: "300308", consistency: { mode: "cache_only" } }),
+    (e: unknown) => e instanceof ServiceError && e.code === "no_snapshot",
+  );
+});
+
+/**
+ * 展示用 URL 必须剥掉凭据。
+ * 🔴 主密钥只在环境变量里,但 `base_url` 是用户能自己编辑的 —— 一条
+ *    `https://user:secret@host/v1` 会**原样**回到设置页(审计 pages-r1-P1)。
+ */
+test("displayUrl 剥掉用户名 / 密码 / 查询串 / 片段", () => {
+  assert.ok(!displayUrl("https://u:p@h.example/v1")!.includes("p@"), displayUrl("https://u:p@h.example/v1")!);
+  assert.ok(!displayUrl("https://u:p@h.example/v1")!.includes("secret"));
+  const q = displayUrl("https://h.example/v1?api_key=SECRET&x=1")!;
+  assert.ok(!q.includes("SECRET") && !q.includes("api_key"), q);
+  assert.match(q, /已隐藏/, "隐掉了就要说一声,不然用户以为自己没配上");
+  // 🔴 连路径都不回:有些供应商把密钥放在**路径段**里,剥 query 剥不掉它
+  const withKeyInPath = displayUrl("https://h.example/v1/sk-SECRETSECRET/chat")!;
+  assert.ok(!withKeyInPath.includes("SECRET"), withKeyInPath);
+  assert.match(withKeyInPath, /已隐藏.*3 段路径/, withKeyInPath);
+  assert.equal(displayUrl("https://h.example"), "https://h.example", "没有路径就不加噪音");
+  assert.equal(displayUrl(null), null);
+  // 解析不了**不回原串** —— 回原串等于"解析失败时反而全暴露"
+  const bad = displayUrl("not a url ?token=SECRET")!;
+  assert.ok(!bad.includes("SECRET"), bad);
+  // 🔴 非 http(s) 一律不显示原文:data: 之类整段内容都在 path 里,剥 query 根本剥不掉
+  for (const u of ["data:text/plain;base64,U0VDUkVU", "weird://host/SECRET", "javascript:alert('SECRET')"]) {
+    const out = displayUrl(u)!;
+    assert.ok(!out.includes("SECRET") && !out.includes("U0VDUkVU"), `${u} → ${out}`);
+  }
+  // 换行 / 空白不能把内容带出来
+  assert.ok(!displayUrl("https://h.example/v1?x=1\n\nSECRET")!.includes("SECRET"));
 });

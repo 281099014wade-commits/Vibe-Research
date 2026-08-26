@@ -18,9 +18,20 @@ import path from "node:path";
 
 import { Codex, type CodexOptions } from "@openai/codex-sdk";
 
+import AjvModule from "ajv";
+
 import { makeConfig, type RunConfig } from "./config.ts";
+import { applyCoreFormats } from "./formats.ts";
+import { currentPlugin, hasPlugin } from "./plugin.ts";
+import { structuredOutputMode, withOutputSchema } from "./providers.ts";
 import { kinds as ledgerKinds } from "./ledger.ts";
+import { loadProductConfig } from "./productConfig.ts";
 import { codexOptionsFor } from "./runner.ts";
+
+const AjvCtor = ((AjvModule as unknown as { default?: unknown }).default ?? AjvModule) as new (o: object) => {
+  compile: (s: object) => ((d: unknown) => boolean) & { errors?: { instancePath?: string; message?: string }[] | null };
+  addFormat: (name: string, def: { type: "string"; validate: (s: string) => boolean }) => unknown;
+};
 
 export class IngestError extends Error {
   code: string;
@@ -58,6 +69,13 @@ export interface IngestDraft {
   fields: Record<string, unknown>;
   /** 这一条哪里不确定;为空表示 agent 认为都读清楚了 */
   uncertain: string[];
+  /**
+   * 缺了哪些**必填**字段(读不到 → 给 null → 被剥掉)。非空 = **这条按现状存不进去**。
+   * 🔴 为什么不在导入阶段直接拒:截图里有一个字段没拍清,就把整批毙掉太狠 ——
+   *    HITL 的意义正是"机器做体力活、人补例外"。但也不能让用户点一个注定失败的按钮:
+   *    界面据此禁用「确认写入」并说清缺什么,而不是等落库报 bad_record(Codex 复审 mimo-r4)。
+   */
+  missing_required: string[];
 }
 
 export interface IngestResult {
@@ -195,6 +213,39 @@ function fieldsSchema(kind: string): Record<string, unknown> {
   return { type: "object", additionalProperties: false, required: Object.keys(def.properties), properties };
 }
 
+const fieldsValidators = new Map<string, ((d: unknown) => boolean) & { errors?: { instancePath?: string; message?: string }[] | null }>();
+
+/**
+ * `fields` 的校验器。属性表与喂给模型的那份同源(都取自契约),差异见函数体里的说明。
+ * 缓存键带插件 id **与契约哈希**:同进程换过插件后不能拿到上一套。
+ */
+function fieldsValidator(kind: string): ((d: unknown) => boolean) & { errors?: { instancePath?: string; message?: string }[] | null } {
+  // 🔴 键里要带**契约本身的哈希**:同一进程里换成一个 id 相同、字段却不同的插件时,
+  //    只按 id::kind 索引会命中旧校验器 —— 新契约的合法草稿被拒 / 旧契约的非法草稿被放行。
+  const def = ledgerKinds()[kind];
+  if (!def) throw new IngestError("unknown_kind", `台账没有这个种类:${JSON.stringify(kind)}`);
+  const key = `${hasPlugin() ? currentPlugin().id : "-"}::${kind}::${crypto.createHash("sha256").update(JSON.stringify(def)).digest("hex").slice(0, 12)}`;
+  const hit = fieldsValidators.get(key);
+  if (hit) return hit;
+  // 校验尺子 = **完整的垂类契约**(含 pattern / minimum / format),与落库时用的是同一份定义。
+  // 🔴 与**喂给模型**的那份(`fieldsSchema`)有两处故意不同,都写清楚免得被当成漂移:
+  //  ① `required` 清空 —— 那边"每个键都必填(但可为 null)"是**提示词手段**(逼模型显式给 null
+  //     而不是省掉键,平台又要求 required 列全);`dropNulls` 本来就把两者当同义。
+  //  ② 这边**带上** pattern / minimum / format —— 那边刻意不带,是怕模型为了满足格式去编一个
+  //     合规的假值;而**校验**没有这个顾虑,反而漏掉它们会让"导入显示成功、落库才被拒"
+  //     (Codex 复审 mimo-r2 P2)。
+  // ⚠️ 代价:一条草稿的值越界会让整批 bad_output。这是刻意的 —— 与本模块"解析不出来就报错、
+  //    不尽力还原"同一个立场:与其让人对着一份半对的草稿逐条点确认,不如让他改了源头重来。
+  const fn = applyCoreFormats(new AjvCtor({ allErrors: true, strict: false })).compile({
+    type: "object",
+    additionalProperties: false,
+    required: [],
+    properties: def.properties,
+  }) as never;
+  fieldsValidators.set(key, fn);
+  return fn;
+}
+
 /** 强制结构化产出:草稿数组 + 警告数组 */
 function outputSchema(kind: string): Record<string, unknown> {
   return {
@@ -233,11 +284,24 @@ export async function ingestFiles(
   if (input.length === 0) throw new IngestError("no_files", "没有文件");
   if (input.length > MAX_FILES) throw new IngestError("too_many_files", `一次最多 ${MAX_FILES} 个文件`);
 
+  // 🔴 与 chat.ts 同一条理由:直接 makeConfig 会恒定落到 openai + providerProfile=null,
+  //    用户配的 provider 在这条路上完全不生效(而研究运行是生效的 —— 两条路各说各话)。
+  // ⚠️ 调用方给了 dataRoot 就整个按它走(用户配置 + provider 覆盖模板 + 数据根):
+  //    只塞 userConfigPath 的话,配置从这个根读、模板却从 repoRoot 推的根找 —— 两套口径,静默不一致。
+  const pc = loadProductConfig(opts.repoRoot, {
+    env: process.env,
+    ...(opts.dataRoot ? { dataRootOverride: opts.dataRoot } : {}),
+  });
   const cfg = makeConfig({
     symbol: "IMPORT",
     repoRoot: opts.repoRoot,
-    ...(opts.dataRoot ? { dataRoot: opts.dataRoot } : {}),
-    ...(opts.python ? { python: opts.python } : {}),
+    dataRoot: opts.dataRoot ?? pc.resolved.dataRoot,
+    python: opts.python ?? pc.python ?? undefined,
+    codexPath: pc.resolved.codexPath,
+    codexHome: pc.resolved.codexHome,
+    provider: pc.provider,
+    providerProfile: pc.providerProfile,
+    ...(pc.defaults.model ? { model: pc.defaults.model } : {}),
     runId: "import",
   });
   const batch = `${new Date().toISOString().slice(0, 10)}-${crypto.randomBytes(4).toString("hex")}`;
@@ -325,7 +389,11 @@ async function ingestInto(
   const timer = setTimeout(() => ac.abort(), TURN_TIMEOUT_MS);
   let raw = "";
   try {
-    const { events } = await thread.runStreamed(inputs, { outputSchema: outputSchema(kind), signal: ac.signal });
+    // 同 runner:provider 不认服务端 schema 时把 schema 写进提示词(草稿仍走 parseOutput 严格校验)
+    const mode = structuredOutputMode(cfg.providerProfile);
+    const shaped = withOutputSchema(prompt, outputSchema(kind), mode);
+    if (mode !== "json_schema") inputs[0] = { type: "text", text: shaped.prompt };
+    const { events } = await thread.runStreamed(inputs, { ...(shaped.outputSchema ? { outputSchema: shaped.outputSchema } : {}), signal: ac.signal });
     for await (const ev of events) {
       if (ev.type === "item.completed" && ev.item.type === "agent_message") raw = ev.item.text ?? raw;
       if (ev.type === "turn.failed") throw new IngestError("turn_failed", ev.error?.message ?? "转写失败");
@@ -339,7 +407,7 @@ async function ingestInto(
     clearTimeout(timer);
   }
 
-  const parsed = parseOutput(raw, saved);
+  const parsed = parseOutput(raw, saved, kind);
   return {
     batch,
     kind,
@@ -364,6 +432,7 @@ async function ingestInto(
 function parseOutput(
   raw: string,
   saved: { safe: string; orig: string }[],
+  kind: string,
 ): { drafts: IngestDraft[]; warnings: string[] } {
   let obj: unknown;
   try {
@@ -388,13 +457,32 @@ function parseOutput(
     if (!r.fields || typeof r.fields !== "object" || Array.isArray(r.fields)) {
       throw new IngestError("bad_output", `${where}的 fields 不是对象`);
     }
+    // 🔴 **两种模式同一把尺子**。硬传 schema 时是平台在拒非法 fields;降级到提示词后没人拒了 ——
+    //    于是"少字段 / 多字段 / 类型不对"会被当成成功草稿返回。那正是我自己写下的
+    //    「降级不能顺手把校验也省掉」被违反的样子(Codex 审计 mimo-r1 P1)。
+    //    ⇒ 不管走哪条路,这里都按契约校验一次。硬传模式下这是第二道,重复但无害;
+    //      降级模式下这是**唯一**一道 —— 少了它,这条降级就真的在放松要求。
+    // 🔴 **校验 `dropNulls` 之后的那个对象** —— 也就是真正会被展示、被落库的那份。
+    //    校验 `r.fields` 原物是错的:模型对读不到的字段**按设计给 null**(提示词就是这么要求的),
+    //    而契约里的类型不含 null ⇒ 一条带 `note: null` 的**完全正常**的草稿会让整批 bad_output。
+    //    (这是我上一版自己引入的回归,Codex 复审 mimo-r3 抓到;我的测试夹具里恰好没有 null,所以没红。)
+    const fields = dropNulls(r.fields);
+    const fv = fieldsValidator(kind);
+    if (!fv(fields)) {
+      throw new IngestError(
+        "bad_output",
+        `${where}的 fields 不符合「${kind}」的字段约定:${(fv.errors ?? []).map((e) => `${e.instancePath || "(顶层)"} ${e.message ?? ""}`.trim()).join(";") || "字段不合法"}`,
+      );
+    }
     if (!Array.isArray(r.uncertain)) throw new IngestError("bad_output", `${where}缺少 uncertain 数组`);
+    const def = ledgerKinds()[kind]!;
     return {
       // 把安全名换回用户原来的文件名 —— 他认得的是那个
       source_file: byName.get(r.source_file) ?? r.source_file,
-      // schema 逼它把每个字段都列出来、读不到的给 null。交给界面前把 null 剥掉 ——
-      // 界面按"这个字段没填"渲染就行;**哪些没读到已经在 uncertain 里说过了**,不会丢信息。
-      fields: dropNulls(r.fields),
+      missing_required: def.required.filter((k) => !(k in fields)),
+      // 剥掉 null 之后交给界面:界面按"这个字段没填"渲染就行;
+      // **哪些没读到已经在 uncertain 里说过了**,不会丢信息。
+      fields,
       uncertain: strs(r.uncertain, `${where}的 uncertain`),
     };
   });

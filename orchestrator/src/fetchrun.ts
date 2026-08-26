@@ -8,7 +8,7 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 
-import { GATE_PATTERNS, fetchEnv, type RunConfig, type Scenario } from "./config.ts";
+import { fetchEnv, gatePatterns, type RunConfig, type Scenario } from "./config.ts";
 import { fetchArgv } from "./registry.ts";
 import { listFiles, nowIso, readJsonIfExists, sha256File, writeJson } from "./fsutil.ts";
 import { currentPlugin } from "./plugin.ts";
@@ -70,7 +70,7 @@ function newRawFiles(before: Map<string, string>, after: Map<string, string>): R
 /** 与 sources/textsafe.py 同样的动作词脱敏(硬测试注入用:注入文本要长得像 mapper 产出) */
 export function neutralizeActions(text: string): string {
   let t = text;
-  for (const w of [...GATE_PATTERNS].sort((a, b) => b.length - a.length)) t = t.split(w).join("〔动作词〕");
+  for (const w of [...gatePatterns()].sort((a, b) => b.length - a.length)) t = t.split(w).join("〔动作词〕");
   return t.replace(/\s+/g, " ").trim();
 }
 
@@ -129,7 +129,17 @@ export function applyVoiceInjection(cfg: Pick<RunConfig, "symbol" | "market">, s
   return ids;
 }
 
-/** 顺序执行脚本(内存账本里已执行过的不重复);返回(并就地更新)账本。 */
+/**
+ * 顺序执行脚本(内存账本里已执行过的不重复);返回(并就地更新)账本。
+ *
+ * 🔴 **"顺序"是承重的,不要改成并发**。下面每个脚本前后各拍一次 raw 目录快照
+ *    (`rawSnapshot` before/after),用差集把新增的 raw 文件**归属到这个脚本**。
+ *    并行跑的话,两个脚本同时落 raw 文件,差集就会张冠李戴 —— 而 `raw_ref` 是整条
+ *    证据链可复算的根:归错了**不会报错**,只会让"这个数字来自哪次抓取"从此对不上。
+ *    ⇒ 想提速要先换一套归属机制(比如让每个脚本写进自己的子目录),而不是直接并发。
+ * ⚠️ 也别拿它跟 `service.fetchEndpoint` 比:那条是**看板按需取数**、彼此独立、已是真并发
+ *    (实测同时在途 5);这条是**研究运行**的取数,产物要进证据账本。两者约束不同。
+ */
 export const runFetchScripts: FetchExecutor = (cfg, stage, scripts, log, ledger) => {
   const scenario: Scenario = cfg.scenario ?? {};
   for (const script of scripts) {

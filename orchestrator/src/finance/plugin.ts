@@ -9,7 +9,9 @@
  * (键集必须与 stages 完全一致)—— 这是故意的,别去放宽那个校验。
  */
 import type { Plugin } from "../plugin.ts";
-import { FINANCE_LEDGER_KINDS } from "./ledger_kinds.ts";
+import { FINANCE_GATE } from "./gate_rules.ts";
+import { FINANCE_ENUM_LABELS, FINANCE_FIELD_LABELS, FINANCE_LEDGER_KINDS } from "./ledger_kinds.ts";
+import { FINANCE_PAGE_CONTEXT, FINANCE_PAGE_QUERIES } from "./page_queries.ts";
 import { FINANCE_LEXICON } from "./lexicon.ts";
 import { financeQuoteDecision } from "./quote_freshness.ts";
 import { financeBaselinePeriod } from "./fiscal_year.ts";
@@ -98,6 +100,64 @@ export const FINANCE_PLUGIN: Plugin = {
     公告线索: "公告 · 互动易 · 新闻线索", 互动易: "公告 · 互动易 · 新闻线索", 新闻线索: "公告 · 互动易 · 新闻线索",
     市场声音: "市场声音", 产业温度计: "产业温度计", 卡口事件: "卡口事件",
     管制与准入: "管制与准入", 海外头条: "海外头条", 招聘信号: "招聘信号", 宏观概率: "宏观概率",
+  },
+
+  /**
+   * 有议题、但不给它单开一章的两个 —— 单开会逼出一个无处安放的空章节。
+   * 仍然要求证据在报告全文里被引用(校验器按这张表出错误措辞)。
+   */
+  /** 扩展章节插在「风险与反证」之后(下一章骨架是「裁决点」) */
+  /**
+   * 多空辩论的资料包与角色。
+   * 🔴 资料包**只放确定性数字类端点** —— 市场声音那种第三方文本进来,
+   *    就等于让双方引用别人的观点当证据,而对方无法核实。
+   */
+  debate: {
+    dossierEndpoints: ["tx_quote", "fetch_profile", "fetch_financials", "indicators_cn"],
+    stages: [
+      {
+        id: "bull",
+        label: "多方陈述",
+        sees: [],
+        prompt: "你是多方。**只用资料包里的数字**,列出支持这家公司的三到五条论据,每条注明依据哪条证据 id。不许引入资料包以外的数字;拿不准就说拿不准。不要给任何操作建议。",
+      },
+      {
+        id: "bear",
+        label: "空方陈述",
+        sees: [],
+        prompt: "你是空方。**只用资料包里的数字**,列出看空这家公司的三到五条论据,每条注明依据哪条证据 id。不许引入资料包以外的数字;拿不准就说拿不准。不要给任何操作建议。",
+      },
+      {
+        id: "bull_rebut",
+        label: "多方反驳",
+        sees: ["bear"],
+        prompt: "你是多方,现在反驳空方。逐条指出空方哪里用错了数、哪里把假设当成了事实。**只能用资料包里的数字**。反驳不了的就承认反驳不了 —— 承认比硬圆更有价值。",
+      },
+      {
+        id: "bear_rebut",
+        label: "空方反驳",
+        sees: ["bull"],
+        prompt: "你是空方,现在反驳多方。逐条指出多方哪里用错了数、哪里把假设当成了事实。**只能用资料包里的数字**。反驳不了的就承认反驳不了。",
+      },
+      {
+        id: "referee",
+        label: "裁判",
+        sees: ["bull", "bear", "bull_rebut", "bear_rebut"],
+        prompt: "你是裁判,不站队。做三件事:① 列出双方**都认的事实**;② 列出**争议点**,并说明分歧根源是数据不足还是口径不同;③ 把每个争议点写成一条**可裁决的判据**——需要看到什么数据、什么时候能看到。**不要给结论说谁赢,更不要给任何操作建议。**",
+      },
+    ],
+  },
+
+  /** 产出红线:词表 / 正则 / 免责声明全在 gate_rules.ts */
+  gate: FINANCE_GATE,
+
+  extraSectionsAfter: "风险与反证",
+
+  topicMerge: {
+    // 裁决点每行都带"下一个数据点是哪天",日历内容天然属于那一章
+    数据日历: "裁决点",
+    // 兜底议题:并到哪一章由内容决定,不指定
+    其他线索: "",
   },
 
   /** 变化提醒默认盯的证据字段 */
@@ -245,8 +305,12 @@ export const FINANCE_PLUGIN: Plugin = {
     ],
   },
 
+  /** 界面查询:每一屏要哪些数据(前端只认查询名,不认端点 id) */
+  pageQueries: FINANCE_PAGE_QUERIES,
+  /** 页面业务上下文:交易时段 → 这一页该看哪一天 */
+  pageContext: FINANCE_PAGE_CONTEXT,
   /** 用户自有台账的记录种类(Core 只管存储与校验,种类在 ledger_kinds.ts) */
-  ledger: { kinds: FINANCE_LEDGER_KINDS },
+  ledger: { kinds: FINANCE_LEDGER_KINDS, fieldLabels: FINANCE_FIELD_LABELS, enumLabels: FINANCE_ENUM_LABELS },
 
   lexicon: FINANCE_LEXICON,
 };

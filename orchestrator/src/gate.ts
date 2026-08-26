@@ -1,8 +1,18 @@
 /**
  * 合规 gate(确定性后处理):最终报告命中"投资动作建议"类模式即拒绝交付(AGENTS.md §0 第 3 条;方案 §9)。
- * 纯函数:输入报告文本,输出命中清单。只有整行精确等于固定免责声明的行才豁免(防"不构成投资建议,但建议建仓")。
+ * 纯函数:输入报告文本,输出命中清单。只有整行精确等于固定免责声明的行才豁免(防"不构成建议,但建议……"这种半句翻转)。
  */
-import { GATE_EXEMPT_LINES, GATE_PATTERNS, GATE_REGEXPS } from "./config.ts";
+import { gateExemptLines, gatePatterns, gateRegexps } from "./config.ts";
+
+/**
+ * 硬测试往报告里注入探针时的**那一整行**。
+ *
+ * 🔴 注册期自检与真正注入**必须用同一个函数拼**。审计 gate-r1-P1 指出:
+ *    自检只测裸的 probeLine,而真正写进报告的是带前后缀的一整行 ——
+ *    规则若是锚定式(`^…$`),自检过、注入行却拦不住,**硬测试从此永远绿**。
+ */
+export const probeReportLine = (probe: string): string =>
+  `- 【硬测试注入文本】${probe}(此行用于触发合规 gate,重写时必须删除)`;
 
 export interface GateHit {
   line: number;
@@ -15,7 +25,7 @@ export interface GateResult {
   hits: GateHit[];
 }
 
-/** 简 → 繁(只覆盖 GATE_PATTERNS 用到的、繁简不同的字);与 data-access/scripts/sources/textsafe.py TRAD_CHARS 逐字一致 */
+/** 简 → 繁(只覆盖红线词表用到的、繁简不同的字);与 data-access/scripts/sources/textsafe.py TRAD_CHARS 逐字一致 */
 export const TRAD_CHARS: Record<string, string> = { 仓: "倉", 减: "減", 满: "滿", 议: "議", 买: "買", 卖: "賣", 评: "評", 级: "級", 损: "損", 标: "標", 价: "價", 荐: "薦" };
 const TRAD2SIMP = new Map(Object.entries(TRAD_CHARS).map(([s, t]) => [t, s]));
 const CJK = "\u3400-\u9FFF\uF900-\uFAFF";
@@ -26,7 +36,7 @@ const INVISIBLE_RE = /[\p{Cc}\p{Cf}\p{Mn}\p{Me}\u200B-\u200D\u2060\uFEFF]/gu;
 export const CJK_SEP_CHARS = " \t\r\n\u3000\u00b7\u2022\u30fb_*~|/\\+.\u2010\u2011\u2012\u2013\u2014\u2015-";
 const CJK_SEP_RE = new RegExp(`(?<=[${CJK}])[${CJK_SEP_CHARS.replace(/[\\\]^-]/g, (c) => "\\" + c)}]+(?=[${CJK}])`, "gu");
 
-/** gate 匹配用规范形:NFKC、剥不可见字符、繁→简、汉字之间的空白 / 点线分隔符忽略("建 仓" / "建͏仓" / "目️标价" / "目標價" 都命中"建仓 / 目标价")。与 textsafe.canonical_for_match 同构。 */
+/** gate 匹配用规范形:NFKC、剥不可见字符、繁→简、汉字之间的空白 / 点线分隔符忽略(插空格、插零宽字符、写成繁体,都要命中同一个词)。与 textsafe.canonical_for_match 同构。 */
 export function canonicalForGate(text: string): string {
   let t = text.normalize("NFKC").replace(INVISIBLE_RE, "");
   t = Array.from(t, (ch) => TRAD2SIMP.get(ch) ?? ch).join("");
@@ -35,14 +45,31 @@ export function canonicalForGate(text: string): string {
 
 export function complianceGate(
   report: string,
-  patterns: string[] = GATE_PATTERNS,
-  exemptLines: string[] = GATE_EXEMPT_LINES,
-  regexps: { name: string; re: RegExp }[] = GATE_REGEXPS,
+  patterns: string[] = gatePatterns(),
+  exemptLines: string[] = gateExemptLines(),
+  regexps: { name: string; re: RegExp }[] = gateRegexps(),
 ): GateResult {
   const hits: GateHit[] = [];
   const exempt = new Set(exemptLines.map((l) => canonicalForGate(l.trim())));
   report.split(/\r?\n/).forEach((raw, i) => {
-    const line = raw.trim().replace(/^[-*>\s]+/, "").trim();
+    // 只剥**真正的 Markdown 前缀**(符号后面得有空白),逐层剥以支持嵌套引用 / 列表。
+    // 🔴 原来是 `/^[-*>\s]+/` 一把吞掉行首所有 `- * >` 与空白 —— 那会把**正文语义符号**
+    //    也吃掉:`>18% 才触发` → `18% 才触发`、`-1 倍` → `1 倍`、`*ST …` → `ST …`。
+    //    ⚠️ 对**当前**这套规则不构成漏判(实测:没有一条规则以 `- * >` 开头,也没有锚定行首的正则),
+    //       但它是个埋着的坑:哪天有人写一条 `/^-\d+% 止损/`,它会静默永不命中。
+    //       (审计 gate-r3;修的是"以后写规则的人会踩",不是"现在有洞"。)
+    let line = raw.trim();
+    for (;;) {
+      // `>` 后面也要求空白:金融文本里 `>18%` 几乎一定是"大于",不是引用块。
+      // 真是无空格引用块也无妨 —— 剥不剥都照样命中,只影响命中行怎么显示。
+      // `>` 只在后面是空白**或另一个 `>`**(嵌套引用 `>>`)时才算引用符。
+      // 金融文本里 `>18%` 几乎一定是"大于",不是引用块;真是无空格引用块也无妨 ——
+      // 剥不剥都照样命中,只影响命中行怎么显示。
+      const next = line.replace(/^(?:(?:[-*+]|\d+[.)])\s+|>(?=[>\s])\s*)/, "");
+      if (next === line) break;
+      line = next.trim();
+    }
+    line = line.trim();
     if (!line) return;
     const canon = canonicalForGate(line);
     if (exempt.has(canon)) return;

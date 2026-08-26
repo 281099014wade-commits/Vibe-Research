@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 
 import "../src/finance/register.ts"; // 测试文件也是入口:插件要先注册
 import { IngestError, MAX_FILES, ingestFiles } from "../src/ingest.ts";
-import { listRecords } from "../src/ledger.ts";
+import { listRecords, upsertRecord } from "../src/ledger.ts";
 
 // ⚠️ fileURLToPath 而不是 new URL(...).pathname —— 仓库路径含中文时 pathname 是百分号编码的
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
@@ -304,4 +304,135 @@ test("🔴 失败时暂存目录要清掉 —— 里面是用户的私密截图,
   // 成功则保留原件:草稿要逐条确认,人得能回去核对
   const r = await ingestFiles({ repoRoot: REPO, dataRoot: root }, { kind: "position", files: [{ name: "a.csv", content_base64: b64("x") }] }, fakeCodex(OK_REPLY));
   assert.ok(fs.existsSync(path.join(root, r.dir)), "成功的批次要留着");
+});
+
+test("🔴 导入要认用户配的 provider —— 直接 makeConfig 会恒定落到内置默认,用户配了等于没配", async () => {
+  const cap: Cap = {};
+  const root = tmp();
+  // .local/config.json 里配 mimo(它声明了 structured_output=prompt)
+  fs.mkdirSync(path.join(root), { recursive: true });
+  fs.writeFileSync(path.join(root, "config.json"), JSON.stringify({ provider: { profile: "mimo", auth: "api_key" } }));
+  process.env.MIMO_API_KEY = "k-for-test-0123456789";
+  try {
+    await ingestFiles(
+      { repoRoot: REPO, dataRoot: root },
+      { kind: "position", files: [{ name: "a.csv", content_base64: b64("x") }] },
+      fakeCodex(OK_REPLY, cap),
+    );
+  } finally {
+    delete process.env.MIMO_API_KEY;
+  }
+  // ① provider 真的被认了(不认的话这里会是 openai 的默认模型 / undefined)
+  assert.equal(cap.opts!.model, "mimo-v2.5", "模型应来自用户配的 provider 模板");
+  // ② 而且能力也跟着生效:这家不认服务端 schema ⇒ 不许硬传,schema 要进提示词
+  assert.equal(cap.schema, undefined, "硬传会被这家整轮拒掉(实测 MiMo)");
+  const text = (cap.inputs as { type: string; text?: string }[]).find((i) => i.type === "text")!.text!;
+  assert.ok(text.includes("JSON Schema"), "schema 要写进提示词");
+});
+
+test("🔴 草稿的 fields 一律按契约校验 —— 降级到提示词后没人拒非法字段,那就是在放松要求", async () => {
+  const root = tmp();
+  const bad: [string, string][] = [
+    // 拼错字段名 / 模型自己加的字段:硬传 schema 时平台会拒,降级后必须由我们拒
+    ['{"drafts":[{"source_file":"01_a.csv","fields":{"symbol":"300308","confidence":0.9},"uncertain":[]}],"warnings":[]}', "多了未声明字段"],
+    ['{"drafts":[{"source_file":"01_a.csv","fields":{"shares":"很多"},"uncertain":[]}],"warnings":[]}', "类型不对"],
+    ['{"drafts":[{"source_file":"01_a.csv","fields":{"smybol":"300308"},"uncertain":[]}],"warnings":[]}', "字段名拼错"],
+  ];
+  for (const [reply, why] of bad) {
+    await assert.rejects(
+      () => ingestFiles({ repoRoot: REPO, dataRoot: root }, { kind: "position", files: [{ name: "a.csv", content_base64: b64("x") }] }, fakeCodex(reply)),
+      (e: unknown) => e instanceof IngestError && e.code === "bad_output",
+      `应判 bad_output(${why})`,
+    );
+  }
+  // 只给读到的那几个字段(键不齐)是**允许**的:"没给这个键"和"给了 null"本来就同义
+  const ok = await ingestFiles(
+    { repoRoot: REPO, dataRoot: root },
+    { kind: "position", files: [{ name: "a.csv", content_base64: b64("x") }] },
+    fakeCodex('{"drafts":[{"source_file":"01_a.csv","fields":{"symbol":"300308","shares":100,"cost":8.46},"uncertain":[]}],"warnings":[]}'),
+  );
+  assert.deepEqual(ok.drafts[0]!.fields, { symbol: "300308", shares: 100, cost: 8.46 });
+});
+
+test("🔴 用户放在自己数据根下的 provider 覆盖模板要生效 —— 配置与模板必须同一个根", async () => {
+  const cap: Cap = {};
+  const root = tmp();
+  // 用户配置选 mimo,并在**同一个根**下放一份自己的覆盖模板(改了默认模型)
+  fs.writeFileSync(path.join(root, "config.json"), JSON.stringify({ provider: { profile: "mimo", auth: "api_key" } }));
+  fs.mkdirSync(path.join(root, "providers"), { recursive: true });
+  const tpl = JSON.parse(fs.readFileSync(path.join(REPO, "providers", "mimo.json"), "utf8")) as Record<string, unknown>;
+  tpl.default_model = "mimo-v2.5-pro"; // 与仓库模板(mimo-v2.5)不同 —— 用来区分到底读了哪一份
+  fs.writeFileSync(path.join(root, "providers", "mimo.json"), JSON.stringify(tpl));
+
+  process.env.MIMO_API_KEY = "k-for-test-0123456789";
+  try {
+    await ingestFiles({ repoRoot: REPO, dataRoot: root }, { kind: "position", files: [{ name: "a.csv", content_base64: b64("x") }] }, fakeCodex(OK_REPLY, cap));
+  } finally {
+    delete process.env.MIMO_API_KEY;
+  }
+  assert.equal(cap.opts!.model, "mimo-v2.5-pro", "读的必须是用户那份覆盖模板,不是仓库自带的");
+});
+
+test("🔴 草稿校验用**完整契约**:值越界也要当场拒,不能等落库才被拒", async () => {
+  const root = tmp();
+  const bad: [string, string][] = [
+    ['{"drafts":[{"source_file":"01_a.csv","fields":{"symbol":"ABC"},"uncertain":[]}],"warnings":[]}', "symbol 不是六位数字(pattern)"],
+    ['{"drafts":[{"source_file":"01_a.csv","fields":{"shares":-1},"uncertain":[]}],"warnings":[]}', "数量为负(minimum)"],
+    ['{"drafts":[{"source_file":"01_a.csv","fields":{"opened_at":"2026-99-99"},"uncertain":[]}],"warnings":[]}', "不是真日历日(format)"],
+  ];
+  for (const [reply, why] of bad) {
+    await assert.rejects(
+      () => ingestFiles({ repoRoot: REPO, dataRoot: root }, { kind: "position", files: [{ name: "a.csv", content_base64: b64("x") }] }, fakeCodex(reply)),
+      (e: unknown) => e instanceof IngestError && e.code === "bad_output",
+      `应判 bad_output(${why})`,
+    );
+  }
+});
+
+test("🔴 读不到的字段给 null 是**设计里的正常路径**,不能因此把整批判成坏产出", async () => {
+  const root = tmp();
+  // 提示词就是要求"读不到的给 null 而不是省略键";契约里的类型不含 null,
+  // 所以校验必须发生在 dropNulls **之后**,否则最常见的合法草稿全被拒
+  const reply = JSON.stringify({
+    drafts: [{
+      source_file: "01_a.csv",
+      fields: { symbol: "300308", name: null, account: null, shares: 100, cost: 8.46, opened_at: null, note: null },
+      uncertain: ["name:截图里没有"],
+    }],
+    warnings: [],
+  });
+  const r = await ingestFiles(
+    { repoRoot: REPO, dataRoot: root },
+    { kind: "position", files: [{ name: "a.csv", content_base64: b64("x") }] },
+    fakeCodex(reply),
+  );
+  assert.deepEqual(r.drafts[0]!.fields, { symbol: "300308", shares: 100, cost: 8.46 }, "null 全部剥掉,剩下的原样保留");
+  assert.deepEqual(r.drafts[0]!.uncertain, ["name:截图里没有"], "模型说不确定的地方要留着");
+});
+
+test("🔴 必填字段没读到的草稿要**标出来**,而不是让人点一个注定失败的按钮", async () => {
+  const root = tmp();
+  const reply = JSON.stringify({
+    drafts: [
+      { source_file: "01_a.csv", fields: { symbol: null, shares: 100, cost: 8.46 }, uncertain: ["symbol:截图糊了"] },
+      { source_file: "01_a.csv", fields: { symbol: "300308", shares: 100, cost: 8.46 }, uncertain: [] },
+    ],
+    warnings: [],
+  });
+  const r = await ingestFiles(
+    { repoRoot: REPO, dataRoot: root },
+    { kind: "position", files: [{ name: "a.csv", content_base64: b64("x") }] },
+    fakeCodex(reply),
+  );
+  // 整批不许因此被毙掉 —— 截图里一个字段没拍清是常态
+  assert.equal(r.drafts.length, 2);
+  assert.deepEqual(r.drafts[0]!.missing_required, ["symbol"], "缺的必填要点名");
+  assert.deepEqual(r.drafts[1]!.missing_required, [], "好的那条不受连累");
+  // 口径要对得上落库:标了缺必填的,落库确实会被拒
+  await assert.rejects(
+    async () => { upsertRecord(root, "position", r.drafts[0]!.fields); },
+    (e: unknown) => e instanceof Error && /symbol/.test(e.message),
+    "标出来的那条,落库路径也确实拒",
+  );
+  assert.ok(upsertRecord(root, "position", r.drafts[1]!.fields).id, "没标的那条要能真存进去");
 });

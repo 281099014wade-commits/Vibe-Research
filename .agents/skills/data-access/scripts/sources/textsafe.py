@@ -10,7 +10,7 @@
   - **不做语义改写、不过滤观点**:线索是什么就是什么,净化只针对"不能原样进提示词"的形态。
     ⚠️ 词表只收"投资动作措辞"(评级 / 仓位 / 买卖建议),**不收裸词"增持 / 减持"**——"控股股东拟增持公司股份"是公司行为事实,
     替换掉会让真正的股东行为线索无法辨认。
-GATE_WORDS / TRAD_CHARS 必须与 orchestrator/src/config.ts GATE_PATTERNS、orchestrator/src/gate.ts TRAD_CHARS 逐字一致
+GATE_WORDS / TRAD_CHARS 必须与 orchestrator/src/finance/gate_rules.ts 的 PATTERNS、orchestrator/src/gate.ts TRAD_CHARS 逐字一致
 (TS 测试 market_voice.test.ts 强制校验)。
 """
 from __future__ import annotations
@@ -19,7 +19,7 @@ import re
 import unicodedata
 from urllib.parse import quote
 
-# 与 orchestrator/src/config.ts GATE_PATTERNS 逐字一致
+# 与 orchestrator/src/finance/gate_rules.ts 的 PATTERNS 逐字一致
 GATE_WORDS = [
     "建仓", "加仓", "减仓", "清仓", "满仓", "空仓", "建议买", "建议卖", "买入评级", "卖出评级", "可以买", "可以卖",
     "逢低买", "逢高卖", "抄底", "止损", "止盈", "目标价", "仓位建议", "配置比例", "推荐买", "推荐卖", "持有评级", "建议增持", "增持评级", "减持评级",

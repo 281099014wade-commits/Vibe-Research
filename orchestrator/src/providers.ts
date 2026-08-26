@@ -40,6 +40,12 @@ export interface ProviderProfileFile {
   stream_max_retries?: number;
   stream_idle_timeout_ms?: number;
   matrix?: { status: string; note?: string; last_run?: string; results?: Record<string, string> };
+  /**
+   * 这家支持哪种"强制结构化产出"。缺省 = `json_schema`(OpenAI 的做法)。
+   * `prompt` = 它的 Responses 端点**不认 `text.format.type=json_schema`**,只能把 schema 写进提示词。
+   * 实测:小米 MiMo 返回 `responses_feature_not_supported:only 'text' and 'json_object' are allowed`。
+   */
+  structured_output?: "json_schema" | "prompt";
   /** 模板里易变的供应商信息(default_model / context_limit_tokens)最近一次人工核实日期;null = 未核实 */
   verified_at?: string | null;
 }
@@ -61,9 +67,45 @@ export const providerProfileSchema = {
     query_params: { type: "object", additionalProperties: { type: "string" } }, http_headers: { type: "object", additionalProperties: { type: "string" } }, env_http_headers: { type: "object", additionalProperties: { type: "string", pattern: ENV_KEY_RE, not: { enum: FORBIDDEN_ENV } } },
     request_max_retries: { type: "integer", minimum: 0 }, stream_max_retries: { type: "integer", minimum: 0 }, stream_idle_timeout_ms: { type: "integer", minimum: 1000 },
     matrix: { type: "object", additionalProperties: false, properties: { status: { type: "string" }, note: { type: "string" }, last_run: { type: "string" }, results: { type: "object", additionalProperties: { type: "string" } } } },
+    structured_output: { type: "string", enum: ["json_schema", "prompt"] },
     verified_at: { type: ["string", "null"], pattern: "^\\d{4}-\\d{2}-\\d{2}$" },
   },
 } as const;
+
+export type StructuredOutputMode = "json_schema" | "prompt";
+
+/** 这家支持哪种强制结构化产出。没声明 = `json_schema`(OpenAI 的做法,也是引擎的默认路径) */
+export function structuredOutputMode(prof?: ProviderProfileFile | null): StructuredOutputMode {
+  return prof?.structured_output ?? "json_schema";
+}
+
+/**
+ * 按 provider 的能力决定 schema 走哪条路。
+ *
+ * 🔴 为什么可以降级到提示词而不算放松要求:**`outputSchema` 从来就不是校验边界**
+ *    (`ingest.ts` 的注释早就写着这句)。它是给模型的约束,产物合不合规是我们自己校验的
+ *    (阶段产物过 validator、导入草稿过 parseOutput)。⇒ 降级损失的是**命中率**不是**正确性**:
+ *    模型少了一层硬约束,可能更容易写歪、重试次数上升,但写歪了照样过不了我们这关。
+ *
+ * ⚠️ 所以这条降级**不能**顺手把校验也一起省掉 —— 那才是真放松。
+ */
+export function withOutputSchema(
+  prompt: string,
+  schema: unknown,
+  mode: StructuredOutputMode,
+): { prompt: string; outputSchema?: unknown } {
+  if (schema === undefined || schema === null) return { prompt };
+  if (mode === "json_schema") return { prompt, outputSchema: schema };
+  return {
+    prompt:
+      `${prompt}\n\n---\n\n` +
+      "**最终回复必须是一个 JSON 对象,且只有这个 JSON —— 不要代码围栏、不要任何解释文字。**\n" +
+      "它必须符合下面这份 JSON Schema(你所在的通道不支持由服务端强制 schema,所以这里靠你自己遵守):\n" +
+      "```json\n" +
+      `${JSON.stringify(schema, null, 2)}\n` +
+      "```",
+  };
+}
 
 const SECRET_LIKE = /(sk-[A-Za-z0-9]{8,}|Bearer\s+\S{8,}|[A-Za-z0-9_-]{32,})/;
 

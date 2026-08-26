@@ -14,6 +14,7 @@ import { saveLedger, type FetchExecutor } from "../src/fetchrun.ts";
 import { sha256File, writeJson } from "../src/fsutil.ts";
 import { hooksIneffectiveReason, deriveRunStatus, exitCodeFor, prepareRunDir, runResearch } from "../src/orchestrate.ts";
 import { CodexRunner, EventsLog, codexOptionsFor, type AgentRunner, type TurnOutcome } from "../src/runner.ts";
+import { currentPlugin } from "../src/plugin.ts";
 import { validateManifest } from "../src/schemas.ts";
 
 
@@ -546,4 +547,54 @@ test("证据合并:同 id 但事实不同必须报冲突,不许静默折叠(全�
   assert.equal(diffUnit.idConflicts.length, 1);
   // 值不同仍然报
   assert.equal(mergeEvidence({ a: envOf([base]) as never, b: envOf([{ ...base, value: 11 }]) as never }).idConflicts.length, 1);
+});
+
+test("🔴 runner 真的按 provider 能力决定 schema 走哪条路 —— 只测那个纯函数测不出接没接上", async () => {
+  const repo = tmpRepo();
+  const schema = { type: "object", required: ["summary"], properties: { summary: { type: "string" } } };
+  const seen: { prompt: string; opts: { outputSchema?: unknown } }[] = [];
+  const fakeCodex = () =>
+    ({
+      startThread: () => ({
+        id: "t",
+        runStreamed: (prompt: string, opts: { outputSchema?: unknown }) => {
+          seen.push({ prompt, opts });
+          return Promise.resolve({
+            events: (async function* () {
+              yield { type: "item.completed", item: { type: "agent_message", text: "{}" } };
+              yield { type: "turn.completed" };
+            })(),
+          });
+        },
+      }),
+    }) as never;
+
+  const mk = (structured?: "json_schema" | "prompt") =>
+    makeConfig({
+      symbol: "300308", repoRoot: repo, runId: `so-${structured ?? "none"}`, python: "false",
+      provider: { name: "p", wire_api: "responses", base_url: "https://x.example/v1", env_key: "P_KEY", auth: "api_key" },
+      providerProfile: {
+        id: "p", name: "P", wire_api: "responses", base_url: "https://x.example/v1", env_key: "P_KEY",
+        auth_modes: ["api_key"], requires_openai_auth: false, default_model: "m", responses_support: "native",
+        ...(structured ? { structured_output: structured } : {}),
+      } as never,
+    });
+
+  const stage = currentPlugin().stages[0]!;
+  process.env.P_KEY = "k-for-test-0123456789"; // api_key 模式:runner 构造时就要求这个变量在
+  try {
+    // ① 没声明 → 照常硬传 schema
+    const c1 = mk();
+    await new CodexRunner(c1, path.join(c1.runDir, "events.jsonl"), fakeCodex).runTurn(stage, 1, "原提示词", schema);
+    assert.deepEqual(seen[0]!.opts.outputSchema, schema, "默认必须硬传");
+    assert.equal(seen[0]!.prompt, "原提示词");
+
+    // ② 声明 prompt → 不传 outputSchema,schema 进提示词
+    const c2 = mk("prompt");
+    await new CodexRunner(c2, path.join(c2.runDir, "events.jsonl"), fakeCodex).runTurn(stage, 1, "原提示词", schema);
+    assert.equal(seen[1]!.opts.outputSchema, undefined, "硬传会被这家整轮拒掉(实测 MiMo)");
+    assert.ok(seen[1]!.prompt.includes('"summary"'), "schema 本体要出现在提示词里");
+  } finally {
+    delete process.env.P_KEY;
+  }
 });

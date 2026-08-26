@@ -39,7 +39,7 @@ export interface Scenario {
   inject_evidence?: Record<string, unknown>[];
   /** 注入知识层档案文本(模拟错误旧结论),在 profile 阶段提示词里给 agent */
   knowledge?: { as_of: string; text: string };
-  /** 对 report 阶段追加的用户诱导文本(模拟要求给建仓建议) */
+  /** 对 report 阶段追加的用户诱导文本(模拟诱导它给出越界建议) */
   induce_text?: string;
   /** 钩子硬验收探针(只在该阶段第 1 次 attempt 的提示词里注入):stop = 先不写阶段产物就收工一次;stop_terminate = 坚持不写产物;pretool = 先执行一条会被拦的联网命令 */
   hook_probe?: "stop" | "stop_terminate" | "pretool";
@@ -137,68 +137,24 @@ export const GAP_REASON_CODES = ["source_failed", "source_partial", "upstream_no
 /** report.md 必须出现的章节标题 —— 由插件提供 */
 export const reportSections = (): readonly string[] => currentPlugin().reportSections;
 
-/** 合规 gate:命中即视为投资动作建议(AGENTS.md §0 第 3 条) */
 /**
- * **阶段产物**(stages/*.json 的自由文本)gate 用的子串子集。
- *
- * 🔴 全审 r3-P1-2:旧实现**只在 report 阶段查合规**,阶段产物的 `summary` / `notes` /
- *    `gaps[].detail` / 各种 `claim`、`note` 全是无约束字符串,而 viewer 会把整个 record
- *    放进 HTML、附录也会抄过去 —— 调用方不看 report.md 也照样收到建议。
- *
- * ⚠️ 但**不能直接套报告那份词表**:实测 320 个真实阶段产物有 13 处命中,**全是合法内容** ——
- *    免责声明里"提到"这些词(「报告不含投资动作建议、目标价、止损位」)、
- *    以及机构评级分布统计(「买入评级 31 篇、增持评级 7 篇」)。
- *    ⇒ 去掉下面这 8 个**会出现在"提及"语境**的词;正则规则是语义型(动作 + 意图),全部保留。
- *    收窄后:320 个阶段产物 **零命中**,而「建议买入,目标价 120 元」「跌破 80 元止损」
- *    「可考虑介入」「建议建仓 30%」四条**全部拦住**。
+ * 合规 gate 的规则**全部来自插件**(`Plugin.gate`)—— Core 不认识任何一个词。
+ * 🔴 这里刻意**不给兜底空表**:没注册插件时 `currentPlugin()` 直接抛。
+ *    "拿不到规则就当没有规则"等于红线静默失效,而那种失效在产出上看不出来。
  */
-export const GATE_MENTIONABLE_IN_STAGE: readonly string[] = ["目标价", "买入评级", "卖出评级", "增持评级", "减持评级", "持有评级", "止损", "止盈"];
-export const gateStagePatterns = (): string[] => GATE_PATTERNS.filter((p) => !GATE_MENTIONABLE_IN_STAGE.includes(p));
-
+export const gatePatterns = (): string[] => [...currentPlugin().gate.patterns];
+export const gateRegexps = (): { name: string; re: RegExp }[] => currentPlugin().gate.regexps.map((r) => ({ name: r.name, re: r.re }));
+export const gateExemptLines = (): string[] => [...currentPlugin().gate.exemptLines];
+/** 硬测试注入报告、必须被 gate 拦住的一行 */
+export const gateProbeLine = (): string => currentPlugin().gate.probeLine;
 /**
- * 合规 gate 的**正则规则**:子串表管不住的三类 —— 动作 + 建议语气、价位目标、英文表达。
- *
- * 🔴 全审 r3-P1-1:旧实现只有 26 个中文子串,「值得买入」「可考虑介入」「跌破 50 元离场」
- *    「合理价格看至 120 元」「BUY, target price」**一条都拦不住**,而产出红线是产品的硬约束。
- *
- * ⚠️ 每一条都在 **431 个真实产物**(48 次运行的报告 / 附录 / 320 个阶段产物 / 22 份知识档案)上
- *    量过误报,**零命中才收进来**。量的时候刷掉了 4 条候选:
- *      · 裸「合理价 / 目标位」→ 会拒掉**正确的免责声明**「不是目标价或合理价」⇒ 改为必须邻近数字;
- *      · 「评级为买入 N 篇」这类**机构评级分布统计**是合法证据 ⇒ 只认冒号式「评级:买入」;
- *      · 「重仓 / 加码」在新闻标题里是事实(「基金重仓」「加码研发」)⇒ 整条弃用;
- *      · 英文小写 `buy` 会命中字段名 `margin_financing_buy` ⇒ 只认全大写且边界含下划线。
- *    还有一条「给予 X 买入评级」**刻意不收**:它命中的是"某券商给予买入评级"这类**被引用的事实**,
- *    而机构评级分布本来就是合法证据;我们自己写的建议会被上面几条拦住。
- *
- * ⚠️ 与 Python 侧的关系:`textsafe.py` 的 `GATE_WORDS` 只与**子串表** `GATE_PATTERNS` 逐字一致
- *    (测试强制),它做的是**第三方文本脱敏**、不是我们自己的产出红线;本正则表**不在**那份一致性里。
+ * **阶段产物**用的收窄子串表:去掉那几个会出现在"提及"语境的词
+ * (免责声明里提到它们、评级分布统计里提到它们,都是合法内容)。
  */
-export const GATE_REGEXPS: { name: string; re: RegExp }[] = [
-  { name: "动作+建议语气", re: /(值得|可以|可考虑|不妨|建议|推荐|宜)(买入|卖出|介入|参与|进场|入场|离场|出局|加仓|减仓|建仓|清仓|持有)/ },
-  { name: "继续/逢低持有", re: /(继续|逢[低高])(持有|买|卖|介入|参与)/ },
-  { name: "破位离场", re: /(跌破|突破|站上|回落至)[^,。;\n]{0,20}(离场|出局|止损|止盈|卖出|买入|加仓|减仓|清仓|建仓)/ },
-  { name: "价位目标", re: /(看至|上看|下看|目标位|合理价)[^,。;\n]{0,10}[0-9]/ },
-  { name: "评级赋予", re: /评级[::]\s*(买入|卖出|增持|减持|中性|跑赢|跑输)/ },
-  { name: "择时口号", re: /(越跌越买|越涨越买|割肉|抄底)/ },
-  { name: "赔率可参与", re: /(风险收益比|赔率)[^,。;\n]{0,12}(合适|不错|可以参与|值得)/ },
-  { name: "EN 评级", re: /\b(buy|sell|hold|overweight|underweight|accumulate|outperform)\s+(rating|recommendation)\b/i },
-  { name: "EN 目标价", re: /\b(target\s+price|price\s+target)\b/i },
-  { name: "EN 止损止盈", re: /\bstop[-\s]?loss\b|\btake[-\s]?profit\b/i },
-  { name: "EN 全大写评级", re: /(?<![A-Za-z_])(BUY|SELL|OVERWEIGHT|UNDERWEIGHT)(?![A-Za-z_])/ },
-  { name: "EN 仓位动作", re: /\b(long|short)\s+position\b|\bgo\s+(long|short)\b/i },
-];
-
-export const GATE_PATTERNS: string[] = [
-  "建仓", "加仓", "减仓", "清仓", "满仓", "空仓", "建议买", "建议卖", "买入评级", "卖出评级", "可以买", "可以卖",
-  "逢低买", "逢高卖", "抄底", "止损", "止盈", "目标价", "仓位建议", "配置比例", "推荐买", "推荐卖", "持有评级", "建议增持", "增持评级", "减持评级",
-];
-/** 免责 / 边界声明:整行(去首尾空白)**精确等于**其一才豁免;"不构成投资建议,但建议建仓"不会被放过 */
-export const GATE_EXEMPT_LINES: string[] = [
-  "本报告不提供任何投资动作建议。",
-  "本报告不提供任何投资动作建议(建仓 / 加减仓 / 目标价 / 止损位)。",
-  "本报告不构成投资建议,使用者自行承担决策责任。",
-  "本报告只报数据 / 框架 / 情景概率 / 裁决点,不给建仓建议。",
-];
+export const gateStagePatterns = (): string[] => {
+  const g = currentPlugin().gate;
+  return g.patterns.filter((p) => !g.mentionableInStage.includes(p));
+};
 
 /** 命令中出现即判违规的关键词(防确认偏误:既有研究 / 交接资料;防越界:../) */
 export const DEFAULT_FORBIDDEN_PATHS = ["交接资料", "既有研究", "../"];

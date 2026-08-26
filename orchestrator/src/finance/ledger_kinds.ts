@@ -1,9 +1,10 @@
 /**
  * 金融垂类的**台账记录种类**。Core 只提供存储与校验(`src/ledger.ts`),种类与字段全在这里。
  *
- * 四种记录构成一个经营闭环:
+ * 核心四种构成一个闭环:
  *   计划(thesis) → 判据(criterion) → 现状(position) → 到期要做的事(action)
  * **顺序是有意的**:先写下目标与判据,后面所有"偏离"才有参照物。
+ * 另两种在闭环之外:`watch`(自选,还没到写论点的程度)与 `note`(研究记录,只留痕不判定)。
  *
  * 🔴 红线:这些是**用户自己写下的东西**,产品不替他生成建仓建议。
  *    界面只做两件事:把他写的原样呈现出来,以及把"哪条到期了"算出来。
@@ -22,6 +23,31 @@ const SYMBOL = { type: "string", pattern: "^([0-9]{6})?$" };
 const DATE = { type: "string", anyOf: [{ maxLength: 0 }, { format: "date" }] };
 const TEXT = (max = 500) => ({ type: "string", maxLength: max });
 const NONEMPTY = (max = 500) => ({ type: "string", minLength: 1, maxLength: max, pattern: "\\S" });
+
+/**
+ * 字段键 / 枚举值的**中文显示名**。
+ *
+ * 🔴 这些以前写死在 Core 的表单组件里 —— "cost=成本""decision_point=裁决点"
+ *    只在这个行业成立,换个垂类就得改 Core。而前端的纯净度棘轮词表里恰好
+ *    没有"成本 / 账户 / 裁决点"这几个词,于是**一路绿灯**。
+ *    ⇒ 教训与后端那条一样:词表挡不住它没收录的词,别拿"棘轮是绿的"当边界证明。
+ *
+ * ⚠️ 不必登记全部字段:界面对没登记的退回**原键名**照常渲染。
+ */
+export const FINANCE_FIELD_LABELS: Record<string, string> = {
+  symbol: "代码", name: "名称", account: "账户", shares: "数量", cost: "成本",
+  opened_at: "建立日期", note: "备注", title: "标题", statement: "内容",
+  review_by: "复核日期", status: "状态", type: "类型", thesis_id: "关联论点",
+  due: "到期日", ref: "关联", tag: "分组", category: "分类", body: "正文",
+};
+
+export const FINANCE_ENUM_LABELS: Record<string, string> = {
+  active: "进行中", paused: "暂停", closed: "已结束",
+  decision_point: "裁决点", falsifier: "证伪条件",
+  pending: "待判", met: "已达成", broken: "已触发", dropped: "已放弃",
+  open: "待办", done: "已完成",
+  review: "复盘", highlight: "今日要点", ask: "问 Agent", debate: "多空辩论", audit: "反思审计",
+};
 
 export const FINANCE_LEDGER_KINDS: Record<string, LedgerKindDef> = {
   /** 持有记录:成本与数量是用户自己的事实,产品不猜也不改 */
@@ -71,6 +97,47 @@ export const FINANCE_LEDGER_KINDS: Record<string, LedgerKindDef> = {
       note: TEXT(1000),
     },
     required: ["type", "statement"],
+  },
+
+  /**
+   * 自选:只是"我盯着它",还没到写论点的程度。
+   *
+   * 🔴 与产品自带的**研究线**(界面里那几个可展开的分组)是两回事:
+   *    那是随产品发的默认清单(让新用户一打开就知道这一页是干嘛的),
+   *    这里是**用户自己加的**。两者混成一张表的话,产品更新默认清单就会动到用户的数据。
+   * ⚠️ 自选里出现过不代表持有 —— 持有是 `position`,两张表刻意不互相推断。
+   */
+  watch: {
+    label: "自选",
+    properties: {
+      symbol: { type: "string", pattern: "^[0-9]{6}$" },
+      name: TEXT(40),
+      /** 用户自己的分组名(想按什么分就按什么分,产品不给固定选项) */
+      tag: TEXT(40),
+      note: TEXT(1000),
+    },
+    required: ["symbol"],
+  },
+
+  /**
+   * 研究记录:把复盘 / 要点 / 问 Agent 的结果沉淀下来,回头能翻。
+   *
+   * 🔴 分类字段叫 `category` 而**不是 `kind`** —— `kind` 是 Core 的信封键
+   *    (`LEDGER_ENVELOPE_KEYS`),重名会被注册期当场拒。这不是风格问题:
+   *    真让它重名,记录的"种类"与"分类"会在同一个键上打架。
+   * ⚠️ 与判据 / 论点的区别:那两种是**要拿来对账的**(有到期日、有状态);
+   *    这里是**留痕**,不参与任何自动判定。
+   */
+  note: {
+    label: "研究记录",
+    properties: {
+      symbol: SYMBOL,
+      category: { type: "string", enum: ["review", "highlight", "ask", "debate", "audit"] },
+      title: NONEMPTY(160),
+      /** markdown 正文 */
+      body: TEXT(20000),
+    },
+    required: ["title"],
   },
 
   /** 行动:待办。可由判据到期生成,也可以自己写 */

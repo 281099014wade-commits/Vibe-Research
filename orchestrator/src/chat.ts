@@ -14,14 +14,16 @@
  * 会话是进程内的:API 重启后对话历史就没了。这是刻意的 ——
  * 把对话落盘等于又建了一份"用户数据",而它的价值远不如研究产物,不值得那份持久化与迁移负担。
  */
+import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 
 import { Codex, type CodexOptions, type Thread } from "@openai/codex-sdk";
 
-import { GATE_PATTERNS, makeConfig, type RunConfig } from "./config.ts";
+import { gatePatterns, makeConfig, type RunConfig } from "./config.ts";
 import { complianceGate } from "./gate.ts";
 import { currentPlugin } from "./plugin.ts";
+import { loadProductConfig } from "./productConfig.ts";
 import { codexOptionsFor } from "./runner.ts";
 
 export class ChatError extends Error {
@@ -49,6 +51,11 @@ interface Session {
 }
 
 const SESSION_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+/**
+ * 用户手打消息的上限。
+ * ⚠️ **内部调用方可以经 `opts.maxMessage` 提高**(如多空辩论要带一份资料包进来)——
+ *    `opts` 由服务层从 ctx 构造,**用户请求体到不了这里**,所以提高它不等于放开用户输入。
+ */
 const MAX_MESSAGE = 4_000;
 const MAX_TURNS = 200;
 /** 空闲多久回收会话(线程不再复用,下次提问重开) */
@@ -78,11 +85,11 @@ function preamble(): string {
     // 🔴 **别在这里列举禁用词**。实测:让模型复述"不给 XX、不给 YY"时,它照做,
     //    而 gate 是子串匹配 —— 一句"我不给 XX"照样命中 XX 被整行移除,用户看到的是自我介绍缺了半句。
     //    想过在 gate 里加"否定则豁免",**放弃了**:窗口式否定检测会被双重否定绕过
-    //    (「不要错过建仓机会」里"建仓"前四字含"不",会被误豁免,而那恰恰是建议)。
+    //    (「不要错过某某机会」这类句子里,动作词前四字含"不",会被误豁免,而它恰恰是建议)。
     //    合规判定只能偏严不能偏松 ⇒ 治因不治症:这里不给它可复述的词表。
-    "4. 产出红线照旧:只呈现数据、框架、情景概率与裁决点,**不做任何交易动作层面的建议**。",
+    "4. 产出红线照旧:只呈现数据、框架、情景概率与到期要判的点,**不做任何动作层面的建议**。",
     "   讲这条规则本身时,用一句话概括就行,不要逐条复述被禁的说法。",
-    `   (机器会复核:命中动作词的行整行移除 —— 共 ${GATE_PATTERNS.length} 条规则。)`,
+    `   (机器会复核:命中动作词的行整行移除 —— 共 ${gatePatterns().length} 条规则。)`,
     `5. 这个垂类的阶段是:${p.stages.join(" → ")};用户问"研究流程"时按这个说。`,
     "",
     "回答用中文,简洁,别铺排。",
@@ -100,7 +107,7 @@ function sessionDir(cfg: RunConfig, session: string): string {
  * @param codexFactory 测试注入用;生产走真实 SDK
  */
 export async function chatSend(
-  opts: { repoRoot: string; dataRoot?: string; python?: string },
+  opts: { repoRoot: string; dataRoot?: string; python?: string; maxMessage?: number },
   req: { session?: string; message: string },
   codexFactory: (o: CodexOptions) => Codex = (o) => new Codex(o),
 ): Promise<ChatTurnResult> {
@@ -108,15 +115,31 @@ export async function chatSend(
   if (!SESSION_RE.test(session)) throw new ChatError("bad_session", `非法会话名 ${JSON.stringify(session).slice(0, 40)}`);
   const message = String(req.message ?? "").trim();
   if (!message) throw new ChatError("empty_message", "消息不能为空");
-  if (message.length > MAX_MESSAGE) throw new ChatError("message_too_long", `消息过长(> ${MAX_MESSAGE} 字符)`);
+  const maxMessage = Math.max(1, Math.min(Number(opts.maxMessage) || MAX_MESSAGE, 64_000));
+  if (message.length > maxMessage) throw new ChatError("message_too_long", `消息过长(> ${maxMessage} 字符)`);
 
   sweep();
 
+  // 🔴 **必须走 loadProductConfig,和 run.ts 同一条路**。
+  //    直接 makeConfig 会拿 provider 的内置默认(openai)、providerProfile 恒为 null ⇒
+  //    用户配了 DeepSeek / MiMo,研究运行认,而这条路**不认**:照样去打 OpenAI。
+  //    表现是"研究能跑,对话报错",而且报的是别人家的错 —— 极难往配置上想。
+  // ⚠️ 调用方给了 dataRoot 就整个按它走(用户配置 + provider 覆盖模板 + 数据根):
+  //    只塞 userConfigPath 的话,配置从这个根读、模板却从 repoRoot 推的根找 —— 两套口径,静默不一致。
+  const pc = loadProductConfig(opts.repoRoot, {
+    env: process.env,
+    ...(opts.dataRoot ? { dataRootOverride: opts.dataRoot } : {}),
+  });
   const cfg = makeConfig({
     symbol: "CHAT",
     repoRoot: opts.repoRoot,
-    ...(opts.dataRoot ? { dataRoot: opts.dataRoot } : {}),
-    ...(opts.python ? { python: opts.python } : {}),
+    dataRoot: opts.dataRoot ?? pc.resolved.dataRoot,
+    python: opts.python ?? pc.python ?? undefined,
+    codexPath: pc.resolved.codexPath,
+    codexHome: pc.resolved.codexHome,
+    provider: pc.provider,
+    providerProfile: pc.providerProfile,
+    ...(pc.defaults.model ? { model: pc.defaults.model } : {}),
     runId: `chat-${session}`,
   });
 
@@ -127,7 +150,22 @@ export async function chatSend(
   //    ⚠️ 用 `cfg.dataRoot` 而不是 `opts.dataRoot`:后者可以不传(由 makeConfig 兜底),
   //       拿没兜底的值组键,两次同义的调用会算出两把不同的键。
   //    分隔符用 NUL:会话名的字符集(SESSION_RE)不含它,拼不出歧义键。
-  const sessionKey = `${path.resolve(cfg.dataRoot)}\u0000${session}`;
+  // 🔴 键里还要带上**provider 指纹**。线程一建好,provider / 端点 / 认证 / 模型就全绑死在它上面了;
+  //    用户中途改配置换成别家,只按"数据根+会话名"索引会**继续复用旧线程** ——
+  //    请求正常返回,用户以为新配置生效了,实际还在打旧的那家,而且不会有任何报错
+  //    (Codex 审计 mimo-r1 P1)。把指纹并进键里,配置一变自然就是新线程。
+  // 🔴 指纹要对**真正传给引擎的那份东西**取哈希,不能手挑几个字段。
+  //    手挑过一版(name|base_url|auth|model),漏了 wire_api / env_key / query_params /
+  //    http_headers,连**轮换 API key** 都不体现 ⇒ 换了凭据仍复用旧线程、继续按旧身份计费
+  //    (Codex 复审 mimo-r2 P1)。`codexOptionsFor(cfg)` 就是 `new Codex(...)` 收到的原物,
+  //    它一变,线程就必须重开。
+  // ⚠️ 这个哈希里含密钥派生值 ⇒ **只留在内存里当 Map 的键,永不落盘、永不进日志**。
+  const providerFingerprint = crypto
+    .createHash("sha256")
+    .update(JSON.stringify(codexOptionsFor(cfg)))
+    .digest("hex")
+    .slice(0, 16);
+  const sessionKey = `${path.resolve(cfg.dataRoot)}\u0000${providerFingerprint}\u0000${session}`;
   let s = sessions.get(sessionKey);
   if (s && s.turns >= MAX_TURNS) {
     // 线程越长越贵、也越容易漂;到上限换一条新的
@@ -191,7 +229,7 @@ function applyGate(text: string): { reply: string; redacted: number } {
   if (g.ok) return { reply: text, redacted: 0 };
   const bad = new Map<number, string>();
   for (const h of g.hits) bad.set(h.line, h.pattern);
-  // 🔴 **提示里不能回显命中的动作词** —— 我第一版写成"已移除(建仓)",
+  // 🔴 **提示里不能回显命中的动作词** —— 我第一版写成"已移除(某动作词)",
   //    那等于把 gate 刚挡掉的词原样放回输出(自己的测试当场抓到)。
   //    命中详情只进服务端日志,给排查用;用户看到的是"这里少了一行、以及为什么"。
   //    仓库里 fetchrun.ts 早有同样做法:替换成〔动作词〕而不是原词。

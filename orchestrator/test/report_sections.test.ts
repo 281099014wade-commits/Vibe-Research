@@ -4,7 +4,7 @@ import { extraTopics } from "../src/schemas.ts";
 
 import "../src/finance/register.ts";   // 测试文件也是入口:插件要先注册
 import {
-  topicSections, TOPICS_WITHOUT_SECTION, citedIds, extraSectionErrors, extraSectionsPromptBlock,
+  topicSections, topicsWithoutSection, citedIds, extraSectionErrors, extraSectionsPromptBlock,
   headingBlocks, missingExtraSections, normalizeHeading, requiredExtraSections,
 } from "../src/report_sections.ts";
 
@@ -14,7 +14,7 @@ const errs = (report: string, ...topics: [string, string[]][]) => extraSectionEr
 test("映射表覆盖 risk 的全部合法 topic:要么有专属章节,要么明确登记为无章节", () => {
   // 防的是"加了新 topic 却忘了决定它进哪一章"。即使漏了,运行时也会 fail-safe 退化成全文要求(见下一条测试)。
   for (const t of extraTopics().risk) {
-    const known = t in topicSections() || (TOPICS_WITHOUT_SECTION as readonly string[]).includes(t);
+    const known = t in topicSections() || topicsWithoutSection().includes(t);
     assert.equal(known, true, `risk topic「${t}」既没有专属章节也没登记为无章节`);
   }
 });

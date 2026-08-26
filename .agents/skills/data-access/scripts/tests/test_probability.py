@@ -249,7 +249,11 @@ def test_item_level_as_of_wins_over_run_level():
               "price_type": "ask", "volume": 1.0, "close": "2026-12-15",
               "as_of": "2026-08-25T00:00:20Z", "raw_ref": "raw/a.json"}]
     got = macro_probability_map({"today": TODAY, "as_of": "2026-08-24T23:59:55Z", "items": items}, CTX)
-    assert got["evidence"][0]["as_of"] == "2026-08-25T00:00:20Z"
+    # 🔴 断言按**契约形状**(YYYY-MM-DD)比,不能比完整时间戳 ——
+    #    上一版就是断言 `== "2026-08-25T00:00:20Z"`,等于**把违约行为锁死在测试里**:
+    #    证据契约要求 as_of 是纯日期,于是这条端点在真跑时让整个风险阶段校验失败三次。
+    #    本测试的本意(item 级优先于 run 级)不变:两个时刻恰好跨日,按日期比照样区分得开。
+    assert got["evidence"][0]["as_of"] == "2026-08-25"   # item 级(run 级是 08-24)
 
 
 def test_yes_leg_present_but_unparsable_price_counts_as_no_price():
@@ -423,3 +427,34 @@ def test_unparseable_close_date_is_also_dropped(bad):
     P._poly_shape([_poly_row(outcomes='["Yes","No"]', outcomePrices='["0.4","0.6"]', endDate=bad)],
                   TODAY, dropped, out, "raw/p.json", "2026-08-24T12:00:00Z")
     assert out == [] and dropped.get("missing_close") == 1
+
+
+def test_as_of_always_matches_evidence_contract():
+    """🔴 证据契约要求 as_of 是 YYYY-MM-DD。这条端点曾把完整时间戳写进去,
+    取数当时不报错,四分钟后才在阶段校验炸掉,而且 agent 重试三次也修不好(取数产物不是它能改的)。"""
+    import re as _re
+    items = [{"module": "货币政策", "venue": "kalshi", "title": "T", "leg": "", "prob": 0.5,
+              "price_type": "ask", "volume": 1.0, "close": "2026-12-15",
+              "as_of": "2026-08-26T02:20:07Z", "raw_ref": "raw/a.json"}]
+    got = macro_probability_map({"today": TODAY, "as_of": "2026-08-26T02:20:07Z", "items": items}, CTX)
+    for e in got["evidence"]:
+        assert _re.match(r"^\d{4}-\d{2}-\d{2}$", e["as_of"]), f'as_of 违约:{e["as_of"]!r}'
+    # 精确时刻不该丢:它留在 extra 里
+    assert got["extra"]["as_of"] == "2026-08-26T02:20:07Z"
+
+
+def test_ev_rejects_unparseable_as_of():
+    """非法 as_of **当场抛错**,不"尽力修好" —— 取数失败有兜底(记 gap 照常往下走),
+    而一个违约的信封会让整个阶段失败。早失败、错得清楚,比晚失败、错得含糊好。"""
+    import pytest
+    from sources.mappers import ev
+    ctx = {"script": "s", "symbol": "MARKET", "market": "US", "source": "x", "endpoint": "y", "raw_ref": None}
+    assert ev(ctx, "f", 1, "n/a", "2026-01-01", as_of="2026-08-26")["as_of"] == "2026-08-26"
+    assert ev(ctx, "f", 1, "n/a", "2026-01-01", as_of="2026-08-26T02:20:07Z")["as_of"] == "2026-08-26"
+    for bad in ["昨天", "2026/08/26", "20260826"]:
+        with pytest.raises(ValueError, match="as_of"):
+            ev(ctx, "f", 1, "n/a", "2026-01-01", as_of=bad)
+    # ⚠️ 空串是**"没给"**不是"给了个坏值":照约定退回今天。
+    #    (我第一版把它也列进 bad,是我的预期写错了,不是代码错 —— 实测后改的测试,没改代码。)
+    from sources.mappers import today_str
+    assert ev(ctx, "f", 1, "n/a", "2026-01-01", as_of="")["as_of"] == today_str()

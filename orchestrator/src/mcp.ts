@@ -46,8 +46,18 @@ export function buildServer(ctx: ServiceContext): McpServer {
     inputSchema: { layer: z.string().optional(), market: z.string().optional(), q: z.string().optional(), enabled_only: z.boolean().optional() } },
     (a) => wrap(() => listEndpoints(ctx, a)));
   server.registerTool("fetch_endpoint", { title: "取数", description: "按端点 id 取数(由取数器子进程执行,原始响应落 .local/mcp/<session>/raw/),返回契约信封:status / evidence(每条带单位 · 币种 · 期间 · 来源 · raw_ref)/ extra / errors。不做任何计算。",
-    inputSchema: { endpoint: z.string(), symbol: z.string().optional(), args: z.record(z.string(), z.unknown()).optional(), session: z.string().optional() } },
-    (a) => wrapAsync(() => fetchEndpoint(ctx, a)));
+    // 🔴 一致性必须暴露给调用方。原来没有这个参数 ⇒ MCP **永远只能拿到旧快照**:
+    //    agent 想"核实当下"也拿不到新数据,而且它无从知道自己拿的是旧的
+    //    (Codex 架构评审 arch-r1 §A)。默认给 fresh —— agent 调取数多半是要当下的事实;
+    //    要省钱 / 要离线时自己选 prefer_cache 或 cache_only。
+    inputSchema: {
+      endpoint: z.string(), symbol: z.string().optional(), args: z.record(z.string(), z.unknown()).optional(), session: z.string().optional(),
+      consistency: z.enum(["fresh", "prefer_cache", "cache_only"]).optional().describe("fresh=必须真取(默认);prefer_cache=有快照就用;cache_only=只读快照,绝不联网"),
+    } },
+    (a) => wrapAsync(() => {
+      const { consistency, ...rest } = a as typeof a & { consistency?: "fresh" | "prefer_cache" | "cache_only" };
+      return fetchEndpoint(ctx, { ...rest, consistency: { mode: consistency ?? "fresh" } });
+    }));
   server.registerTool("start_research", { title: "启动研究运行", description: "后台拉起六阶段研究(编排器执行取数 → agent 解释 → validator → gate),立即返回 run_id;用 research_status 轮询。", 
     inputSchema: { symbol: z.string(), market: z.string().optional(), stages: z.array(z.string()).optional(), endpoints: z.enum(["full", "core"]).optional(), knowledge: z.enum(["on", "off"]).optional(), run_id: z.string().optional(), overwrite: z.boolean().optional(), no_agent: z.boolean().optional() } },
     (a) => wrap(() => startResearch(ctx, a)));

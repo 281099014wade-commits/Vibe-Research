@@ -355,7 +355,11 @@ def rss_news_map(result: dict, ctx: dict) -> dict:
         note = f"source={it.get('source')};industry={it.get('industry')};link={it.get('link')}" + (f";redline={','.join(it['redline'])}" if it.get("redline") else "")
         evs.append(ev(ctx, "news_title", str(it.get("title"))[:300], "text", d, currency="n/a", as_of=d, record_key=str(it.get("link") or it.get("title"))[-80:], note=note))
     st = "ok" if items else "partial"
-    return out(evs, extra={"failures": result.get("failures"), "redline_hits": sum(1 for i in items if i.get("redline"))}, status=st, degraded=None if items else "窗口内无条目或源全部失败")
+    # industries / industry 透传给界面:能切哪几个行业、当前是哪个,**只有取数层知道**。
+    # 界面自己抄一份行业表的话,配置改了它不知道,选项与真实源会静默对不上。
+    return out(evs, extra={"failures": result.get("failures"), "redline_hits": sum(1 for i in items if i.get("redline")),
+                           "industries": result.get("industries") or [], "industry": result.get("industry")},
+               status=st, degraded=None if items else "窗口内无条目或源全部失败")
 
 
 def bs_kline_map(result: list, ctx: dict) -> dict:

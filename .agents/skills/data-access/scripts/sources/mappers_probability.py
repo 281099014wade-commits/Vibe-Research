@@ -71,7 +71,9 @@ def macro_probability_map(result: dict, ctx: dict) -> dict:
             continue
         evs.append(ev(ictx, "macro_probability", round(float(it["prob"]), 4), "概率",
                       close, currency="n/a",
-                      # 优先用**这条 item 那次请求**的时刻;运行级只是兜底
+                      # 优先用**这条 item 那次请求**的时刻;运行级只是兜底。
+                      # 精确到秒的时刻保留在 extra.as_of 与 raw 里,这里按契约只到日
+                      # (`ev()` 统一截断,别在这里再截一遍 —— 两处各截一次迟早不一致)
                       as_of=str(it.get("as_of") or as_of),
                       record_key=_rk(it),
                       # 每条挂**装着它的那次响应**的 raw;万一上游没给就退回场所级(并在下面标 degraded)

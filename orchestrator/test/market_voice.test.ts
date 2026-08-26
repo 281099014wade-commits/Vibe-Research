@@ -4,7 +4,7 @@ import path from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 
-import { GATE_PATTERNS, makeConfig, normalizeInterpreter } from "../src/config.ts";
+import { gatePatterns, makeConfig, normalizeInterpreter } from "../src/config.ts";
 import { applyVoiceInjection, neutralizeActions } from "../src/fetchrun.ts";
 import { writeJson } from "../src/fsutil.ts";
 import os from "node:os";
@@ -48,12 +48,12 @@ test("市场声音层:risk 阶段 extra_findings 允许 topic「市场声音」;
   assert.ok(cr.includes("risk(市场声音)") && cr.includes("「市场声音」"));
 });
 
-test("市场声音层:Python textsafe.GATE_WORDS 与 config.ts GATE_PATTERNS 逐字一致(脱敏与合规 gate 同一把尺)", () => {
+test("市场声音层:Python textsafe.GATE_WORDS 与 垂类的 gate.patterns 逐字一致(脱敏与合规 gate 同一把尺)", () => {
   const py = fs.readFileSync(path.join(REPO, ".agents", "skills", "data-access", "scripts", "sources", "textsafe.py"), "utf8");
   const start = py.indexOf("GATE_WORDS = [");
   const block = py.slice(start, py.indexOf("]", start));
   const words = [...block.matchAll(/"([^"]+)"/g)].map((m) => m[1]);
-  assert.deepEqual(words, GATE_PATTERNS);
+  assert.deepEqual(words, gatePatterns());
 });
 
 test("硬测试注入 applyVoiceInjection:只追加本脚本的条目、文本经动作词脱敏、形状与 mapper 一致、source=injected 且 raw_ref=null(不冒充真实来源)、id 确定且唯一;无注入项 / 信封缺失 → 空", () => {

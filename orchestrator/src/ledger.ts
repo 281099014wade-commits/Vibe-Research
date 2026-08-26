@@ -68,6 +68,15 @@ export function kinds(): Readonly<Record<string, LedgerKindDef>> {
 }
 
 /**
+ * 字段 / 枚举的显示名。**Core 不解释这些字符串**,只负责把它们送到界面。
+ * 没声明就是空表 —— 界面退回原键名显示,而不是整块不显示。
+ */
+export function labels(): { fields: Readonly<Record<string, string>>; enums: Readonly<Record<string, string>> } {
+  const l = hasPlugin() ? currentPlugin().ledger : undefined;
+  return { fields: l?.fieldLabels ?? {}, enums: l?.enumLabels ?? {} };
+}
+
+/**
  * 种类名 → 文件路径。
  * 🔴 **kind 必须是已声明的种类**,不是"看着像个安全的字符串就行" ——
  *    它会被拼进文件路径,白名单是这里唯一可靠的防线(`..` / 绝对路径 / 大小写变体一概挡在外面)。
@@ -104,7 +113,9 @@ function validatorFor(
     throw new LedgerError("unknown_kind", `台账没有这个种类:${JSON.stringify(kind)}`);
   }
   const def = table[kind]!;
-  const cacheKey = `${hasPlugin() ? currentPlugin().id : "-"}::${kind}`;
+  // 🔴 同 ingest:只按 id::kind 索引,换一个 id 相同、字段不同的插件会命中旧校验器。
+  //    两处是同一个不变量,用同一种做法(键里带契约哈希)。
+  const cacheKey = `${hasPlugin() ? currentPlugin().id : "-"}::${kind}::${crypto.createHash("sha256").update(JSON.stringify(def)).digest("hex").slice(0, 12)}`;
   const hit = validators.get(cacheKey);
   if (hit) return hit as never;
   const schema = {

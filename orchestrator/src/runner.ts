@@ -13,7 +13,7 @@ import { Codex, type CodexOptions, type Thread, type ThreadEvent, type ThreadIte
 
 import { CODEX_SHELL_ENV_POLICY, codexEnvFor, secretsFor, type RunConfig, type Stage } from "./config.ts";
 import { nowIso } from "./fsutil.ts";
-import { codexProviderConfig } from "./providers.ts";
+import { codexProviderConfig, structuredOutputMode, withOutputSchema } from "./providers.ts";
 
 export interface CommandRecord { command: string; exit_code: number | null; status: string }
 
@@ -167,7 +167,10 @@ export class CodexRunner implements AgentRunner {
     const ac = new AbortController();
     const timer = setTimeout(() => ac.abort(), this.cfg.turnTimeoutMs);
     try {
-      const { events } = await thread.runStreamed(prompt, { ...(outputSchema ? { outputSchema } : {}), signal: ac.signal });
+      // provider 不认服务端 schema 时(如小米 MiMo 的 Responses 只收 text / json_object),
+      // 把 schema 写进提示词而不是硬传 —— 传了会被整轮拒掉,阶段直接 failed。
+      const shaped = withOutputSchema(prompt, outputSchema, structuredOutputMode(this.cfg.providerProfile));
+      const { events } = await thread.runStreamed(shaped.prompt, { ...(shaped.outputSchema ? { outputSchema: shaped.outputSchema } : {}), signal: ac.signal });
       for await (const ev of events) {
         this.record(stage, attempt, ev, outcome);
         if (ev.type === "turn.failed") { outcome.failed = ev.error?.message ?? "turn.failed"; break; }

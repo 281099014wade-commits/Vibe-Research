@@ -7,7 +7,7 @@ import fs from "node:fs";
 import path from "node:path";
 
 import { currentPlugin } from "./plugin.ts";
-import { GATE_REGEXPS, HOME_PREFIXES, gateStagePatterns, packCriticalScripts, reportSections, stageCalcs, stageScripts, fetchEnv,
+import { HOME_PREFIXES, gateRegexps, gateStagePatterns, packCriticalScripts, reportSections, stageCalcs, stageScripts, fetchEnv,
   type RunConfig, type RunStatus, type Stage, type StageStatus } from "./config.ts";
 import { loadLedgerFromDisk, type Ledger } from "./fetchrun.ts";
 import { PLAN_REL, type EndpointDef, type PlanFile, type StagePlan } from "./registry.ts";
@@ -101,6 +101,19 @@ export function loadRun(runDir: string, ledger?: Ledger, planInfo?: PlanInfo): R
 const ok = (errors: string[], warnings: string[] = []): ValidationResult => ({ ok: errors.length === 0, errors, warnings });
 
 /** 取数产物完整性:fetch/ 与 raw/ 下每个文件都必须能在(内存)账本中找到且 sha256 未变(防 agent 伪造 / 改写);evidence 的 raw_ref 必须指向本次 raw/ 内的真实文件 */
+/**
+ * 这条校验错误是**取数层**的、agent 改不了吗?
+ *
+ * 🔴 为什么要分这一类:取数信封是编排器写的,agent **没有权限也没有途径**去改它
+ *    (钩子明确禁止 agent 写 fetch/)。可重试循环不分青红皂白,把这类错误也当成
+ *    "让 agent 再试一次就好" —— 实测:宏观概率端点的 `as_of` 违约,连试三次、多花一分多钟,
+ *    每次都必然失败,日志上还写着"自动补跑",**把上游的数据问题说成了 agent 没做好**。
+ * ⇒ 出现这类错误时立刻停,并如实说是取数层的问题。
+ */
+export function isUpstreamContractError(e: string): boolean {
+  return /^fetch\/[\w.-]+\.json 不符契约:/.test(e);
+}
+
 export function validateFetchIntegrity(run: RunView): ValidationResult {
   const errors: string[] = [];
   const warnings: string[] = [];
@@ -145,6 +158,7 @@ export function validateFetchIntegrity(run: RunView): ValidationResult {
   }
   for (const [script, env] of Object.entries(run.fetch)) {
     const se = validateFetchEnvelope(env);
+    // 这条错误的措辞被 `isUpstreamContractError` 认,改文案要同步改那里(有测试盯着)
     if (se.length) errors.push(`fetch/${script}.json 不符契约:${se.slice(0, 3).join("; ")}`);
     const rawKind = run.endpoints[script]?.symbol_kind === "raw";
     for (const e of env.evidence ?? []) {
@@ -335,7 +349,7 @@ export function proseStrings(v: unknown, key = ""): string[] {
  * ⚠️ 刻意**按值递归**而不是枚举字段名 —— 枚举字段名会把金融字段写进 Core,而且新增字段必然漏。
  */
 export function stageComplianceErrors(stage: string, so: unknown): string[] {
-  const g = complianceGate(proseStrings(so).join("\n"), gateStagePatterns(), [], GATE_REGEXPS);
+  const g = complianceGate(proseStrings(so).join("\n"), gateStagePatterns(), [], gateRegexps());
   return g.hits.map((h) => `阶段 ${stage} 的产物文本命中投资动作建议(${h.pattern}):${h.text.slice(0, 100)}`);
 }
 

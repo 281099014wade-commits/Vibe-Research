@@ -119,7 +119,7 @@ node orchestrator/src/finance/provider_matrix.ts --provider deepseek    # 2) 先
 node orchestrator/src/run.ts --symbol 300308 --provider deepseek --model deepseek-v4-flash --python ...   # 3) 全绿再用于研究
 ```
 
-内置模板:`openai` / `deepseek`(官方 Responses)/ `qwen` · `glm` · `kimi`(经阿里云百炼)。也可写进 `.local/config.json`:`{"provider": {"profile": "deepseek"}, "defaults": {"model": "deepseek-v4-flash"}}`;auth 不写时自动按模板选 `api_key`,显式 `--auth` / `VRA_PROVIDER_AUTH` 优先。
+内置模板:`openai` / `deepseek` · `mimo`(官方原生 Responses)/ `qwen` · `glm` · `kimi`(经阿里云百炼)。也可写进 `.local/config.json`:`{"provider": {"profile": "deepseek"}, "defaults": {"model": "deepseek-v4-flash"}}`;auth 不写时自动按模板选 `api_key`,显式 `--auth` / `VRA_PROVIDER_AUTH` 优先。
 
 🔴 **只支持 Responses 协议**:引擎已彻底移除 `wire_api="chat"`,厂商必须提供 OpenAI 兼容的 `/responses`,否则需自建 Responses→Chat 网关(填 `responses_support: "gateway"`)。第三方模板必须显式 https `base_url`(Codex 对空 base_url 会回退到 OpenAI 官方端点)。⚠️ 百炼那三个模板的 `base_url` 带 `{WorkspaceId}` 占位符,**要先复制到 `.local/providers/<id>.json` 换成自己的工作空间 ID**,否则选用时会被当场拒绝。
 

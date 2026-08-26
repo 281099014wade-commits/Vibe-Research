@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 
 import { codexEnvFor, makeConfig } from "../src/config.ts";
 import { loadProductConfig } from "../src/productConfig.ts";
-import { assertAuth, codexProviderConfig, listProviderIds, loadProviderProfile, providerEnv, validateProfile } from "../src/providers.ts";
+import { assertAuth, codexProviderConfig, listProviderIds, loadProviderProfile, providerEnv, structuredOutputMode, validateProfile, withOutputSchema } from "../src/providers.ts";
 import { codexOptionsFor } from "../src/runner.ts";
 
 
@@ -192,4 +192,37 @@ test("providers:providers 目录是符号链接 / 解析到根之外 → 拒绝(
   // 枚举也不穿过符号链接目录:repo 的 providers 是 symlink → 列表为空;未知 id 的报错只列 openai
   assert.deepEqual(listProviderIds(repo, path.join(repo, ".local")), []);
   assert.throws(() => loadProviderProfile(repo, path.join(repo, ".local"), "nope"), /可用:openai$/);
+});
+
+test("🔴 provider 不认服务端 schema 时降级到提示词 —— 硬传会被整轮拒掉,阶段直接 failed", () => {
+  const schema = { type: "object", required: ["a"], properties: { a: { type: "integer" } } };
+  // 默认(没声明)= json_schema:照常硬传,提示词一个字不动
+  const a = withOutputSchema("原提示词", schema, structuredOutputMode(null));
+  assert.equal(a.prompt, "原提示词");
+  assert.deepEqual(a.outputSchema, schema);
+
+  // 声明 prompt 的:不传 outputSchema,schema 写进提示词
+  const mimo = loadProviderProfile(REPO, path.join(REPO, ".local"), "mimo").profile;
+  assert.equal(structuredOutputMode(mimo), "prompt", "mimo 实测不支持 json_schema(2026-08-26)");
+  const b = withOutputSchema("原提示词", schema, "prompt");
+  assert.equal(b.outputSchema, undefined, "不能再硬传 —— 传了整轮被拒");
+  assert.ok(b.prompt.startsWith("原提示词"), "原提示词要留在前面");
+  assert.ok(b.prompt.includes('"integer"'), "schema 本体要进提示词,不能只说一句'请输出 JSON'");
+
+  // 没有 schema 的回合两种模式都不加东西
+  for (const m of ["json_schema", "prompt"] as const) {
+    assert.deepEqual(withOutputSchema("x", undefined, m), { prompt: "x" });
+    assert.deepEqual(withOutputSchema("x", null, m), { prompt: "x" });
+  }
+});
+
+test("每个模板都要显式声明或默认 structured_output,且值合法", () => {
+  for (const id of listProviderIds(REPO, path.join(REPO, ".local"))) {
+    const raw = JSON.parse(fillPlaceholders(fs.readFileSync(path.join(REPO, "providers", `${id}.json`), "utf8"))) as Record<string, unknown>;
+    const prof = validateProfile(raw, `模板 ${id}`);
+    assert.ok(["json_schema", "prompt"].includes(structuredOutputMode(prof)), id);
+  }
+  // schema 层拒乱值(否则拼错会静默落到默认分支)
+  const base = loadProviderProfile(REPO, path.join(REPO, ".local"), "deepseek").profile;
+  assert.throws(() => validateProfile({ ...base, structured_output: "jsonschema" }, "t"), /schema/);
 });

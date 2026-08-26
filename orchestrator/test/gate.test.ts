@@ -1,9 +1,12 @@
+import { spawnSync } from "node:child_process";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { GATE_REGEXPS, gateStagePatterns } from "../src/config.ts";
+import { gateRegexps, gateStagePatterns, gatePatterns, gateExemptLines } from "../src/config.ts";
 import { stageComplianceErrors } from "../src/validator.ts";
-import { complianceGate, missingSections, normalizeReportStatus, referencedIds, reportStatusToken } from "../src/gate.ts";
+import { complianceGate, missingSections, normalizeReportStatus, referencedIds, reportStatusToken, probeReportLine } from "../src/gate.ts";
 import { reportSections } from "../src/config.ts";
 
 
@@ -63,7 +66,7 @@ test("gate 正则规则:审计列出的绕过说法必须全拦,真实语料零�
     "margin_financing_buy | 6191310178 | 元",              // 字段名里的 buy 不算
   ];
   for (const s of LEGIT) {
-    const r = complianceGate(s, [], [], GATE_REGEXPS);   // 只看正则规则(子串表另有豁免机制)
+    const r = complianceGate(s, [], [], gateRegexps());   // 只看正则规则(子串表另有豁免机制)
     assert.equal(r.ok, true, `不该被正则拦:${s} → ${JSON.stringify(r.hits)}`);
   }
 });
@@ -73,10 +76,10 @@ test("阶段产物 gate:词表收窄后既拦得住建议、又放得过免责�
   assert.ok(!sub.includes("目标价") && !sub.includes("止损"), "会出现在'提及'语境的词必须去掉");
   assert.ok(sub.includes("建仓") && sub.includes("建议买"), "明确动作词必须留着");
   for (const bad of ["建议买入,目标价 120 元", "可考虑介入", "跌破 80 元止损", "建议建仓 30%"]) {
-    assert.equal(complianceGate(bad, sub, [], GATE_REGEXPS).ok, false, `应被拦:${bad}`);
+    assert.equal(complianceGate(bad, sub, [], gateRegexps()).ok, false, `应被拦:${bad}`);
   }
   for (const okText of ["报告不含投资动作建议、目标价、止损位。", "买入评级 31 篇、增持评级 7 篇"]) {
-    assert.equal(complianceGate(okText, sub, [], GATE_REGEXPS).ok, true, `不该被拦:${okText}`);
+    assert.equal(complianceGate(okText, sub, [], gateRegexps()).ok, true, `不该被拦:${okText}`);
   }
   // 递归收集:建议藏在嵌套字段里也要抓到,而 id 类字段不参与
   const rec = { stage: "risk", summary: "正常", gaps: [{ operation: "x", reason_code: "y", detail: "建议加仓至 30%" }],
@@ -107,4 +110,60 @@ test("gaps[].operation 也是自由文本,必须过 gate(修复复审 r1-P1-3)",
   // reason_code 是受控枚举,不该被当自由文本
   const ok = { stage: "risk", summary: "正常", gaps: [{ operation: "fetch_x", reason_code: "source_failed", detail: "x" }] };
   assert.deepEqual(stageComplianceErrors("risk", ok), []);
+});
+
+/**
+ * 绊线:**四个参数全给齐时,gate 不需要任何已注册的插件**。
+ *
+ * 🔴 注册期自检就靠这条:它在插件注册**完成之前**调 complianceGate,
+ *    此刻 `currentPlugin()` 还拿不到东西。哪天有人给 complianceGate 加了第五个
+ *    带默认值的参数、而那个默认值去读插件,自检会当场崩(或更糟:读到上一个插件的规则)。
+ * ⚠️ 不能用 `complianceGate.length` 查 —— `Function.length` 只数**第一个默认值之前**的形参,
+ *    这个函数是 1,加第五个默认参数它还是 1,**那条断言永远不会红**。
+ *    ⇒ 只能直接测不变量本身:开一个没注册插件的干净进程跑一遍。
+ */
+test("绊线:参数给齐时 gate 不碰插件(注册期自检依赖这一点)", () => {
+  const code = [
+    'import { complianceGate } from "./src/gate.ts";',
+    'const r = complianceGate("- 这里建议建仓", ["建仓"], [], []);',
+    'if (r.ok) { console.log("NOT_BLOCKED"); } else { console.log("OK"); }',
+  ].join("\n");
+  const repo = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
+  const out = spawnSync(process.execPath, ["--experimental-strip-types", "--input-type=module", "-e", code], {
+    cwd: repo, encoding: "utf8",
+  });
+  assert.equal(out.status, 0, `没注册插件就调不动 gate 了 —— 注册期自检会跟着崩:\n${out.stderr.slice(-600)}`);
+  assert.ok(out.stdout.includes("OK"), out.stdout + out.stderr.slice(-400));
+});
+
+/** 探针拼装函数:注册期自检与真正注入必须用它,两边不能各拼各的 */
+test("probeReportLine 会把探针包进报告行", () => {
+  const line = probeReportLine("XX");
+  assert.ok(line.includes("XX") && line.startsWith("- "), line);
+  // 包装本身必须是干净的 —— 否则自检的对照组会炸(见 plugin.ts 注册期)
+  assert.equal(complianceGate(probeReportLine("中性对照内容"), gatePatterns(), gateExemptLines(), gateRegexps()).ok, true);
+});
+
+/**
+ * 行首前缀只剥**真的 Markdown 前缀**,不吃正文语义符号。
+ * 🔴 两个方向都要测:剥少了 → 列表里的违规行漏判;剥多了 → `>18%` / `-1 倍` / `*ST`
+ *    这类以符号开头的正文被改写,依赖这些符号的规则会静默永不命中(审计 gate-r3)。
+ */
+test("行首只剥 Markdown 前缀,正文里的 - * > 保留", () => {
+  const seen = (text: string, pattern: string) => complianceGate(text, [pattern], [], []).hits[0]?.text;
+  // 该剥的:列表 / 引用 / 有序列表 / 嵌套
+  assert.equal(seen("- 建议建仓", "建仓"), "建议建仓");
+  assert.equal(seen("* 建议建仓", "建仓"), "建议建仓");
+  assert.equal(seen("> 建议建仓", "建仓"), "建议建仓");
+  assert.equal(seen("1. 建议建仓", "建仓"), "建议建仓");
+  assert.equal(seen(">> - 建议建仓", "建仓"), "建议建仓");
+  // 不该剥的:符号紧贴内容 = 正文的一部分
+  assert.equal(seen(">18% 就建仓", "建仓"), ">18% 就建仓");
+  assert.equal(seen("-1 倍就建仓", "建仓"), "-1 倍就建仓");
+  assert.equal(seen("*ST 也建仓", "建仓"), "*ST 也建仓");
+  // ⚠️ 无论剥不剥,**违规都照样命中** —— 子串匹配与位置无关。
+  //    剥前缀只影响"命中行长什么样"与"整行豁免比不比得上",不影响拦不拦。
+  for (const t of ["- 建议建仓", ">18% 就建仓", "-1 倍就建仓", "*ST 也建仓"]) {
+    assert.equal(complianceGate(t, ["建仓"], [], []).ok, false, t);
+  }
 });

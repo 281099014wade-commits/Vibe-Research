@@ -10,6 +10,7 @@ ctx = {script, symbol, market, source, endpoint, raw_ref, raws, as_of, args, ep}
 from __future__ import annotations
 
 import json
+import re
 import os
 import sys
 from typing import Any, Callable, Iterable, Optional
@@ -21,6 +22,32 @@ from sources._http import record_raw, dump_json_bytes  # noqa: E402
 MONEY_UNITS = {"元", "万元", "亿元", "元/股", "美元", "港元", "万美元", "亿美元", "万港元", "亿港元"}
 
 
+_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+_TS_RE = re.compile(r"^(\d{4}-\d{2}-\d{2})[T ]")
+
+
+def _as_of_date(v: str) -> str:
+    """
+    证据契约要求 as_of 是 **YYYY-MM-DD**。在这里收口,不靠每个 mapper 自己记得截断。
+
+    🔴 为什么放在 ev():原来是"每个 mapper 各自 `[:10]`",于是**有一个忘了** ——
+       宏观概率那条把完整时间戳 `2026-08-26T02:20:07Z` 写进 as_of,取数当时不报错,
+       一路跑到四分钟后的阶段校验才炸,而且 agent 重试三次也修不好(取数产物不是它能改的)。
+       同一个不变量散在九个 mapper 里,迟早漏一个。
+    ⚠️ 非法值**当场抛错**,不"尽力修好":取数阶段失败是有兜底的(记 gap、照常往下走),
+       而一个违约的信封会让整个阶段失败 —— 早失败、错得清楚,比晚失败、错得含糊好。
+    ⚠️ 诚实的边界:带 Z 的时间戳截出来的是 **UTC 日期**,靠近 UTC 午夜时可能与当地交易日差一天。
+       调用方要当地日期就自己先转好再传进来。
+    """
+    v = str(v)
+    if _DATE_RE.match(v):
+        return v
+    m = _TS_RE.match(v)
+    if m:
+        return m.group(1)
+    raise ValueError(f"as_of 必须是 YYYY-MM-DD 或 ISO 时间戳,收到 {v!r}")
+
+
 def ev(ctx: dict, field: str, value: Any, unit: str, period: str, *, currency: Optional[str] = None, as_of: Optional[str] = None,
        record_key: Optional[str] = None, note: Optional[str] = None, adjustment: str = "not_applicable", raw_ref: Optional[str] = None,
        source: Optional[str] = None, endpoint: Optional[str] = None) -> dict:
@@ -29,7 +56,7 @@ def ev(ctx: dict, field: str, value: Any, unit: str, period: str, *, currency: O
         currency = {"US": "USD", "HK": "HKD"}.get(ctx["market"], "CNY") if unit in MONEY_UNITS or unit.endswith(("元", "美元", "港元")) else "n/a"
     return _ev(script=ctx["script"], symbol=ctx["symbol"], market=ctx["market"], field=field, value=value, unit=unit, period=str(period),
                source=source or ctx["source"], endpoint=endpoint or ctx["endpoint"], raw_ref=raw_ref if raw_ref is not None else ctx.get("raw_ref"),
-               currency=currency, as_of=as_of or ctx.get("as_of") or today_str(), adjustment=adjustment, note=note, record_key=record_key)
+               currency=currency, as_of=_as_of_date(as_of or ctx.get("as_of") or today_str()), adjustment=adjustment, note=note, record_key=record_key)
 
 
 def out(evidence: list, extra: Optional[dict] = None, missing: Optional[list] = None, status: Optional[str] = None, degraded: Optional[str] = None,
@@ -464,3 +491,34 @@ def ths_hot_list(result: list, ctx: dict) -> dict:
     evs = rows_fields(ctx, result, [("rank", "ths_hot_rank", "名"), ("heat", "ths_hot_heat", "人气值"), ("pct", "change_pct", "%"), ("rank_chg", "hot_rank_chg", "名")], period_of=lambda r: day, key_of=lambda r: str(r.get("code")),
                       note_of=lambda r: f"{r.get('code')} {r.get('name')} 排名变化 {r.get('rank_chg')} 概念={','.join(map(str, r.get('concepts') or []))[:80]} {r.get('tag','')}")
     return out(evs, extra={"period": ctx["args"].get("period", "hour"), "top10": [(r.get("rank"), r.get("code"), r.get("name")) for r in result[:10]]})
+
+
+def em_turnover_rank(result: dict, ctx: dict) -> dict:
+    """全市场成交额榜 → 逐行证据(record_key = 代码,避免撞 id)。
+
+    ⚠️ 客观公开榜单,只做客观展示 —— 非推荐、非预测、不评分。
+    ⚠️ 上游给的是**全市场**排名(total 数千只),我们只取前 N;
+       note 里写清"共 N 只里的前 M",别让人以为市场上就这么多。
+    """
+    rows = result.get("rows") or []
+    total = result.get("total") or 0
+    ictx = {**ctx, "symbol": "MARKET", "market": "CN"}
+    evs = []
+    for r in rows:
+        code = str(r.get("code") or "")
+        if not code:
+            continue
+        rk = f"stock|{code}"
+        name = r.get("name") or code
+        ind = r.get("industry") or ""
+        note = f"{name}({code}){'·' + ind if ind else ''};成交额榜第 {r.get('rank')} 名(全市场 {total} 只)"
+        for field, val, unit in (("turnover_amount", r.get("amount"), "元"),
+                                 ("turnover_rank", r.get("rank"), "名"),
+                                 ("last_price", r.get("price"), "元"),
+                                 ("change_pct", r.get("pct"), "%")):
+            if val is None:
+                continue
+            evs.append(ev(ictx, field, val, unit, ctx.get("as_of") or today_str(), record_key=rk, note=note))
+    missing = [] if evs else ["成交额榜一条都没取到"]
+    return out(evs, extra={"total": total, "returned": len(rows)}, missing=missing,
+               status="ok" if evs else "failed")

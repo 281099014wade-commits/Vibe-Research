@@ -5,18 +5,22 @@
  * 研究运行 detached 拉起 run.ts(最小环境:基础 + VRA_* + provider env_key);返回值只含相对路径,错误信息脱敏;不碰 ~/.codex;不返回任何密钥。
  */
 import { spawn, spawnSync } from "node:child_process";
+import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { FETCH_ENV_KEYS, RUN_ID_RE, stages as packStages, fetchEnv } from "./config.ts";
-import { readJsonIfExists } from "./fsutil.ts";
+import { nowIso, readJsonIfExists } from "./fsutil.ts";
 import { ChatError, chatSend as chatSendCore, type ChatTurnResult } from "./chat.ts";
+import { DebateError, advanceDebate, startDebate, type DebateState } from "./debate.ts";
 import { IngestError, MAX_TOTAL_BYTES, ingestFiles as ingestFilesCore, type IngestFileInput, type IngestResult } from "./ingest.ts";
-import { LedgerError, kinds as ledgerKindDefs, listRecordsChecked, listRecords as listRecordsOf, removeRecord as removeLedgerRecord, upsertRecord as upsertLedgerRecord, type LedgerIssue, type LedgerRecord } from "./ledger.ts";
+import { LedgerError, kinds as ledgerKindDefs, labels as ledgerLabelDefs, listRecordsChecked, listRecords as listRecordsOf, removeRecord as removeLedgerRecord, upsertRecord as upsertLedgerRecord, type LedgerIssue, type LedgerRecord } from "./ledger.ts";
 import { recallKnowledge, type KnowledgeRecall } from "./knowledge.ts";
 import { loadProductConfig } from "./productConfig.ts";
 import { REGISTRY_REL, fetchArgv, loadRegistry, type EndpointDef } from "./registry.ts";
+import { productVersion } from "./version.ts";
+import { DEFAULT_CONSISTENCY, readSnapshot, snapshotKey, snapshotUsable, writeSnapshot, type Consistency } from "./snapshot.ts";
 import { currentPlugin } from "./plugin.ts";
 
 
@@ -146,7 +150,14 @@ export function researchEnv(ctx: Pick<ServiceContext, "providerEnvKey">, env: No
 // ---------------- 注册表 ----------------
 export interface EndpointSummary { id: string; title?: string; layer?: string; market: string[]; source?: string; compliance?: string; symbol_kind?: string; stages: Record<string, string>; enabled: boolean; auth_env?: string; computed?: boolean; notes?: string; args?: Record<string, unknown> }
 
-export function listEndpoints(ctx: ServiceContext, filter: { layer?: string; market?: string; q?: string; enabled_only?: boolean } = {}): EndpointSummary[] {
+/**
+ * 列端点。
+ * 🔴 `for_ui: true` 时**只给 `exposure=ui` 的**。有些端点是给 agent 用的、不该出现在界面上
+ *    (管制与准入、名单核查这类):它们对分析有用,但摆在界面上只是噪音。
+ *    ⚠️ **光靠"某个页面不去渲染它"守不住** —— 以后任何一个通用端点列表组件都会把它列出来。
+ *    所以过滤放在这里,而不是让每个消费方自己记得。
+ */
+export function listEndpoints(ctx: ServiceContext, filter: { layer?: string; market?: string; q?: string; enabled_only?: boolean; for_ui?: boolean } = {}): EndpointSummary[] {
   const reg = loadRegistry(ctx.repoRoot);
   if (!reg) throw new ServiceError("no_registry", `注册表不存在:${REGISTRY_REL}`);
   const q = String(filter.q ?? "").toLowerCase().slice(0, 80);
@@ -154,7 +165,9 @@ export function listEndpoints(ctx: ServiceContext, filter: { layer?: string; mar
   const market = String(filter.market ?? "").toUpperCase().slice(0, 4);
   return reg.endpoints
     .filter((e) => (!layer || String(e.layer ?? "").startsWith(layer)) && (!market || e.market.includes(market)) && (!filter.enabled_only || e.enabled !== false)
-      && (!q || `${e.id} ${e.title ?? ""} ${e.source ?? ""} ${e.layer ?? ""}`.toLowerCase().includes(q)))
+      && (!q || `${e.id} ${e.title ?? ""} ${e.source ?? ""} ${e.layer ?? ""}`.toLowerCase().includes(q))
+      // 缺省视为 ui:绝大多数端点本来就是给人看的,只有显式标了别的才被挡
+      && (!filter.for_ui || (e.exposure ?? "ui") === "ui"))
     .map((e) => ({ id: e.id, title: e.title, layer: e.layer, market: e.market, source: e.source, compliance: e.compliance, symbol_kind: e.symbol_kind, stages: e.stages ?? {}, enabled: e.enabled !== false, auth_env: e.auth_env, computed: e.computed === true, notes: e.notes, args: e.args }));
 }
 
@@ -167,9 +180,33 @@ export function endpointDef(ctx: ServiceContext, id: unknown): EndpointDef {
 }
 
 // ---------------- 取数(子进程,落 .local/mcp/<session>/) ----------------
-export interface FetchResult { envelope: Record<string, unknown>; exit_code: number | null; out_dir: string; duration_ms: number; stderr_tail: string }
+export interface FetchResult {
+  envelope: Record<string, unknown>;
+  exit_code: number | null;
+  out_dir: string;
+  duration_ms: number;
+  stderr_tail: string;
+  /** true = 这份是**上次取的快照**,没有重新取数 */
+  cached: boolean;
+  /** 这份数据是什么时候取到的。**界面必须显示它** —— 拿旧数据不说是旧的等于骗人 */
+  fetched_at: string;
+}
 
-export async function fetchEndpoint(ctx: ServiceContext, req: { endpoint: string; symbol?: string; args?: Record<string, unknown>; session?: string; timeout_ms?: number }): Promise<FetchResult> {
+/**
+ * 取数。**默认读上次的快照,不重新取** —— 页面打开一次就把依赖的端点全跑一遍,
+ * 既慢又费钱,而多数时候用户只是想再看一眼上次看到的东西。要新数据传 `refresh: true`。
+ *
+ * 🔴 失败 / 空信封**不写快照**:否则一次网络抖动会被记住,下次打开还是那次失败,而且永远不会自愈。
+ */
+export async function fetchEndpoint(
+  ctx: ServiceContext,
+  req: {
+    endpoint: string; symbol?: string; args?: Record<string, unknown>; session?: string; timeout_ms?: number;
+    /** 兼容写法:`true` 等价于 `consistency: {mode:"fresh"}` */
+    refresh?: boolean;
+    consistency?: Consistency;
+  },
+): Promise<FetchResult> {
   const ep = endpointDef(ctx, req.endpoint);
   const session = String(req.session ?? "default");
   if (!SESSION_RE.test(session)) throw new ServiceError("bad_session", `非法 session ${show(session)}`);
@@ -191,30 +228,68 @@ export async function fetchEndpoint(ctx: ServiceContext, req: { endpoint: string
     if (req.symbol === undefined) throw new ServiceError("missing_symbol", `端点 ${ep.id} 需要 symbol`);
     symbol = assertSymbol(req.symbol, ep.symbol_kind === "none" ? "cn6" : ep.symbol_kind);
   }
-  const argv = fetchArgv(ep, ep.id, { scriptsDir, symbol, runDir: outDir });
   const args = assertArgs(ep, req.args);
-  if (Object.keys(args).length) {
-    if (ep.module === "legacy") throw new ServiceError("args_unsupported", `端点 ${ep.id} 是 legacy 脚本,不接受 args`);
-    argv.push("--args", JSON.stringify(args));
+  // 快照键在**参数校验之后**算:用校验过的 args,免得同一份查询因为写法不同算出两把键
+  const snapKey = snapshotKey(ep.id, symbol, args);
+  const consistency: Consistency = req.consistency ?? (req.refresh ? { mode: "fresh" } : DEFAULT_CONSISTENCY);
+  // 端点自己声明的缓存上限(秒)。**调用方放宽不了** —— 它是数据本身的性质:
+  // 产出里含"按此刻算出来"的字段时,缓存住就会被永久冻结(上午算的状态晚上还在读)。
+  const epMaxAge = typeof ep.cache_max_age_sec === "number" ? ep.cache_max_age_sec * 1000 : null;
+  const hit = readSnapshot<FetchResult>(ctx.dataRoot, snapKey);
+  if (snapshotUsable(hit, consistency, epMaxAge)) {
+    return { ...(hit as NonNullable<typeof hit>).payload, cached: true, fetched_at: (hit as NonNullable<typeof hit>).fetched_at };
   }
-  // 取数进程:最小环境 + 该端点声明的 auth_env(只此一个)+ 用户显式的 TLS 降级开关
-  const extra: Record<string, string> = {};
-  if (ep.auth_env && process.env[ep.auth_env]) extra[ep.auth_env] = process.env[ep.auth_env] as string;
-  if (process.env.VRA_ALLOW_INSECURE_TLS) extra.VRA_ALLOW_INSECURE_TLS = process.env.VRA_ALLOW_INSECURE_TLS;
-  const timeout = Math.min(Math.max(Number(req.timeout_ms) || 180_000, 1_000), 600_000);
-  const t0 = Date.now();
-  // 🔴 **必须是异步 spawn,不能用 spawnSync** —— spawnSync 会阻塞整个 Node 事件循环,
-  //    HTTP 服务在取数期间连别的请求都收不下:实测 3 个并发请求墙钟 ≈ 串行合计,
-  //    某个自报 132ms 的请求实际等了 1.83s(全在排队)。看板一屏要打五六个端点,这是致命的。
-  //    并发安全性已核实:取数器把信封原子写到 fetch/<script>.json,raw 文件名带时间戳+pid+随机,
-  //    且调用方拿的是 stdout 不是文件 —— 同端点并发不会互相污染。
-  const p = await runFetchProcess(ctx.python, argv, { cwd: ctx.repoRoot, env: fetchEnv(extra), timeout });
-  const dur = Date.now() - t0;
-  let envelope: Record<string, unknown>;
-  try { envelope = JSON.parse(p.stdout) as Record<string, unknown>; }
-  catch { throw new ServiceError("bad_envelope", `取数器未输出合法 JSON(退出码 ${p.status}):${redact(p.stderr || "", 200)}`); }
-  return { envelope, exit_code: p.status, out_dir: rel(ctx, outDir), duration_ms: dur, stderr_tail: redact(p.stderr || "", 300) };
+  if (consistency.mode === "cache_only") {
+    throw new ServiceError("no_snapshot", `端点 ${ep.id} 没有可用快照,而本次要求只读缓存(不联网)`);
+  }
+  // 🔴 single-flight:同一份查询并发进来时只真取一次。
+  //    没有它,一屏五个卡片指向同一端点就会打五次上游;更糟的是**先发后回**的慢请求
+  //    会把新结果覆盖成旧的(Codex 架构评审 arch-r1 §F-6)。
+  const flightKey = `${ctx.dataRoot}\u0000${snapKey}`;
+  const flying = inFlight.get(flightKey);
+  if (flying) return flying;
+  const run = (async (): Promise<FetchResult> => {
+    const argv = fetchArgv(ep, ep.id, { scriptsDir, symbol, runDir: outDir });
+    if (Object.keys(args).length) {
+      if (ep.module === "legacy") throw new ServiceError("args_unsupported", `端点 ${ep.id} 是 legacy 脚本,不接受 args`);
+      argv.push("--args", JSON.stringify(args));
+    }
+    // 取数进程:最小环境 + 该端点声明的 auth_env(只此一个)+ 用户显式的 TLS 降级开关
+    const extra: Record<string, string> = {};
+    if (ep.auth_env && process.env[ep.auth_env]) extra[ep.auth_env] = process.env[ep.auth_env] as string;
+    if (process.env.VRA_ALLOW_INSECURE_TLS) extra.VRA_ALLOW_INSECURE_TLS = process.env.VRA_ALLOW_INSECURE_TLS;
+    const timeout = Math.min(Math.max(Number(req.timeout_ms) || 180_000, 1_000), 600_000);
+    const t0 = Date.now();
+    // 🔴 **必须是异步 spawn,不能用 spawnSync** —— spawnSync 会阻塞整个 Node 事件循环,
+    //    HTTP 服务在取数期间连别的请求都收不下:实测 3 个并发请求墙钟 ≈ 串行合计,
+    //    某个自报 132ms 的请求实际等了 1.83s(全在排队)。看板一屏要打五六个端点,这是致命的。
+    //    并发安全性已核实:取数器把信封原子写到 fetch/<script>.json,raw 文件名带时间戳+pid+随机,
+    //    且调用方拿的是 stdout 不是文件 —— 同端点并发不会互相污染。
+    const p = await runFetchProcess(ctx.python, argv, { cwd: ctx.repoRoot, env: fetchEnv(extra), timeout });
+    const dur = Date.now() - t0;
+    let envelope: Record<string, unknown>;
+    try { envelope = JSON.parse(p.stdout) as Record<string, unknown>; }
+    catch { throw new ServiceError("bad_envelope", `取数器未输出合法 JSON(退出码 ${p.status}):${redact(p.stderr || "", 200)}`); }
+    const result: FetchResult = { envelope, exit_code: p.status, out_dir: rel(ctx, outDir), duration_ms: dur, stderr_tail: redact(p.stderr || "", 300), cached: false, fetched_at: nowIso() };
+    // 🔴 只有"真取到了"才写快照。判据取信封自己的 status 与证据条数 ——
+    //    `failed` 或一条证据都没有,就是这次没取到,别让它变成用户下次打开看到的东西。
+    const snap = writeSnapshot(ctx.dataRoot, snapKey, { endpoint: ep.id, symbol }, result, (r) => {
+      const env = r.envelope as { status?: unknown; evidence?: unknown };
+      return r.exit_code === 0 && env.status !== "failed" && Array.isArray(env.evidence) && env.evidence.length > 0;
+    });
+    return snap ? { ...result, fetched_at: snap.fetched_at } : result;
+  })();
+  inFlight.set(flightKey, run);
+  // 无论成败都要摘掉:留着会让下一次请求拿到一个**已经结束的旧 Promise**(失败的话还会一直失败)
+  try { return await run; } finally { inFlight.delete(flightKey); }
 }
+
+/**
+ * 正在飞的取数:同一份查询并发进来时只真取一次,大家共用同一个 Promise。
+ * 🔴 没有它:一屏五个卡片指向同一端点会打五次上游;更糟的是**先发后回**的慢请求会把
+ *    新结果覆盖成旧的(Codex 架构评审 arch-r1 §F-6)。
+ */
+const inFlight = new Map<string, Promise<FetchResult>>();
 
 const FETCH_MAX_BUFFER = 64 * 1024 * 1024;
 /** 超时后给 SIGTERM 留的收尾时间,过了再 SIGKILL */
@@ -360,14 +435,33 @@ export function getEvidence(ctx: ServiceContext, runId: string, filter: { field?
   return { run_id: id, total: out.length, items: out.slice(0, limit) };
 }
 
-export function listRuns(ctx: ServiceContext, limit = 50): { run_id: string; status: string | null; symbol: string | null; started_at: string | null; finished_at: string | null }[] {
+/**
+ * 运行清单。
+ *
+ * 🔴 除了状态,还要给出**跑了几个阶段** —— 否则一次单阶段冒烟测试与一次完整研究
+ *    在列表里长得一模一样(都是 `complete`),用户看到的是"这产品跑出来的东西怎么这么薄"。
+ *    阶段数是判断"这是不是一次真研究"的唯一可见依据。
+ * ⚠️ `test_scenario` 是**注入了合成数据**的运行:它的结论不能当真实研究看,必须标出来。
+ */
+export function listRuns(ctx: ServiceContext, limit = 50): { run_id: string; status: string | null; symbol: string | null; started_at: string | null; finished_at: string | null; stages_done: number | null; stages_total: number | null; test_scenario: boolean }[] {
   const root = path.join(path.resolve(ctx.dataRoot), "runs");
   if (!fs.existsSync(root)) return [];
   const n = Math.min(Math.max(Number(limit) || 50, 1), 500);
   return fs.readdirSync(root).filter((d) => RUN_ID_RE.test(d) && fs.lstatSync(path.join(root, d)).isDirectory()).sort().reverse().slice(0, n).map((d) => {
     let m: Record<string, unknown> | null = null;
     try { const mp = safePath(ctx, "runs", d, "manifest.json"); if (fs.existsSync(mp) && fs.lstatSync(mp).isFile()) m = readJsonIfExists<Record<string, unknown>>(mp); } catch { m = null; }  // manifest 是链接 → 当作不可读
-    return { run_id: d, status: (m?.status as string) ?? null, symbol: (m?.symbol as string) ?? null, started_at: (m?.started_at as string) ?? null, finished_at: (m?.finished_at as string) ?? null };
+    // 阶段明细读不出来时给 null,**不给 0** —— 0 会被读成"一个阶段都没跑",而真相是"不知道"
+    const st = Array.isArray(m?.stages) ? (m.stages as { status?: unknown }[]) : null;
+    return {
+      run_id: d,
+      status: (m?.status as string) ?? null,
+      symbol: (m?.symbol as string) ?? null,
+      started_at: (m?.started_at as string) ?? null,
+      finished_at: (m?.finished_at as string) ?? null,
+      stages_done: st ? st.filter((s) => s?.status === "complete").length : null,
+      stages_total: st ? st.length : null,
+      test_scenario: m?.test_scenario === true,
+    };
   });
 }
 
@@ -386,12 +480,259 @@ export function knowledgeRecall(ctx: ServiceContext, symbol: string, market: str
 //    专门挡"用户数据区里被人塞了符号链接"这类与 kind 无关的情形。
 
 /** 台账的记录种类(界面据此渲染表单);垂类没声明台账就是空表 */
+/* ---------------- 界面查询(BFF):按名字要一屏数据 ---------------- */
+
+export interface PageBlockResult {
+  id: string; title: string; note?: string;
+  /** 默认收起(界面的事;数据照常取回) */
+  collapsed?: boolean;
+  status: "ok" | "missing";
+  /** 取不到时说清是什么问题(界面要显示,不能只留空白) */
+  error?: string;
+  fetched_at?: string; cached?: boolean;
+  /**
+   * 这一块允许用户改的参数键 + 当前生效值。
+   * 🔴 界面**照它渲染选择器**,不自己写死一份可选项 —— 写死的那份迟早与后端对不上,
+   *    而对不上的表现是"选了没反应"或"选项里没有真实存在的那个"。
+   */
+  user_args?: readonly string[];
+  applied_args?: Record<string, unknown>;
+  envelope?: Record<string, unknown>;
+}
+
+export interface PageResult {
+  query: string; title: string; intent: string;
+  /** 业务日期上下文(这一页在看哪一天、为什么)。不需要解析的页面为 null */
+  context: Record<string, unknown> | null;
+  blocks: PageBlockResult[];
+  /** 整屏最旧的取数时刻。**整页的新鲜度不能好过它最差的那一块** */
+  oldest_fetched_at: string | null;
+  /**
+   * 各块的取数时刻是否跨了不同的天。
+   * 🔴 只在每块标"X 分钟前"不够:一屏并排的几块可能差好几天,而用户会把它们当成同一时刻的快照
+   *    (Codex 架构评审 arch-r1 §F-1)。
+   */
+  mixed_ages: boolean;
+}
+
+/**
+ * 取一屏数据。**页面只说自己要哪个查询,不点名物理端点**。
+ * 端点改名 / 换源在这里吸收;界面上也就不会再印出 `em_limit_up_sentiment` 这种东西。
+ */
+/**
+ * 从调用方传来的参数里,**只挑出这一块允许用户改的那几个键**。
+ *
+ * 🔴 白名单是唯一的门:没声明 `userArgs` 的块,调用方传什么都不生效。
+ *    反过来做(黑名单 / 只挡几个危险键)迟早漏 —— 而漏掉的表现是
+ *    "这一块回答的问题被悄悄换掉了",页面上完全看不出来。
+ * ⚠️ 只挑键,不判值:值合不合法由端点自己的 `assertArgs` 判(两道各管一件事)。
+ */
+function pickUserArgs(b: { userArgs?: readonly string[] }, given: Record<string, unknown> | undefined): Record<string, unknown> {
+  if (!b.userArgs?.length || !given || typeof given !== "object") return {};
+  const out: Record<string, unknown> = {};
+  for (const k of b.userArgs) {
+    if (Object.prototype.hasOwnProperty.call(given, k) && given[k] !== undefined) out[k] = given[k];
+  }
+  return out;
+}
+
+export async function pageQuery(
+  ctx: ServiceContext,
+  req: { query: string; symbol?: string; refresh?: boolean; blockArgs?: Record<string, Record<string, unknown>> },
+): Promise<PageResult> {
+  const defs = currentPlugin().pageQueries ?? {};
+  const name = String(req.query ?? "");
+  if (!Object.prototype.hasOwnProperty.call(defs, name)) {
+    throw new ServiceError("unknown_query", `没有这个界面查询:${show(req.query)};可用:${Object.keys(defs).join(", ") || "(垂类没声明)"}`);
+  }
+  const def = defs[name]!;
+  const consistency: Consistency = req.refresh ? { mode: "fresh" } : DEFAULT_CONSISTENCY;
+
+  // ① 先解析业务日期(如果这一页要)。日历端点自己声明了"从不缓存",所以这里拿到的是当下的时段。
+  let context: Record<string, unknown> | null = null;
+  let injected: Record<string, unknown> = {};
+  const ctxDef = currentPlugin().pageContext;
+  if (def.needsContext && ctxDef) {
+    // 🔴 解析上下文的那次取数**必须 fresh**:它算的是"此刻"(如当前时段),缓存住会被永久冻结。
+    //    端点自己也声明了从不缓存,这里是第二道 —— 同一个不变量两边都守,不指望另一边。
+    const probe = await fetchEndpoint(ctx, {
+      endpoint: ctxDef.endpoint,
+      ...(ctxDef.symbol ?? req.symbol ? { symbol: ctxDef.symbol ?? req.symbol } : {}),
+      consistency: { mode: "fresh" },
+    });
+    const resolved = ctxDef.resolve(probe.envelope);
+    if (resolved) {
+      context = resolved.values;
+      injected = resolved.inject;
+    } else {
+      // 🔴 拿不到就**说出来**,别默默按默认值取 —— 那会让整页显示错误的业务日期且看不出来
+      context = { error: ctxDef.unavailable };
+    }
+  }
+
+  // ② 各块并发取(single-flight 会把指向同一端点的块合并成一次真取数)
+  const blocks = await Promise.all(
+    def.blocks.map(async (b): Promise<PageBlockResult> => {
+      const used = pickUserArgs(b, req.blockArgs?.[b.id]);
+      try {
+        const r = await fetchEndpoint(ctx, {
+          endpoint: b.endpoint,
+          ...(b.symbol ?? req.symbol ? { symbol: b.symbol ?? req.symbol } : {}),
+          // 只有声明了 injectContext 的块才吃上下文参数 —— 不吃的端点会被参数校验当场拒
+          // 🔴 用户改的参数**只认白名单里的键**:调用方传来的任何其它键一律丢掉。
+          //    白名单是垂类声明的(`userArgs`),没声明就是一个都不许改。
+          args: { ...(b.args ?? {}), ...(b.injectContext ? injected : {}), ...used },
+          consistency,
+        });
+        const userArgs = b.userArgs?.length ? { user_args: b.userArgs, applied_args: { ...(b.args ?? {}), ...used } } : {};
+        return { id: b.id, title: b.title, ...(b.note ? { note: b.note } : {}), ...(b.collapsed ? { collapsed: true } : {}), ...userArgs, status: "ok", fetched_at: r.fetched_at, cached: r.cached, envelope: r.envelope };
+      } catch (e) {
+        // 一块取不到不该让整屏空白 —— 但也**不能装作没事**:如实标出来
+        return { id: b.id, title: b.title, ...(b.note ? { note: b.note } : {}), status: "missing", error: e instanceof Error ? e.message : String(e) };
+      }
+    }),
+  );
+
+  const times = blocks.map((b) => b.fetched_at).filter((t): t is string => Boolean(t));
+  const days = new Set(times.map((t) => t.slice(0, 10)));
+  return {
+    query: name, title: def.title, intent: def.intent, context, blocks,
+    oldest_fetched_at: times.length ? times.reduce((a, b) => (a < b ? a : b)) : null,
+    mixed_ages: days.size > 1,
+  };
+}
+
 export function ledgerKinds(_ctx: ServiceContext): Record<string, { label: string; properties: Record<string, unknown>; required: string[] }> {
   const out: Record<string, { label: string; properties: Record<string, unknown>; required: string[] }> = {};
   for (const [k, def] of Object.entries(ledgerKindDefs())) {
     out[k] = { label: def.label, properties: { ...def.properties }, required: [...def.required] };
   }
   return out;
+}
+
+/**
+ * 字段 / 枚举的显示名。**Core 一个都不认识** —— 原样透传给界面。
+ * 没声明的字段界面退回原键名,所以这里不做补全、也不报缺。
+ */
+export function ledgerLabels(_ctx: ServiceContext): { fields: Record<string, string>; enums: Record<string, string> } {
+  const l = ledgerLabelDefs();
+  return { fields: { ...l.fields }, enums: { ...l.enums } };
+}
+
+/**
+ * 产品当前的有效配置(给"设置"页看)。
+ *
+ * 🔴🔴 **绝不返回任何密钥值**。这里只给:
+ *    · `env_key` —— 环境变量的**名字**(如 `MIMO_API_KEY`),不是它的值;
+ *    · `key_present` —— 那个变量**有没有被设**,一个布尔。
+ *    密钥只从环境变量读、不进配置文件、更不进浏览器 —— 这条是产品红线,
+ *    所以"设置"页在我们这儿**是只读的**:改 provider 要动配置文件 + 环境变量,
+ *    不给一个"把 key 粘进来"的输入框。
+ * ⚠️ 宽松模式加载:缺密钥时**照常返回配置**并把问题放在 `auth_error` 里 ——
+ *    严格模式会直接抛,那样设置页在"配置有问题"时反而什么都显示不出来,
+ *    而那恰恰是最需要看它的时候。
+ */
+/**
+ * 供展示的 URL:**剥掉用户名 / 密码 / 查询串 / 片段**。
+ * 🔴 主密钥确实只在环境变量里,但 `base_url` 是用户可以自己编辑的 ——
+ *    `https://user:secret@host/v1` 或 `https://host/v1?api_key=…` 会**原样**回到界面。
+ *    (审计 pages-r1-P1:实测"响应里没有 key 全文"只证明当前这条成功路径安全,
+ *     证明不了别的 provider 配法。)
+ * ⚠️ 解析不了就返回一个说明,**不回原串** —— 回原串等于"解析失败时反而全暴露"。
+ */
+export function displayUrl(raw: string | null): string | null {
+  if (!raw) return raw;
+  let u: URL;
+  try {
+    u = new URL(raw);
+  } catch {
+    return "(这个 base_url 解析不了,为安全起见不显示原文)";
+  }
+  // 🔴 **只放行 http(s)**。`data:` / `blob:` 之类整段内容都在 path 里,剥 query 剥不掉它;
+  //    自定义 scheme 也可能把凭据塞在别处(审计 pages-r2-P1)。
+  if (u.protocol !== "http:" && u.protocol !== "https:") {
+    return `(base_url 不是 http(s):${u.protocol} —— 为安全起见不显示原文)`;
+  }
+  // 🔴 **只回 origin**。正着拼、不反着剥 —— "把已知的几处清空"是黑名单思路,漏一处就全暴露。
+  //    ⚠️ 连 pathname 都不回:有些供应商把密钥放在**路径段**里
+  //    (`https://host/v1/sk-…/chat`),剥 query 剥不掉它(审计 pages-r3)。
+  //    也不去猜"哪一段像密钥" —— 按关键词判断迟早看走眼。
+  //    这一页要回答的是"我现在连的是谁",origin 已经够;要精确 URL 就去看自己的配置文件。
+  const segs = u.pathname.split("/").filter(Boolean).length;
+  const hidden = [segs ? `${segs} 段路径` : "", u.username || u.password ? "凭据" : "", u.search ? "查询串" : ""].filter(Boolean);
+  return u.origin + (hidden.length ? `  (已隐藏:${hidden.join(" / ")})` : "");
+}
+
+export function productInfo(ctx: ServiceContext): Record<string, unknown> {
+  const pc = loadProductConfig(ctx.repoRoot, { requireAuth: false });
+  const envKey = pc.provider.env_key;
+  return {
+    version: productVersion(),
+    provider: {
+      name: pc.provider.name,
+      profile: pc.provider.profile ?? null,
+      wire_api: pc.provider.wire_api,
+      base_url: displayUrl(pc.provider.base_url),
+      auth: pc.provider.auth,
+      env_key: envKey,
+      // 只报"有没有",不报是什么
+      key_present: pc.provider.auth !== "api_key" || Boolean(envKey && process.env[envKey]),
+    },
+    defaults: { ...pc.defaults },
+    paths: { data_root: pc.resolved.dataRoot, codex_home: pc.resolved.codexHome, python: ctx.python },
+    /** 这份配置是由哪几层合出来的(产品默认 ← 用户配置 ← 环境变量) */
+    sources: [...pc.sources],
+    // 当前它是我们自己的固定措辞(只含变量**名**),过一遍 redact 是纵深防御:
+    // 哪天有别的分支往里塞异常原文,这里不至于直接外传。
+    auth_error: pc.authError ? redact(pc.authError, 300) : null,
+  };
+}
+
+/**
+ * 开一场多空辩论:**现在**把资料包拉一次,之后所有角色共用这一份。
+ *
+ * 🔴 资料包一律 `fresh` 取 —— 辩论要在"此刻的事实"上打。读上次的快照会出现
+ *    "双方在昨天的数字上吵今天的事",而页面上完全看不出来。
+ * ⚠️ 单个端点取失败**不中止**:记进 gaps 一起交给双方("这些没取到,别当它们不存在")。
+ *    全部失败才拒开(见 debate.startDebate)。
+ */
+export async function debateStart(ctx: ServiceContext, req: { symbol: string; session?: string }): Promise<DebateState> {
+  const def = currentPlugin().debate;
+  if (!def) throw new ServiceError("not_supported", "这个垂类没有声明辩论");
+  const symbol = assertSymbol(req.symbol, "cn6");
+  // ⚠️ 加随机量:只用毫秒时间戳的话,同一毫秒开两场会拿到同一个 id,
+  //    第二场直接覆盖第一场(审计 pages-r1-P3)。
+  const id = String(req.session ?? "").trim() || `d${Date.now().toString(36)}${crypto.randomBytes(4).toString("hex")}`;
+  if (!SESSION_RE.test(id)) throw new ServiceError("bad_session", `非法辩论 id ${show(req.session)}`);
+
+  const envelopes: { script?: string; evidence?: unknown[] }[] = [];
+  const gaps: string[] = [];
+  for (const ep of def.dossierEndpoints) {
+    try {
+      const r = await fetchEndpoint(ctx, { endpoint: ep, symbol, consistency: { mode: "fresh" } });
+      envelopes.push(r.envelope as { script?: string; evidence?: unknown[] });
+      const env = r.envelope as { status?: unknown; degraded?: unknown };
+      if (env.status !== "ok") gaps.push(`${ep}:${String(env.status)}${env.degraded ? ` — ${String(env.degraded)}` : ""}`);
+    } catch (e) {
+      gaps.push(`${ep}:取数失败 — ${redact(e instanceof Error ? e.message : String(e), 120)}`);
+    }
+  }
+  try {
+    return startDebate({ id, symbol, envelopes, gaps });
+  } catch (e) {
+    if (e instanceof DebateError) throw new ServiceError(e.code, e.message);
+    throw e;
+  }
+}
+
+/** 跑下一个待跑的阶段(一次一个,界面据此逐段显示) */
+export async function debateAdvance(ctx: ServiceContext, req: { id: string }): Promise<DebateState> {
+  try {
+    return await advanceDebate({ repoRoot: ctx.repoRoot, dataRoot: ctx.dataRoot, python: ctx.python }, { id: String(req.id) });
+  } catch (e) {
+    if (e instanceof DebateError) throw new ServiceError(e.code, e.message);
+    throw e;
+  }
 }
 
 function asServiceError(e: unknown): never {

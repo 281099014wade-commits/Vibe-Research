@@ -5,7 +5,7 @@
 import fs from "node:fs";
 import path from "node:path";
 
-import { GATE_REGEXPS, gateStagePatterns, type RunConfig } from "./config.ts";
+import { gateRegexps, gateStagePatterns, type RunConfig } from "./config.ts";
 import { complianceGate } from "./gate.ts";
 import { atomicWrite } from "./fsutil.ts";
 import type { Manifest } from "./merge.ts";
@@ -141,7 +141,7 @@ const REDACTED_NOTE = "〔已按产出红线移除〕";
  *
  * 🔴 第一版按行删除,把整个 `<script id="data">` 数据块删没了(修复复审 r1-P2-4)。
  * 🔴 第二版逐字符串替换又踩两个坑(修复复审 r2):
- *    ① **对象键没查** —— `{"建议建仓": "30%"}` 的键原样外传(calc 的 inputs / output.details 是自由形状);
+ *    ① **对象键没查** —— 键本身就是一句越界建议时(如 `{"<动作建议>": "30%"}`)原样外传(calc 的 inputs / output.details 是自由形状);
  *    ② **结构性字符串被误替** —— `run_id: "BUY"`、`raw_ref: "raw/BUY"`、`function: "stop-loss"`
  *       会命中英文规则,整串变占位符,**证据就追不回去了**。
  * ⇒ 沿用 `proseStrings` 那套"取值受不受控"的判断:受控字段(id / 路径 / 函数名 / 枚举 / 数值型)跳过,
@@ -151,7 +151,7 @@ const REDACTED_NOTE = "〔已按产出红线移除〕";
  * **格式 / 枚举严格受控**的字段:取值形态由 schema 钉死(id 模式、枚举、日期、哈希、路径),
  * 净化它们只会破坏溯源,而它们本身装不下一句建议。
  * ⚠️ 只放行**真正受控**的 —— `source` / `endpoint` / `field` / `unit` / `record_key` 这些
- * schema 上只要求"非空字符串",曾被误列在这里,`source: "建议买入并建仓三成"` 就能原样外传
+ * schema 上只要求"非空字符串",曾被误列在这里,`source: "<一句越界建议>"` 就能原样外传
  * (修复复审 r3-P2)。判断标准始终是**取值受不受控**,不是"名字像不像标识符"。
  */
 const STRUCTURAL_KEYS = new Set([
@@ -172,7 +172,7 @@ const CONTROLLED_SHAPE = /^[\w.:@/+-]+$/u;
 
 export function scrubStrings<T>(value: T): { value: T; removed: number } {
   let removed = 0;
-  const hit = (t: string) => !complianceGate(t, gateStagePatterns(), [], GATE_REGEXPS).ok;
+  const hit = (t: string) => !complianceGate(t, gateStagePatterns(), [], gateRegexps()).ok;
   const walk = (v: unknown, key: string): unknown => {
     if (typeof v === "string") {
       // 身份 / 路径 / 枚举:不碰,否则回溯链就断了 —— 但**键名与取值形状都得对上**(见 CONTROLLED_SHAPE)

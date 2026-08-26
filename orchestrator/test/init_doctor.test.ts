@@ -116,7 +116,13 @@ test("doctor:真实仓库 + 假 exec → 全绿(除 api_token / net skip);引擎
     if (String(args[0]).endsWith("cli.py")) return { status: 0, stdout: calcOut, stderr: "" };
     return { status: 1, stdout: "", stderr: `unexpected ${cmd} ${args.join(" ")}` };
   };
-  const r = await runDoctor({ repoRoot: REPO, env: { PATH: "/usr/bin", HOME: FAKE_HOME }, exec: good, python: "/fake/python", writeReport: false });
+  // 🔴 这条测试跑的是**真实仓库**,会读开发者本机的 .local/config.json。
+  //    本机把 provider 配成 api_key 那类(如 MiMo)时,假环境里没有对应密钥 → auth fail;
+  //    而下面几个子用例测的又是 **chatgpt_login 的语义**(未登录 → warn),api_key 模式下根本不适用。
+  //    ⇒ 把 provider 在假环境里**钉死成 openai/chatgpt_login**:测的是 doctor 的行为,
+  //      不该随开发者怎么配 provider 而变。(实测:切到 MiMo 后这条测试就红了。)
+  const fakeEnv: Record<string, string> = { PATH: "/usr/bin", HOME: FAKE_HOME, VRA_PROVIDER: "openai", VRA_PROVIDER_AUTH: "chatgpt_login" };
+  const r = await runDoctor({ repoRoot: REPO, env: fakeEnv, exec: good, python: "/fake/python", writeReport: false });
   const by = Object.fromEntries(r.checks.map((c) => [c.id, c]));
   for (const id of ["node", "config", "engine", "codex_cli", "auth", "constitution", "skills", "python", "calc", "registry", "data_root", "gitignore", "secrets", "skills_isolation"]) assert.equal(by[id].status, "ok", `${id}: ${by[id].detail}`);
   assert.equal(by.net.status, "skip"); assert.ok(by.api_token.status === "skip" || by.api_token.status === "ok");
@@ -124,23 +130,35 @@ test("doctor:真实仓库 + 假 exec → 全绿(除 api_token / net skip);引擎
   assert.ok(by.engine.detail.includes("0.149.0") && /已测区间/.test(by.engine.detail));
   // 引擎版本超出区间 → warn;未登录 → warn;退出码 2
   const warnExec: Exec = (cmd, args) => args[0] === "--version" ? { status: 0, stdout: "codex-cli 0.200.0", stderr: "" } : args[0] === "login" ? { status: 1, stdout: "Not logged in\n", stderr: "" } : good(cmd, args);
-  const w = await runDoctor({ repoRoot: REPO, env: { PATH: "/usr/bin", HOME: FAKE_HOME }, exec: warnExec, python: "/fake/python", writeReport: false });
+  const w = await runDoctor({ repoRoot: REPO, env: fakeEnv, exec: warnExec, python: "/fake/python", writeReport: false });
   const wb = Object.fromEntries(w.checks.map((c) => [c.id, c]));
   assert.equal(wb.engine.status, "warn"); assert.equal(wb.auth.status, "warn"); assert.match(wb.auth.fix ?? "", /codex login/); assert.equal(w.exit_code, 2);
   // Python 导入失败 → fail + pip 提示;calc skip;退出码 3
   const badPy: Exec = (cmd, args) => args[0] === "-c" ? { status: 1, stdout: "", stderr: "ModuleNotFoundError: No module named 'akshare'" } : good(cmd, args);
-  const f = await runDoctor({ repoRoot: REPO, env: { PATH: "/usr/bin", HOME: FAKE_HOME }, exec: badPy, python: "/fake/python", writeReport: false });
+  const f = await runDoctor({ repoRoot: REPO, env: fakeEnv, exec: badPy, python: "/fake/python", writeReport: false });
   const fb = Object.fromEntries(f.checks.map((c) => [c.id, c]));
   assert.equal(fb.python.status, "fail"); assert.match(fb.python.fix ?? "", /pip install -r/); assert.equal(fb.calc.status, "skip"); assert.equal(f.exit_code, 3);
   // api_key 模式:环境变量缺失 → fail;有 → ok(不再查登录态)
   const keyEnv = { PATH: "/usr/bin", HOME: FAKE_HOME, VRA_PROVIDER: "deepseek", VRA_PROVIDER_AUTH: "api_key" };  // 显式 auth:不依赖本机 .local/config.json 里有没有写 auth
   const k1 = await runDoctor({ repoRoot: REPO, env: keyEnv, exec: good, python: "/fake/python", writeReport: false });
-  assert.equal(Object.fromEntries(k1.checks.map((c) => [c.id, c])).config.status, "fail", "缺 DEEPSEEK_API_KEY 时配置链报错");
+  const k1b = Object.fromEntries(k1.checks.map((c) => [c.id, c]));
+  // 🔴 缺密钥**单独报一条**,不再把配置链整条判死。
+  //    旧行为是 config=fail ⇒ 后面所有靠配置的检查跟着 skip 或**报出假原因** ——
+  //    实测:配了 MiMo 还没导 key 时,体检说"未找到 Python",而 Python 明明配着、venv 也在。
+  //    一个不相干的问题让产品对用户说了错误的诊断,而这正是第一次配国产模型的常态。
+  assert.equal(k1b.config.status, "ok", "配置本身是好的,缺的只是密钥");
+  assert.equal(k1b.provider_key.status, "fail");
+  assert.match(k1b.provider_key.detail, /DEEPSEEK_API_KEY/);
+  // ⭐ 这条才是这次改动的要害:**不相干的检查不受牵连**
+  assert.equal(k1b.python.status, "ok", "缺模型密钥不该让 Python 检查跟着倒");
+  assert.equal(k1b.calc.status, "ok");
   const k2 = await runDoctor({ repoRoot: REPO, env: { ...keyEnv, DEEPSEEK_API_KEY: "k".repeat(20) }, exec: good, python: "/fake/python", writeReport: false });
   const k2b = Object.fromEntries(k2.checks.map((c) => [c.id, c]));
   assert.equal(k2b.config.status, "ok"); assert.equal(k2b.auth.status, "ok"); assert.match(k2b.auth.detail, /api_key 模式/);
-  // 配置链失败(provider 缺密钥)→ auth skip 而不是用默认模式误判
-  assert.equal(Object.fromEntries(k1.checks.map((c) => [c.id, c])).auth.status, "skip");
+  // auth 仍如实报 fail(而不是用默认模式误判成 ok):缺 key 就是跑不起来
+  assert.equal(k1b.auth.status, "fail");
+  assert.match(k1b.auth.detail, /DEEPSEEK_API_KEY/);
+  assert.equal(k1.exit_code, 3, "有 fail → 退出码 3");
   // 报告落盘:路径相对化为 <repo>、detail 经 redact;写到临时数据根(用 --force 的临时仓库)
   const repoR = tmpRepo(); fs.mkdirSync(path.join(repoR, ".local"), { recursive: true });
   const rr = await runDoctor({ repoRoot: repoR, env: { PATH: "/usr/bin", HOME: FAKE_HOME }, exec: (cmd, args) => args[0] === "login" ? { status: 1, stdout: "", stderr: "Error: token=abcdefghijklmnop1234 rejected" } : good(cmd, args), python: "/fake/python", writeReport: true });
@@ -165,6 +183,8 @@ test("doctor:真实仓库 + 假 exec → 全绿(除 api_token / net skip);引擎
   // 子进程不该拿到密钥:good exec 的 env 参数里没有 DEEPSEEK_API_KEY(login status 的 env 只含最小环境 + CODEX_HOME)
   let seenEnv: Record<string, string> | undefined;
   const spy: Exec = (cmd, args, opts) => { if (args[0] === "login") seenEnv = opts?.env; return good(cmd, args); };
-  await runDoctor({ repoRoot: REPO, env: { PATH: "/usr/bin", OPENAI_API_KEY: "x".repeat(20) }, exec: spy, python: "/fake/python", writeReport: false });
+  // 钉死 chatgpt_login:doctor 只在这个模式下才去查登录态,而本条要看的正是那次子进程调用的 env。
+  // (不钉死的话,本机配成 api_key 类 provider 时 login 压根不会被调,seenEnv 恒为 undefined。)
+  await runDoctor({ repoRoot: REPO, env: { PATH: "/usr/bin", OPENAI_API_KEY: "x".repeat(20), VRA_PROVIDER: "openai", VRA_PROVIDER_AUTH: "chatgpt_login" }, exec: spy, python: "/fake/python", writeReport: false });
   assert.ok(seenEnv && seenEnv.CODEX_HOME && !("OPENAI_API_KEY" in seenEnv));
 });

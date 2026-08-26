@@ -46,6 +46,7 @@ node orchestrator/src/run.ts --symbol 300308 --market SZ --provider deepseek --m
 | `qwen` | 通义千问 · 阿里云百炼 | `DASHSCOPE_API_KEY` | `qwen3.8-max` | `https://{WorkspaceId}.cn-beijing.maas.aliyuncs.com/compatible-mode/v1` |
 | `glm` | 智谱 GLM · 阿里云百炼 | `DASHSCOPE_API_KEY` | `glm-5.2` | 同上 |
 | `kimi` | Kimi · 阿里云百炼 | `DASHSCOPE_API_KEY` | `kimi-k2.7-code` | 同上 |
+| `mimo` | 小米 MiMo 官方原生 Responses | `MIMO_API_KEY` | `mimo-v2.5` | `https://token-plan-cn.xiaomimimo.com/v1` |
 
 ⚠️ **三个百炼模板不能直接用**:`base_url` 里的 `{WorkspaceId}` 是留给你填的。把模板复制到 `.local/providers/<id>.json`、
 换成自己的工作空间 ID 再选用 —— 没换会在**选用时当场被拒**(而不是把密钥发到一个不存在的主机上)。
@@ -53,6 +54,18 @@ node orchestrator/src/run.ts --symbol 300308 --market SZ --provider deepseek --m
 月之暗面官方是否提供未核实 —— 未核实的事不写成事实。
 
 模板里的 `default_model` / `context_limit_tokens` 是易变的供应商信息,`verified_at` 记最近一次人工核实日期(null = 未核实);模型名下线时请显式 `--model`。
+
+### 一个模板可以声明"它不支持服务端 schema"
+
+`structured_output` 字段(缺省 `json_schema`):
+
+- `json_schema` —— 支持 `text.format.type=json_schema`,产品照常硬传(OpenAI / DeepSeek 走这条)。
+- `prompt` —— **不支持**。产品会把 schema 写进提示词,不再硬传。
+  硬传的后果不是降级而是**整轮被拒**:阶段直接 failed。
+
+🔴 为什么这条降级不算放松要求:**`outputSchema` 从来就不是校验边界**。产物合不合规是产品自己校验的
+(阶段过 validator、导入草稿过 `parseOutput`)。降级损失的是**命中率**——模型少了一层硬约束、
+可能更容易写歪、重试次数上升;但写歪了照样过不了产品这关。所以这条降级**不能**顺手把校验也一起省掉。
 
 ## 3. 兼容矩阵怎么读
 
@@ -74,6 +87,19 @@ node orchestrator/src/run.ts --symbol 300308 --market SZ --provider deepseek --m
 判定口径(含 ④ 如何用 `item.started/completed` 交错证明并发、⑦ 为什么要 `model_reasoning_summary=detailed`)见 `orchestrator/src/finance/provider_matrix.ts` 头注释;`judge()` 有逐项正反单测。结果文件落盘前做两层脱敏(provider 密钥精确替换 + 通用 token / 签名 URL)。矩阵不全绿的 provider 只应用于试验;编排器会把 provider 与矩阵状态写进运行的 `manifest.json`。
 
 OpenAI 基线(2026-08-22,订阅登录,引擎默认模型):9 pass · 1 n/a。
+
+**小米 MiMo 实测(2026-08-26,`mimo-v2.5`,API key)**:pass 7 · partial 1 · error 1 · n/a 1。
+
+| 项 | 结果 | 说明 |
+|---|---|---|
+| ①②③④⑤⑥⑨ | pass | 文本 / 单工具 / 三轮工具 / **并行工具(峰值 2)** / 失败自修复 / 200 行长流 / 多轮延续 |
+| ⑦ reasoning | partial | `mimo-v2.5` 不回传;⚠️ 换 `mimo-v2.5-pro` 直连实测**有** —— 这项跟**模型**走,不跟 provider 走 |
+| ⑧ schema | **error** | `responses_feature_not_supported:text.format type 'json_schema' is not supported, only 'text' and 'json_object' are allowed` |
+| ⑩ | n/a | responses 协议不适用 |
+
+⑧ 是**协议层的事实**,矩阵如实记着不粉饰;产品侧用 `structured_output: "prompt"` 绕开了它。
+同日用 `mimo-v2.5` 真跑了一个完整研究阶段(profile):**validator 通过、79 条证据**,
+agent 那一轮 4.7 分钟 —— ⚠️ 慢,turn 超时压到 5 分钟会连续两次超时,用默认 20 分钟。
 
 ## 4. 加一家新的 provider
 

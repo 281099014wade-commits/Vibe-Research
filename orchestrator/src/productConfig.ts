@@ -87,10 +87,38 @@ export interface LoadedProductConfig extends ProductConfig {
   sources: string[];
   /** M4:选中的 provider profile(openai 默认也有模板);矩阵状态随之进 manifest */
   providerProfile: ProviderProfileFile | null;
+  /**
+   * 缺密钥的说明。严格模式(默认)下拿不到这个字段 —— 那时它已经抛错了;
+   * 宽松模式(`requireAuth: false`)下配置照常返回,问题记在这里由调用方自己报。
+   */
+  authError: string | null;
 }
 
 /** 读取并合并各层;相对路径一律相对产品根(repoRoot)解析(v2.1 §5 ⑥) */
-export function loadProductConfig(repoRoot: string, opts: { userConfigPath?: string; env?: NodeJS.ProcessEnv; providerOverride?: string; authOverride?: string } = {}): LoadedProductConfig {
+export function loadProductConfig(repoRoot: string, opts: {
+    userConfigPath?: string;
+    /**
+     * 覆盖数据根。**一次决定三样东西**:用户配置在哪、provider 用户覆盖模板在哪、产物落在哪。
+     * 🔴 不提供这个口子时,调用方只能单独塞 `userConfigPath` —— 那会让"用户配置"按调用方给的根找、
+     *    而"provider 覆盖模板"仍按 repoRoot 推的根找:同一个用户的两份设置被从两个地方读,
+     *    表现是"我明明放了自己的模板,它却用了仓库自带的那份",且不报错(Codex 审计 mimo-r1 P2)。
+     */
+    dataRootOverride?: string;
+    env?: NodeJS.ProcessEnv;
+    providerOverride?: string;
+    authOverride?: string;
+    /**
+     * 缺密钥时是否抛错。默认 `true`(要跑起来就必须有 key)。
+     *
+     * 🔴 传 `false` 给**只想读路径的调用方**(体检、找 Python 解释器)。
+     *    原来不给这个口子:密钥没导 → 整个配置加载抛错 → 调用方连 `python` 都拿不到,
+     *    于是体检报出 **"未找到 Python(配置 python 为空且无 .venv)"** ——
+     *    **这是句假话**,Python 明明配着、venv 也在。一个不相干的问题
+     *    (还没导模型 key)让产品对用户说了错误的诊断,而这恰恰是第一次配国产模型的常态。
+     *    ⇒ 宽松模式下把这个问题记进 `authError` 如实报出来,别牵连别的检查项。
+     */
+    requireAuth?: boolean;
+  } = {}): LoadedProductConfig {
   const env = opts.env ?? process.env;
   const sources: string[] = ["builtin"];
   let cfg = DEFAULT_PRODUCT_CONFIG;
@@ -99,7 +127,7 @@ export function loadProductConfig(repoRoot: string, opts: { userConfigPath?: str
   // 没写过时切换 profile 按模板唯一支持的模式自动选;写过的永不覆盖
   let authExplicit = false;
   if (fs.existsSync(productFile)) { cfg = mergeLayer(cfg, readLayer(productFile, "产品配置")); sources.push(productFile); }
-  const dataRootTmp = path.resolve(repoRoot, cfg.paths.data_root);
+  const dataRootTmp = opts.dataRootOverride ? path.resolve(opts.dataRootOverride) : path.resolve(repoRoot, cfg.paths.data_root);
   const userFile = opts.userConfigPath ?? path.join(dataRootTmp, USER_CONFIG_FILE);
   if (fs.existsSync(userFile)) {
     const layer = readLayer(userFile, "用户配置");
@@ -120,7 +148,8 @@ export function loadProductConfig(repoRoot: string, opts: { userConfigPath?: str
     if (opts.authOverride) authExplicit = true;
     cfg = mergeLayer(cfg, { provider: cli }); sources.push("cli");
   }
-  const dataRootAbs = path.resolve(repoRoot, cfg.paths.data_root);
+  // 🔴 与上面 userFile **必须同一个根**:两处不一致时,用户配置从 A 读、provider 覆盖模板从 B 找
+  const dataRootAbs = opts.dataRootOverride ? path.resolve(opts.dataRootOverride) : path.resolve(repoRoot, cfg.paths.data_root);
   // M4:provider 要么是 openai 原生默认,要么是 providers/<id>.json 里的已知模板(字段由模板决定;非 openai 只能 api_key)
   let providerProfile: ProviderProfileFile | null = null;
   const profileId = cfg.provider.profile ?? (cfg.provider.name === "openai" ? "openai" : null);
@@ -134,12 +163,16 @@ export function loadProductConfig(repoRoot: string, opts: { userConfigPath?: str
     throw new Error(`provider ${profileId} 不支持 auth=${cfg.provider.auth}(支持:${providerProfile.auth_modes.join("/")});请改配置里的 provider.auth、环境变量 VRA_PROVIDER_AUTH 或 CLI --auth`);
   if (cfg.paths.constitution !== "AGENTS.md")
     throw new Error(`paths.constitution 必须是 "AGENTS.md"(Codex 从产品根自动加载的文件名);当前 ${cfg.paths.constitution}`);
-  if (cfg.provider.auth === "api_key" && !env[cfg.provider.env_key])
-    throw new Error(`provider.auth=api_key 但环境变量 ${cfg.provider.env_key} 未设置(密钥只从环境变量读,不进配置文件)`);
+  let authError: string | null = null;
+  if (cfg.provider.auth === "api_key" && !env[cfg.provider.env_key]) {
+    authError = `provider.auth=api_key 但环境变量 ${cfg.provider.env_key} 未设置(密钥只从环境变量读,不进配置文件)`;
+    if (opts.requireAuth !== false) throw new Error(authError);
+  }
   const abs = (p: string) => path.resolve(repoRoot, p);
   const skills = abs(cfg.paths.skills);
   return {
     ...cfg,
+    authError,
     resolved: {
       codexHome: abs(cfg.engine.codex_home),
       dataRoot: abs(cfg.paths.data_root),

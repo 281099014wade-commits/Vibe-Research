@@ -8,14 +8,14 @@ import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 
-import { stages as packStages, STATUS_PRIORITY, type RunConfig, type RunStatus, type Stage } from "./config.ts";
+import { stages as packStages, STATUS_PRIORITY, type RunConfig, type RunStatus, type Stage, gateProbeLine } from "./config.ts";
 import { ledgerSummary, loadLedgerFromDisk, type FetchExecutor, type Ledger } from "./fetchrun.ts";
 import { PLAN_REL, planFileOf } from "./registry.ts";
 import { archiveRun, recallKnowledge, shouldRecall } from "./knowledge.ts";
 import { FixtureError, fixtureFreshness, readFixture, seedRunDir, verifyFixture, type FixtureManifest } from "./fixture.ts";
 import { writeViewer } from "./viewer.ts";
 import { atomicWrite, ensureDirs, nowIso, sha256File, sha256Text, writeJson } from "./fsutil.ts";
-import { complianceGate, normalizeReportStatus } from "./gate.ts";
+import { complianceGate, normalizeReportStatus, probeReportLine } from "./gate.ts";
 import { HOOK_CONTEXT_REL, clearStopFailed, installHooks, readHookLog, readStopFailed, summarizeHookLog, uninstallHooks, writeHookContext } from "./hooks.ts";
 import { installSkillsIsolation } from "./skills_isolation.ts";
 import { CONSTITUTION_FILENAME, ensureInstructionsRoot } from "./instructions_root.ts";
@@ -23,9 +23,7 @@ import { currentPlugin } from "./plugin.ts";
 import { rawHashes, writeConflicts, writeManifest, writeMergedArtifacts, type Manifest, type StageRecord } from "./merge.ts";
 import type { AgentRunner } from "./runner.ts";
 import { turnReplySchema, validateManifest } from "./schemas.ts";
-import { allCriticalFetchFailed, checkAgentTrace, deriveQuoteDecision, deriveStageStatus, loadRun, summarizeErrorsForAgent, validateFetchIntegrity,
-  validateFinalArtifacts, validateProtectedArtifacts, validateReport, validateStage, type AgentTrace, type CalcVerifier, type ProtectedExpectation,
-  type ValidationResult } from "./validator.ts";
+import { allCriticalFetchFailed, checkAgentTrace, deriveQuoteDecision, deriveStageStatus, loadRun, summarizeErrorsForAgent, validateFetchIntegrity, validateFinalArtifacts, validateProtectedArtifacts, validateReport, validateStage, type AgentTrace, type CalcVerifier, type ProtectedExpectation, type ValidationResult, isUpstreamContractError } from "./validator.ts";
 
 export interface Deps {
   runner: AgentRunner;
@@ -354,6 +352,15 @@ async function runResearchInner(cfg: RunConfig, deps: Deps, onlyStages?: Stage[]
       if (res.ok && !turnFailed) break; // turn 本身失败(含 Stop 钩子终止)即使产物恰好过校验也要补跑
       lastErrors = res.errors;
       console.error(`[orchestrator] stage=${stage} validator 未通过(${res.errors.length} 条)\n${summarizeErrorsForAgent(res, 6)}`);
+      // 🔴 取数层的契约违约,**再补跑多少次都不可能过** —— agent 改不了 fetch/ 下的产物
+      //    (钩子也禁止它写)。继续重试只是白烧时间,而且日志上"自动补跑"会把上游的数据问题
+      //    说成 agent 没做好。⇒ 立刻停下并如实归因。
+      const upstream = res.errors.filter(isUpstreamContractError);
+      if (upstream.length) {
+        console.error(`[orchestrator] stage=${stage} 其中 ${upstream.length} 条是**取数层**契约违约(agent 无法修复),不再补跑:\n  ${upstream.slice(0, 3).join("\n  ")}`);
+        runner.log(stage, "validator.upstream_contract", { attempt: attempt + 1, errors: upstream });
+        break;
+      }
     }
     rec.validator_ok = res.ok;
     rec.errors.push(...res.errors);
@@ -371,7 +378,7 @@ async function runResearchInner(cfg: RunConfig, deps: Deps, onlyStages?: Stage[]
   const reportPath = path.join(cfg.runDir, "report.md");
   if (cfg.scenario?.force_gate_hit && fs.existsSync(reportPath) && stagesToRun.includes(REPORT_STAGE)) {
     // 故障注入(仅硬测试):确定性制造一份命中 gate 的报告,验证"gate 拦截 → 重写 → 复验"链路本身(与 agent 是否自律无关)
-    fs.appendFileSync(reportPath, "\n- 【硬测试注入文本】建议建仓并设目标价(此行用于触发合规 gate,重写时必须删除)\n");
+    fs.appendFileSync(reportPath, `\n${probeReportLine(gateProbeLine())}\n`);
     runner.log(REPORT_STAGE, "scenario.gate_hit_injected", {});
   }
   let gate = complianceGate(fs.existsSync(reportPath) ? fs.readFileSync(reportPath, "utf8") : "");

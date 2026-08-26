@@ -30,6 +30,21 @@ const RESTAURANT = {
   extraTopics: { intake: [], menu: [], competition: ["外卖平台反馈"], report: [] },
   stageLabels: { intake: "门店", menu: "菜单", competition: "竞品", report: "报告" },
   topicSections: { 外卖平台反馈: "竞争与口碑" },
+  /**
+   * 🔴 **必填**,而且是这个垂类**自己的**红线 —— 金融那套("建仓 / 目标价")
+   *    在餐饮这里一个字都用不上。这一条正是"边界切开了没有"的验收点:
+   *    Core 不认识任何一个词,只负责匹配与拒付。
+   */
+  gate: {
+    patterns: ["保证客流", "承诺翻台", "建议定价"],
+    regexps: [{ name: "承诺型", re: /(保证|承诺)[^,。;\n]{0,10}(涨|翻倍|回本)/ }],
+    exemptLines: ["本报告不替商家做定价与客流承诺。"],
+    mentionableInStage: [],
+    probeLine: "建议定价 38 元并保证客流翻倍",
+  },
+  extraSectionsAfter: "结论",
+  // 这个垂类不需要"并入别处"的议题 —— 空表是合法的(不是每个垂类都有兜底议题)
+  topicMerge: {},
   reportSections: ["结论", "数据缺口"],
   evidence: { markets: ["SG", "CN"], adjustments: ["none"], marketWideCodes: [], marketWideOnlyCodes: [] },
   standardColumns: ["客单价"],

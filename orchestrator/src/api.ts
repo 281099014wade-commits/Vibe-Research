@@ -15,7 +15,7 @@ import path from "node:path";
 
 import crypto from "node:crypto";
 
-import { IMPORT_MAX_TOTAL_BYTES, ServiceError, chatSend, fetchEndpoint, ingestFiles, ledgerKinds, ledgerList, ledgerRemove, ledgerSnapshot, ledgerUpsert, getEvidence, getReport, knowledgeRecall, listEndpoints, listRuns, readRunFile, redact, researchStatus, safePath, serviceContext, startResearch, type ServiceContext } from "./service.ts";
+import { IMPORT_MAX_TOTAL_BYTES, ServiceError, chatSend, fetchEndpoint, ingestFiles, debateAdvance, debateStart, ledgerKinds, ledgerLabels, ledgerList, productInfo, ledgerRemove, ledgerSnapshot, ledgerUpsert, pageQuery, getEvidence, getReport, knowledgeRecall, listEndpoints, listRuns, readRunFile, redact, researchStatus, safePath, serviceContext, startResearch, type ServiceContext } from "./service.ts";
 
 
 // **composition root**:插件在入口注册,Core 模块一律不 import 它
@@ -133,7 +133,27 @@ export function createApiServer(ctx: ServiceContext, opts: { token: string; cook
       const parts = url.pathname.split("/").filter(Boolean);
       const q = Object.fromEntries(url.searchParams.entries());
       if (req.method === "GET" && url.pathname === "/health") return send(res, 200, { ok: true, version: productVersion() });
-      if (req.method === "GET" && url.pathname === "/endpoints") return send(res, 200, listEndpoints(ctx, { layer: q.layer, market: q.market, q: q.q, enabled_only: q.enabled_only === "1" }));
+      // 设置页要看的有效配置。**只读** —— 不提供任何写入密钥的入口(见 service.productInfo)
+      if (req.method === "GET" && url.pathname === "/product") return send(res, 200, productInfo(ctx));
+      if (req.method === "GET" && url.pathname === "/endpoints") return send(res, 200, listEndpoints(ctx, { layer: q.layer, market: q.market, q: q.q, enabled_only: q.enabled_only === "1", for_ui: q.all !== "1" }));
+      // 界面查询:页面按**名字**要一屏数据,不点名物理端点(见 service.pageQuery)
+      if (req.method === "GET" && parts[0] === "page" && parts[1] && parts.length === 2) {
+        return send(res, 200, await pageQuery(ctx, { query: parts[1], symbol: q.symbol, refresh: q.refresh === "1" }));
+      }
+      // 用户在界面上拨过某个块参数的那次查询走 POST:参数是结构化的,塞查询串会变成字符串猜类型。
+      // ⚠️ 能拨哪些键由垂类的 `userArgs` 白名单说了算,这里不放宽(见 service.pickUserArgs)。
+      if (req.method === "POST" && parts[0] === "page" && parts[1] && parts.length === 2) {
+        const b = (await readBody(req)) as { symbol?: string; refresh?: boolean; blockArgs?: Record<string, Record<string, unknown>> };
+        return send(res, 200, await pageQuery(ctx, { query: parts[1], symbol: b?.symbol, refresh: b?.refresh === true, blockArgs: b?.blockArgs }));
+      }
+      // 多空辩论:开一场 → 逐个阶段推进(一次一个,界面据此逐段显示)
+      if (req.method === "POST" && url.pathname === "/debate") {
+        const b = (await readBody(req)) as { symbol?: string; session?: string };
+        return send(res, 200, await debateStart(ctx, { symbol: String(b?.symbol ?? ""), ...(b?.session ? { session: b.session } : {}) }));
+      }
+      if (req.method === "POST" && parts[0] === "debate" && parts[1] && parts[2] === "advance") {
+        return send(res, 200, await debateAdvance(ctx, { id: parts[1] }));
+      }
       if (req.method === "POST" && url.pathname === "/fetch") { const b = await readBody(req); return send(res, 200, await fetchEndpoint(ctx, b as never)); }
       // 自由对话:一问一答。**只读沙箱 + 不联网 + 过合规 gate**(见 chat.ts),不产出证据、不写台账。
       if (req.method === "POST" && url.pathname === "/chat") {
@@ -164,7 +184,7 @@ export function createApiServer(ctx: ServiceContext, opts: { token: string; cook
       if (req.method === "GET" && url.pathname === "/ledger") {
         // 一次读盘拿两半:分两次调会让 records 与 issues 来自不同快照(见 service.ledgerSnapshot)
         const snap = ledgerSnapshot(ctx);
-        return send(res, 200, { kinds: ledgerKinds(ctx), records: snap.records, issues: snap.issues });
+        return send(res, 200, { kinds: ledgerKinds(ctx), labels: ledgerLabels(ctx), records: snap.records, issues: snap.issues });
       }
       if (req.method === "GET" && parts[0] === "ledger" && parts[1] && parts.length === 2) return send(res, 200, ledgerList(ctx, parts[1]));
       if (req.method === "POST" && parts[0] === "ledger" && parts[1] && parts.length === 2) {

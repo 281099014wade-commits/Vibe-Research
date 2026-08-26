@@ -142,3 +142,46 @@ test("🔴 会话按「数据根 + 会话名」索引 —— 只按会话名索�
   assert.equal(capA.prompts[1], "甲的第二问", "同数据根同会话名 = 同一条线程");
   assert.equal(chatSessionCount(), 2);
 });
+
+test("🔴 换了 provider 就不能再复用旧线程 —— 线程把端点/认证/模型全绑死了,复用等于「配置改了但没生效」", async () => {
+  resetChatSessions();
+  const root = tmp();
+  const capA: Cap = { prompts: [] }, capB: Cap = { prompts: [] };
+  const cfgFile = path.join(root, "config.json");
+
+  await chatSend({ repoRoot: REPO, dataRoot: root }, { session: "default", message: "第一问" }, fakeCodex("好", capA));
+  assert.equal(chatSessionCount(), 1);
+
+  // 用户改配置换成 mimo(它有自己的 base_url / 默认模型)
+  fs.writeFileSync(cfgFile, JSON.stringify({ provider: { profile: "mimo", auth: "api_key" } }));
+  process.env.MIMO_API_KEY = "k-for-test-0123456789";
+  try {
+    await chatSend({ repoRoot: REPO, dataRoot: root }, { session: "default", message: "第二问" }, fakeCodex("好", capB));
+  } finally {
+    delete process.env.MIMO_API_KEY;
+  }
+  assert.equal(chatSessionCount(), 2, "换 provider 必须是一条新线程,不能续用旧的");
+  assert.equal(capB.opts!.model, "mimo-v2.5", "新线程要用新 provider 的模型");
+  assert.ok(capB.prompts[0]!.includes("对话模式"), "新线程从第一轮开始(说明没有接上旧线程)");
+});
+
+test("🔴 指纹要覆盖**真正传给引擎的整份配置** —— 手挑几个字段会漏掉轮换密钥这种情况", async () => {
+  resetChatSessions();
+  const root = tmp();
+  fs.writeFileSync(path.join(root, "config.json"), JSON.stringify({ provider: { profile: "mimo", auth: "api_key" } }));
+  const send = (cap: Cap) => chatSend({ repoRoot: REPO, dataRoot: root }, { session: "default", message: "问" }, fakeCodex("好", cap));
+
+  process.env.MIMO_API_KEY = "key-AAAAAAAAAAAAAAAA";
+  try {
+    await send({ prompts: [] });
+    assert.equal(chatSessionCount(), 1);
+    await send({ prompts: [] });
+    assert.equal(chatSessionCount(), 1, "同样配置要复用同一条线程");
+    // 轮换密钥:name / base_url / auth / model 一个都没变 —— 手挑字段的指纹在这里完全看不出区别
+    process.env.MIMO_API_KEY = "key-BBBBBBBBBBBBBBBB";
+    await send({ prompts: [] });
+    assert.equal(chatSessionCount(), 2, "换了密钥必须重开线程,否则继续按旧凭据计费");
+  } finally {
+    delete process.env.MIMO_API_KEY;
+  }
+});

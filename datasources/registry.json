@@ -35,7 +35,8 @@
         "profile": "required"
       },
       "critical": true,
-      "enabled": true
+      "enabled": true,
+      "cache_max_age_sec": 300
     },
     {
       "id": "fetch_trade_calendar",
@@ -52,7 +53,8 @@
       "stages": {
         "profile": "required"
       },
-      "enabled": true
+      "enabled": true,
+      "cache_max_age_sec": 0
     },
     {
       "id": "fetch_financials",
@@ -225,7 +227,8 @@
       "function": "eastmoney_fund_flow_minute",
       "mapper": "em_fund_flow_minute",
       "endpoint_label": "push2/stock/fflow/kline",
-      "notes": "盘中才有;ETF 不覆盖"
+      "notes": "盘中才有;ETF 不覆盖",
+      "cache_max_age_sec": 300
     },
     {
       "market": [
@@ -325,7 +328,8 @@
         "board_type": "industry",
         "period": "today",
         "top_n": 50
-      }
+      },
+      "cache_max_age_sec": 900
     },
     {
       "market": [
@@ -582,7 +586,8 @@
       "layer": "8 打板",
       "function": "limit_up_sentiment",
       "mapper": "em_limit_up_sentiment",
-      "endpoint_label": "push2ex 四池组合"
+      "endpoint_label": "push2ex 四池组合",
+      "cache_max_age_sec": 900
     },
     {
       "market": [
@@ -657,7 +662,8 @@
       "endpoint_label": "emappdata/stockrank/getAllCurrentList",
       "args": {
         "top": 50
-      }
+      },
+      "cache_max_age_sec": 900
     },
     {
       "market": [
@@ -712,7 +718,8 @@
       "layer": "3 信号",
       "function": "hsgt_realtime",
       "mapper": "ths_hsgt_realtime",
-      "endpoint_label": "data.hexin.cn/hsgtApi/dayChart"
+      "endpoint_label": "data.hexin.cn/hsgtApi/dayChart",
+      "cache_max_age_sec": 300
     },
     {
       "market": [
@@ -730,7 +737,8 @@
       "layer": "8 打板",
       "function": "ths_limit_up_pool",
       "mapper": "ths_limit_up_pool",
-      "endpoint_label": "data.10jqka/dataapi/limit_up/limit_up_pool"
+      "endpoint_label": "data.10jqka/dataapi/limit_up/limit_up_pool",
+      "cache_max_age_sec": 900
     },
     {
       "market": [
@@ -772,7 +780,8 @@
       "mapper": "tencent_quotes_map",
       "endpoint_label": "qt.gtimg.cn/q",
       "notes": "指数 / ETF 请带前缀(sh000001 / sh510050);fetch_quote 仍是阶段必需的主行情脚本",
-      "sample": "sh000001"
+      "sample": "sh000001",
+      "cache_max_age_sec": 300
     },
     {
       "market": [
@@ -802,7 +811,8 @@
           "sh510050",
           "sh510300"
         ]
-      }
+      },
+      "cache_max_age_sec": 300
     },
     {
       "market": [
@@ -945,7 +955,8 @@
       "endpoint_label": "vip.stock.finance.sina.com.cn/MoneyFlow",
       "args": {
         "days": 60
-      }
+      },
+      "cache_max_age_sec": 900
     },
     {
       "market": [
@@ -1357,7 +1368,8 @@
       "endpoint_label": "tdx quotes",
       "libs": [
         "mootdx"
-      ]
+      ],
+      "cache_max_age_sec": 300
     },
     {
       "market": [
@@ -1443,7 +1455,8 @@
       "function": "us_stock_quote_tencent",
       "mapper": "quote_map",
       "endpoint_label": "qt.gtimg.cn/q=us",
-      "cap_unit": "亿美元"
+      "cap_unit": "亿美元",
+      "cache_max_age_sec": 300
     },
     {
       "market": [
@@ -1464,7 +1477,8 @@
       "mapper": "quote_map",
       "endpoint_label": "hq.sinajs.cn/list=gb_",
       "cap_unit": "美元",
-      "notes": "market_cap 为新浪原值,单位以实测为准"
+      "notes": "market_cap 为新浪原值,单位以实测为准",
+      "cache_max_age_sec": 300
     },
     {
       "market": [
@@ -1484,7 +1498,8 @@
       "function": "hk_stock_quote_tencent",
       "mapper": "quote_map",
       "endpoint_label": "qt.gtimg.cn/q=r_hk",
-      "cap_unit": "亿港元"
+      "cap_unit": "亿港元",
+      "cache_max_age_sec": 300
     },
     {
       "market": [
@@ -1503,7 +1518,8 @@
       "module": "sina",
       "function": "hk_stock_quote_sina",
       "mapper": "quote_map",
-      "endpoint_label": "hq.sinajs.cn/list=rt_hk"
+      "endpoint_label": "hq.sinajs.cn/list=rt_hk",
+      "cache_max_age_sec": 300
     },
     {
       "market": [
@@ -1525,7 +1541,8 @@
       "mapper": "quote_map",
       "endpoint_label": "push2/stock/get secid 105|106|107|116",
       "pass_market": true,
-      "sample": "AAPL"
+      "sample": "AAPL",
+      "cache_max_age_sec": 300
     },
     {
       "market": [
@@ -1861,7 +1878,8 @@
       "args": {
         "limit": 100
       },
-      "sample": "AAPL"
+      "sample": "AAPL",
+      "cache_max_age_sec": 900
     },
     {
       "market": [
@@ -1905,7 +1923,8 @@
       "module": "cboe",
       "function": "cboe_quote",
       "mapper": "cboe_quote_map",
-      "endpoint_label": "cdn.cboe.com delayed_quotes/quotes"
+      "endpoint_label": "cdn.cboe.com delayed_quotes/quotes",
+      "cache_max_age_sec": 300
     },
     {
       "market": [
@@ -2440,7 +2459,8 @@
         "with_fcc": true,
         "with_mofcom": false
       },
-      "notes": "判定以联邦公报通知全文检索公司英文名为准;无英文名 = undetermined(≠ not_on_list);没被点名 ≠ 不受影响;'被建议列入' ≠ '已列入';中方侧默认不接(商务部公告列表 JS 渲染零配置抓不到,证据里给 not_connected 护栏)。移植自 V2 policy_access.py"
+      "notes": "判定以联邦公报通知全文检索公司英文名为准;无英文名 = undetermined(≠ not_on_list);没被点名 ≠ 不受影响;'被建议列入' ≠ '已列入';中方侧默认不接(商务部公告列表 JS 渲染零配置抓不到,证据里给 not_connected 护栏)。移植自 V2 policy_access.py",
+      "exposure": "agent"
     },
     {
       "id": "next_disclosure",
@@ -2640,6 +2660,29 @@
         "macro_probability"
       ],
       "notes": "移植自 simonlin1212/GlobalPercent 的模块分类器与取数形态。只收 6 个核心模块(货币政策 / 宏观经济 / 地缘政治 / 政治选举 / 股指大宗 / AI科技),参考类(加密 / 体育 / 娱乐 / 其他)丢弃;每模块取前 3(排序键 = max(24h 成交量, 未平仓量) —— 月度宏观合约典型是持仓大、当日安静,只看当日量会被冷门合约挤掉)。**近端允许安静、远期必须有 24h 成交量** —— 纯日期窗口会误杀有意义的远期宏观合约(实测「Recession in 2027?」有真实成交却结算在 500 多天后),纯流动性又留不住 2099 年的僵尸盘。⚠️ 这是**市场当前的定价预期,不是事实也不是预测**,概率随时在变、只在 as_of 那一刻成立;低成交量合约噪音极大。⚠️ Kalshi 的成交量字段是 volume_24h_fp / volume_fp(不是 volume_24h),且服务端**忽略 category 查询参数**,只能翻页后本地分类。"
+    },
+    {
+      "id": "em_turnover_rank",
+      "title": "全市场成交额榜(沪深京 A 股)",
+      "layer": "10 情绪",
+      "market": [
+        "SH",
+        "SZ",
+        "BJ"
+      ],
+      "source": "eastmoney",
+      "compliance": "cn-public",
+      "module": "eastmoney",
+      "function": "market_turnover_rank",
+      "symbol_kind": "none",
+      "mapper": "em_turnover_rank",
+      "args": {
+        "top_n": 20
+      },
+      "enabled": true,
+      "cache_max_age_sec": 300,
+      "notes": "客观公开榜单(东财行情中心同款),只做客观展示 —— 非推荐、非预测、不评分。",
+      "stages": {}
     }
   ]
 }

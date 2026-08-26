@@ -191,7 +191,16 @@ export async function runDoctor(opts: { repoRoot?: string; env?: NodeJS.ProcessE
 
   // 2. 产品配置链
   let pc: LoadedProductConfig | null = null;
-  try { pc = loadProductConfig(repoRoot, { env }); add({ id: "config", title: "产品配置链", status: "ok", detail: `来源:${pc.sources.join(" ← ")};provider=${pc.provider.name}/${pc.provider.auth}` }); }
+  // 🔴 宽松模式:缺密钥**单独报一条**,不让它把配置链整条判死 ——
+  //    否则后面所有靠 pc 的检查(Python、CODEX_HOME、skills 隔离)都会跟着 skip 或**报出假原因**
+  //    (实测:配了 MiMo 还没导 key 时,体检说"未找到 Python",而 Python 明明配着)。
+  try {
+    pc = loadProductConfig(repoRoot, { env, requireAuth: false });
+    add({ id: "config", title: "产品配置链", status: "ok", detail: `来源:${pc.sources.join(" ← ")};provider=${pc.provider.name}/${pc.provider.auth}` });
+    if (pc.authError) {
+      add({ id: "provider_key", title: "模型密钥", status: "fail", detail: `${pc.authError}。先 export 再跑研究;其余检查不受此影响。` });
+    }
+  }
   catch (e) { add({ id: "config", title: "产品配置链", status: "fail", detail: e instanceof Error ? e.message : String(e), fix: "检查 .local/config.json / 环境变量 VRA_* / provider 密钥变量;或先 node orchestrator/src/init.ts" }); }
   const dataRoot = pc?.resolved.dataRoot ?? resolveDataRoot(repoRoot);
   const codexHome = pc?.resolved.codexHome ?? path.join(dataRoot, "codex-home");
@@ -375,7 +384,9 @@ export async function runDoctor(opts: { repoRoot?: string; env?: NodeJS.ProcessE
     try {
       const ctx = serviceContext({ repoRoot, python, env });
       // 用注册表里的零鉴权行情端点 tx_quote(腾讯)探一次;legacy 脚本端点不经 fetch_endpoint.py,不能用在这里
-      const r = await fetchEndpoint(ctx, { endpoint: NET_PROBE_ENDPOINT, symbol: "300308", session: "doctor", timeout_ms: 60_000 });
+      // 🔴 **必须 fresh**:探针要回答的是"此刻能不能连上",读快照会把历史上的一次成功
+      //    报成"当前网络健康" —— 一条彻头彻尾的假诊断(Codex 架构评审 arch-r1 §A)。
+      const r = await fetchEndpoint(ctx, { endpoint: NET_PROBE_ENDPOINT, symbol: "300308", session: "doctor", timeout_ms: 60_000, consistency: { mode: "fresh" } });
       const st = String(r.envelope.status ?? "?");
       const err = Array.isArray(r.envelope.errors) && r.envelope.errors.length ? String((r.envelope.errors[0] as { message?: string })?.message ?? "").slice(0, 120) : "";
       add({ id: "net", title: "数据源连通", status: st === "ok" || st === "partial" ? "ok" : "warn", detail: `${NET_PROBE_ENDPOINT} 300308 → ${st}(${Math.round(r.duration_ms / 1000)}s${err ? `;${err}` : ""};结果只反映此刻网络与源状态)`, fix: st === "ok" || st === "partial" ? undefined : "检查网络 / 代理;python datasources/health.py 看全量" });

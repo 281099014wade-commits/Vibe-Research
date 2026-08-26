@@ -35,6 +35,20 @@ export interface EndpointDef {
   industry_tags?: string[];
   /** 温度计历史序列:这些证据字段(白名单)在归档时写进用户数据区序列,下次运行生成 _prev / _change_* 比较证据(orchestrator/src/finance/thermo_history.ts) */
   history_fields?: string[];
+  /**
+   * 快照最多能放多久(秒)。缺省 = 不限(界面打开就用上次的,直到用户点刷新)。
+   * 🔴 **产出里含"按此刻算出来"的字段的端点必须写这个**,尤其是 `0` = 从不缓存。
+   *    这类字段缓存下来就会被永久冻结:上午算出来的状态,晚上再打开还是它,
+   *    而且**永远不会自己好**。垂类里往往有整条逻辑建在这种字段上
+   *    (Codex 架构评审 arch-r1 §B)。
+   */
+  cache_max_age_sec?: number | null;
+  /**
+   * 这个端点给谁看。缺省 `ui`(界面和 agent 都能用)。
+   * `agent` = **界面不展示、只让 AI 调用**(如管制与准入、名单核查)——
+   * 🔴 光靠"前端不渲染"守不住:以后任何一个通用端点列表组件都会把它列出来。
+   */
+  exposure?: "ui" | "agent" | "internal";
   [k: string]: unknown;
 }
 

@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 import { test } from "node:test";
 
 import { packCriticalScripts, makeConfig } from "../src/config.ts";
-import { allCriticalFetchFailed, checkAgentTrace, deriveQuoteDecision, deriveStageStatus, loadRun, validateFetchIntegrity, validateStage } from "../src/validator.ts";
+import { allCriticalFetchFailed, checkAgentTrace, deriveQuoteDecision, deriveStageStatus, loadRun, validateFetchIntegrity, validateStage, isUpstreamContractError } from "../src/validator.ts";
 import { detectSourceConflicts, mergeEvidence, rawHashes } from "../src/merge.ts";
 import { sha256File, writeJson } from "../src/fsutil.ts";
 import { validateCalcRecord, validateEvidenceItem, validateFetchEnvelope, validateStageOutput } from "../src/schemas.ts";
@@ -404,7 +404,10 @@ test("复算:history_json 计算记录可由 validator 经 calc CLI 复算;raw �
   const { loadProductConfig } = await import("../src/productConfig.ts");
   const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
   // 解释器:产品配置链(vibe-research.config.json ← .local/config.json ← VRA_PYTHON)→ 否则 python3;calc 只依赖标准库
-  const PY = loadProductConfig(REPO, { env: process.env }).python ?? process.env.VRA_PYTHON ?? "python3";
+  // 🔴 `requireAuth: false`:这里只想拿解释器路径,不该被"模型密钥有没有导"绑住。
+  //    不加这个,机器上把 provider 配成 api_key 那类(如 MiMo)、又没 export key 时,
+  //    这条测试会红 —— **测试绿不绿取决于开发者本机怎么配 provider**,那不是测试该有的样子。
+  const PY = loadProductConfig(REPO, { env: process.env, requireAuth: false }).python ?? process.env.VRA_PYTHON ?? "python3";
   const probe = spawnSync(PY, ["-c", "import sys; print(sys.version_info[0])"], { encoding: "utf8" });
   assert.equal(probe.status, 0, `解释器不可用:${PY} ${probe.error?.message ?? probe.stderr}`);
   const cfg = makeConfig({ symbol: "300308", market: "SZ", repoRoot: REPO, runId: "t-calc-hj", python: PY, runDir: fs.mkdtempSync(path.join(os.tmpdir(), "vra-hj-")) });
@@ -431,7 +434,7 @@ test("displayProjection / verifyCalcs:details 里结果形子对象的 display �
   const { verifyCalcs, loadRun, displayProjection } = await import("../src/validator.ts");
   const { loadProductConfig } = await import("../src/productConfig.ts");
   const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
-  const PY = loadProductConfig(REPO, { env: process.env }).python ?? process.env.VRA_PYTHON ?? "python3";
+  const PY = loadProductConfig(REPO, { env: process.env, requireAuth: false }).python ?? process.env.VRA_PYTHON ?? "python3";
   const probe = spawnSync(PY, ["-c", "import sys; print(sys.version_info[0])"], { encoding: "utf8" });
   assert.equal(probe.status, 0, `解释器不可用:${PY}`);
   const cfg = makeConfig({ symbol: "300308", market: "SZ", repoRoot: REPO, runId: "t-disp", python: PY, runDir: fs.mkdtempSync(path.join(os.tmpdir(), "vra-disp-")) });
@@ -492,4 +495,19 @@ test("必需端点 partial:信封**顶层** missing 也算声明了降级(修复
   assert.equal(hits(mk({}, { missing: ["eps_min", "eps_max"] })), true, "顶层 missing 也必须要求写进缺口");
   // 两者都没有(如行情陈旧,已由 quote_decision 单独披露)→ 不强制写 gap
   assert.equal(hits(mk({})), false, "没声明丢了什么就不强制");
+});
+
+test("🔴 取数层的契约违约要能被认出来 —— agent 改不了它,重试只是白烧时间", () => {
+  // 真跑里出现过的原文(宏观概率端点把完整时间戳写进 as_of),连补跑三次都必然失败
+  assert.ok(isUpstreamContractError('fetch/macro_probability.json 不符契约:/evidence/0/as_of must match pattern "^\\d{4}-\\d{2}-\\d{2}$"'));
+  assert.ok(isUpstreamContractError("fetch/fetch_quote.json 不符契约:x"));
+  // agent 自己能改的那些不算 —— 它们该继续补跑
+  for (const e of [
+    "缺少 stages/profile.json",
+    "raw/a.json 未经编排器取数记录(疑似 agent 自写)",
+    "raw/a.json 内容与账本 sha256 不一致(文件被改写)",
+    "报告里的数字 12.3 没有绑定到任何证据",
+  ]) {
+    assert.ok(!isUpstreamContractError(e), `不该判成取数层:${e}`);
+  }
 });

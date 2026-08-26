@@ -119,7 +119,7 @@ node orchestrator/src/finance/provider_matrix.ts --provider deepseek            
 node orchestrator/src/run.ts --symbol 300308 --provider deepseek --model deepseek-v4-flash --python ...   # 3) use it for research once green
 ```
 
-Built-in profiles: `openai` / `deepseek` (official Responses API) / `qwen` · `glm` · `kimi` (hosted on Alibaba Cloud Bailian). Or set it in `.local/config.json`: `{"provider": {"profile": "deepseek"}, "defaults": {"model": "deepseek-v4-flash"}}`.
+Built-in profiles: `openai` / `deepseek` · `mimo` (native Responses API) / `qwen` · `glm` · `kimi` (hosted on Alibaba Cloud Bailian). Or set it in `.local/config.json`: `{"provider": {"profile": "deepseek"}, "defaults": {"model": "deepseek-v4-flash"}}`.
 
 **Responses protocol only.** The engine removed `wire_api="chat"` entirely, so a vendor must expose an OpenAI-compatible `/responses` endpoint — otherwise you need your own Responses→Chat gateway (`responses_support: "gateway"`). The three Bailian templates carry a `{WorkspaceId}` placeholder in `base_url`: copy one to `.local/providers/<id>.json` and fill in your own workspace ID, or selecting it fails immediately. If you do not set `auth`, the template's only supported mode (`api_key`) is chosen automatically; an explicit `--auth` / `VRA_PROVIDER_AUTH` always wins. Third-party templates must declare an explicit https `base_url` (Codex falls back to the official OpenAI endpoint when `base_url` is empty).
 

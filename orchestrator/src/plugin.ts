@@ -42,6 +42,11 @@
 import AjvModule from "ajv";
 
 import { applyCoreFormats, assertKnownFormats } from "./formats.ts";
+// ⚠️ 这里有一圈依赖:plugin → gate → config → plugin。三边都只在**函数体内**用对方,
+//    模块顶层不求值,所以 ESM 能解开。自检调 complianceGate 时**显式传规则**,
+//    绝不走它的默认参数(那会去读 currentPlugin(),而此刻插件还没注册完)。
+import type { DebateStageDef } from "./debate.ts";
+import { complianceGate, probeReportLine } from "./gate.ts";
 import { currentLexicon, resetLexicon, setLexicon, type Lexicon } from "./number_fidelity.ts";
 
 /** 每阶段的取数脚本:required 全失败 → 阶段不完整;optional 缺失只记 gap */
@@ -169,7 +174,7 @@ export interface Plugin {
    * **阶段专属的产物字段**:每个阶段在通用骨架之外还要求什么字段(JSON Schema 片段 + 必填名单)。
    *
    * 🔴 全审 r4-P1:原本整段写死在 Core 的 `schemas.ts` 里 —— `if (stage === "profile")` 挂
-   * 报价判定与不可替代性标签、`if (stage === "risk")` 挂反证与裁决点。换个垂类时:
+   * 报价判定与不可替代性标签、`if (stage === "risk")` 挂反证与到期判定。换个垂类时:
    * 它的第一个阶段拿不到该有的字段约束,而契约又强制它提供这些金融概念。
    * ⚠️ 纯净度词表**看不见**这类耦合(英文标识符 + 枚举值),所以它一直是"0 分"下的隐性欠债。
    *
@@ -268,9 +273,151 @@ export interface Plugin {
   readonly ledger?: {
     /** 种类名 → 定义。种类名会被拼进文件路径,注册期按安全路径段校验 */
     readonly kinds: Readonly<Record<string, LedgerKindDef>>;
+    /**
+     * 字段键 → 显示名。**这是垂类知识**:同一个键在不同垂类里叫法完全不同。
+     * 🔴 曾经写死在 Core 的表单组件里 —— 界面看着没毛病,但换个垂类就得改 Core,
+     *    而纯净度棘轮的词表里恰好一个都没收录,于是**一路绿灯**。
+     * ⚠️ 没登记的字段照样渲染(退回原键名),不能因为没起名就整块不显示。
+     */
+    readonly fieldLabels?: Readonly<Record<string, string>>;
+    /** 枚举值 → 显示名。跨种类共用(status 在好几种记录里都出现),所以不挂在种类下 */
+    readonly enumLabels?: Readonly<Record<string, string>>;
   };
+  /**
+   * **界面查询契约**(BFF):页面按**名字**要一屏数据,而不是自己去点名物理端点。
+   *
+   * 🔴 为什么必须有这一层:现在每个页面卡片都写死了 `em_limit_up_sentiment` 这种端点 id ——
+   *    ① 端点名直接印在界面上("这是交互 UI,很 out");
+   *    ② 端点改名 / 换源要改一片前端;
+   *    ③ 更要命的是**一屏之内的东西彼此不认识**:每张卡片只知道自己那一个端点,
+   *      没有任何一层知道"这一屏在回答什么问题",于是用户得自己在页面之间搬运与记忆
+   *      (Codex 看真实页面后的第一条结论)。
+   *
+   * ⚠️ 查询名与它要哪些端点,都是**垂类知识**,不能进 Core。
+   */
+  readonly pageQueries?: Readonly<Record<string, PageQueryDef>>;
+  /**
+   * **多空辩论**:哪些端点组成资料包、有哪几个角色。可选 —— 不是每个垂类都需要对抗式复核。
+   *
+   * 🔴 `dossierEndpoints` 决定"双方在多少事实上打"。**只放确定性数字类端点** ——
+   *    把市场声音那种第三方文本放进来,等于让辩论双方引用别人的观点当证据。
+   * ⚠️ `sees` 控制信息流:多方看不到裁判稿、裁判看得到全部。写错了辩论会退化
+   *    (比如让空方先看到裁判结论),而产出照样是一篇像模像样的文章 —— 看不出来。
+   */
+  readonly debate?: {
+    readonly dossierEndpoints: readonly string[];
+    readonly stages: readonly DebateStageDef[];
+  };
+  /** 页面业务上下文的解析方式(见 `PageContextDef`)。没有就没有,不是每个垂类都需要 */
+  readonly pageContext?: PageContextDef;
+  /**
+   * 扩展章节插在骨架的**哪一章之后**。必须是 `reportSections` 里的一章。
+   * 🔴 以前把两个具体章节名直接写死在 Core 的提示词字符串里 ——
+   *    换个垂类那两个章节名根本不存在,而它只会给出一句对不上的指路,不会崩。
+   */
+  /**
+   * **产出红线**:什么样的句子算"越界建议"。Core 只负责匹配与拒付,**不认识任何一个词**。
+   *
+   * 🔴 **必填,没有默认值**。给默认空表 = 新垂类忘了声明就静默变成"什么都不拦",
+   *    而这种失效在产出上与"确实没有违规"完全一样,没人会发现。
+   * ⚠️ 含 RegExp,不走 ajv 投影(同 pageContext),由注册期手写校验兜底。
+   */
+  readonly gate: {
+    /** 子串表:命中即违规 */
+    readonly patterns: readonly string[];
+    /**
+     * 正则规则:子串管不住的语义型表达。
+     * ⚠️ **不做灾难性回溯检查**(审计 gate-r1-P2,已知未做):写一条 `/(a+)+$/` 就能让
+     *    gate 在长文本上卡住。不做的理由是**插件随产品一起发,不是用户提交的** ——
+     *    这属于写垂类包时的 review 事项。⇒ 哪天允许第三方插件,这里必须补上。
+     * ⚠️ 不许带 g / y 标志(有状态,见注册期校验)。
+     */
+    readonly regexps: readonly { readonly name: string; readonly re: RegExp }[];
+    /** 整行**精确等于**其一才豁免(防"不构成建议,但建议…") */
+    readonly exemptLines: readonly string[];
+    /** 这几个词在阶段产物里会出现在"提及"语境,查阶段产物时从子串表里去掉 */
+    readonly mentionableInStage: readonly string[];
+    /** 硬测试注入报告、**必须被拦住**的一行 */
+    readonly probeLine: string;
+  };
+  readonly extraSectionsAfter: string;
+  /**
+   * 有议题但**没有专属章节**的那几个:议题名 → 内容并入哪一章。
+   *
+   * 🔴 以前写死在 Core 的 `report_sections.ts` 里(两处三元判断 + 一个常量数组)——
+   *    换个垂类,那几个议题名与并入目标完全不同,而它是**校验器的错误措辞与提示词文案**,
+   *    错了不会崩、只会给出一句对不上的指路。
+   * ⚠️ 并入目标为空串 = 只要求全文引用、不指定并到哪(兜底议题就是这种)。
+   */
+  readonly topicMerge: Readonly<Record<string, string>>;
   /** 数字判定用的词表(见 `number_fidelity.ts` 的 `Lexicon`) */
   readonly lexicon: Lexicon;
+}
+
+/** 一屏数据里的一块 */
+export interface PageBlockDef {
+  /** 块 id:前端按它取数据,**这才是前端该认识的名字**(不是端点 id) */
+  readonly id: string;
+  readonly title: string;
+  /** 这一块在回答什么。展示给用户,不是给开发看的 */
+  readonly note?: string;
+  readonly endpoint: string;
+  readonly symbol?: string;
+  readonly args?: Readonly<Record<string, unknown>>;
+  /** 缺这一块整屏就没意义 ⇒ 取不到时整屏判失败;否则只标这一块缺 */
+  readonly required?: boolean;
+  /**
+   * 这一块要不要接收业务上下文注入的参数(见 `Plugin.pageContext.resolve` 的 `inject`)。
+   * 🔴 默认 **false**。原来是无差别注入给每一块 —— 结果不接受那个参数的端点全被参数校验拒掉,
+   *    一屏五块全 missing。注入是**按块**的事:哪个端点吃这个参数,只有声明的人知道。
+   */
+  readonly injectContext?: boolean;
+  /**
+   * 默认收起。一屏块多时,不常看的先收着 ——
+   * ⚠️ **收起不等于不取**:数据照常一次取回,收的只是显示。
+   *    真想省取数就别把这一块放进这个查询。
+   */
+  readonly collapsed?: boolean;
+  /**
+   * 允许用户在界面上改的**参数键白名单**(比如让某一块换个口径看)。没声明 = 一个都不许改。
+   *
+   * 🔴 白名单是必须的:不设的话,前端能把这一块的**任何**参数换掉 ——
+   *    包括那些决定"这一块到底在回答什么"的参数。哪些参数可以由用户拨,
+   *    是垂类的判断,不是前端的。
+   * ⚠️ 它**不替代**端点自己的参数校验:白名单只管"哪些键可以被覆盖",
+   *    值合不合法仍由 `assertArgs` 判。
+   */
+  readonly userArgs?: readonly string[];
+}
+
+export interface PageQueryDef {
+  readonly title: string;
+  /** 这一页在回答什么问题 —— 首屏要显示它 */
+  readonly intent: string;
+  readonly blocks: readonly PageBlockDef[];
+  /** 这一页要不要先解析业务上下文(见 `Plugin.pageContext`)。true = 要 */
+  readonly needsContext?: boolean;
+}
+
+/**
+ * **页面业务上下文**:在取这一屏之前先解析出来的东西,并可作为参数注入每一块。
+ *
+ * 🔴 为什么是插槽而不是写在 Core 里:金融这边它是"交易时段 → 复盘该看哪一天",
+ *    换个垂类可能是"本期结算周期""当前排班"。Core 只知道**有这么一步**,
+ *    不知道它靠哪个端点、算出什么。(Core 里连端点名都不该出现。)
+ */
+export interface PageContextDef {
+  /** 解析上下文要先取哪个端点 */
+  readonly endpoint: string;
+  /** 该端点需要的主体(不需要就不给) */
+  readonly symbol?: string;
+  /**
+   * 从取数信封解析。拿不到就返回 null —— **别编一个默认值**:
+   * 编出来的业务日期会让整页显示错误的日子,而且看不出来。
+   */
+  readonly resolve: (envelope: unknown) => { values: Record<string, unknown>; inject: Record<string, unknown> } | null;
+  /** 拿不到时给用户看的话 */
+  readonly unavailable: string;
 }
 
 /** 台账里一个记录种类的定义(字段部分;`id`/`kind`/`created_at`/`updated_at` 由 Core 拥有) */
@@ -354,6 +501,9 @@ const LEDGER = {
         properties: { label: NONBLANK, properties: { type: "object" }, required: strArray({ uniqueItems: true }) },
       },
     },
+    // 显示名:字段键 / 枚举值 → 人话。放在**种类之外**是因为 status 这类枚举跨种类共用
+    fieldLabels: mapOf(NONBLANK),
+    enumLabels: mapOf(NONBLANK),
   },
 };
 
@@ -363,7 +513,7 @@ export const PLUGIN_SCHEMA = {
   additionalProperties: false,          // 多写一个字段 = 拼错了名字,当场说,别静默忽略
   required: ["id", "stages", "stageScripts", "criticalScripts", "stageCalcs", "extraTopics", "reportSections",
     "evidence", "standardColumns", "standardColumnLabels", "standardColumnsStage", "stageSchemas", "stageValidators", "reportStage", "topicsSourceStage", "roles", "semanticSlots",
-    "stageLabels", "topicSections", "alertFields", "selfTestCalc", "archive"],
+    "stageLabels", "topicSections", "extraSectionsAfter", "topicMerge", "alertFields", "selfTestCalc", "archive"],
   properties: {
     id: NONBLANK,
     stages: { type: "array", items: STAGE_NAME, minItems: 1, uniqueItems: true },
@@ -401,10 +551,57 @@ export const PLUGIN_SCHEMA = {
     semanticSlots: mapOf({ type: "array" }),
     stageLabels: mapOf(NONBLANK),
     topicSections: mapOf(NONBLANK),
+    // 允许空串:兜底议题只要求全文引用,不指定并到哪一章
+    extraSectionsAfter: NONBLANK,
+    topicMerge: mapOf({ type: "string" }),
     // ⚠️ 允许为空:垂类可以没有预警字段
     alertFields: strArray(),
     // 可选:不声明台账的垂类完全合法(第二垂类验收装置里就没有)
     ledger: LEDGER,
+    /**
+     * 界面查询:块的形状要查(拼错块 id / 漏端点都该当场说),但**不查端点是否存在** ——
+     * 那要读注册表,而注册表与插件注册不在同一时刻。取数时端点不存在会照常报错。
+     */
+    debate: {
+      type: "object", additionalProperties: false, required: ["dossierEndpoints", "stages"],
+      properties: {
+        dossierEndpoints: strArray({ minItems: 1, uniqueItems: true }),
+        stages: {
+          type: "array", minItems: 2,
+          items: {
+            type: "object", additionalProperties: false, required: ["id", "label", "sees", "prompt"],
+            properties: {
+              id: { type: "string", pattern: "^[a-z][a-z0-9_]{0,31}$" },
+              label: NONBLANK, sees: strArray({ uniqueItems: true }), prompt: NONBLANK,
+            },
+          },
+        },
+      },
+    },
+    pageQueries: {
+      type: "object",
+      additionalProperties: {
+        type: "object", additionalProperties: false,
+        required: ["title", "intent", "blocks"],
+        properties: {
+          title: NONBLANK, intent: NONBLANK, needsContext: { type: "boolean" },
+          blocks: {
+            type: "array", minItems: 1,
+            items: {
+              type: "object", additionalProperties: false,
+              required: ["id", "title", "endpoint"],
+              properties: {
+                id: { type: "string", pattern: "^[a-z][a-z0-9_]{0,31}$" },
+                title: NONBLANK, note: { type: "string" },
+                endpoint: NONBLANK, symbol: { type: "string" },
+                args: { type: "object" }, required: { type: "boolean" }, injectContext: { type: "boolean" }, collapsed: { type: "boolean" },
+                userArgs: strArray({ uniqueItems: true }),
+              },
+            },
+          },
+        },
+      },
+    },
     archive: {
       type: "object", additionalProperties: false, required: ["validDays", "maxFacts", "sections"],
       properties: {
@@ -583,9 +780,15 @@ interface Decl {
   semanticSlots: Record<string, unknown[]>;
   stageLabels: Record<string, string>;
   topicSections: Record<string, string>;
+  extraSectionsAfter: string;
+  topicMerge: Record<string, string>;
   alertFields: string[];
   selfTestCalc: { fn: string; args: Record<string, unknown>; expect: number } | null;
   ledger?: { kinds: Record<string, { label: string; properties: Record<string, unknown>; required: string[] }> };
+  pageQueries?: Plugin["pageQueries"];
+  pageContext?: Plugin["pageContext"];
+  debate?: Plugin["debate"];
+  gate: Plugin["gate"];
   archive: Plugin["archive"];
 }
 
@@ -679,12 +882,43 @@ function checkRelations(d: Decl): void {
     throw new Error(`Plugin.archive.sections 的 tail 章节必须是连续的结尾几节(第 ${firstTail} 节起出现了非 tail 章节)`);
   }
   if (!d.archive.sections.some((sec) => sec.tail)) {
-    // 一节都不标 tail,截断时"优先保留"就没有意义 —— 裁决点 / 缺口会被一起截掉
+    // 一节都不标 tail,截断时"优先保留"就没有意义 —— 排在后面的关键小节会被一起截掉
     throw new Error("Plugin.archive.sections 至少要有一节标 tail: true(截断时优先保留)");
+  }
+  if (!d.reportSections.includes(d.extraSectionsAfter)) {
+    throw new Error(`Plugin.extraSectionsAfter「${d.extraSectionsAfter}」不是 reportSections 里的章节(拼错了?)`);
   }
   const declaredTopics = new Set(Object.values(d.extraTopics).flat());
   for (const k of Object.keys(d.topicSections)) {
     if (!declaredTopics.has(k)) throw new Error(`Plugin.topicSections 里的议题 ${k} 没有出现在任何阶段的 extraTopics 里(拼错了?)`);
+  }
+  for (const [k, v] of Object.entries(d.topicMerge)) {
+    if (!declaredTopics.has(k)) throw new Error(`Plugin.topicMerge 里的议题 ${k} 没有出现在任何阶段的 extraTopics 里(拼错了?)`);
+    // 🔴 一个议题不能同时"有专属章节"又"并入别处" —— 两处会给出互相矛盾的指路
+    if (k in d.topicSections) throw new Error(`Plugin.topicMerge 里的议题 ${k} 同时声明了专属章节(topicSections),二选一`);
+    // 并入目标既可以是骨架章节(reportSections),也可以是某个议题的专属章节 ——
+    // 只查"这一章真的存在",不限定它属于哪一类
+    if (v && !d.reportSections.includes(v) && !Object.values(d.topicSections).includes(v)) {
+      throw new Error(`Plugin.topicMerge 把议题 ${k} 并入「${v}」,但报告里没有这一章(拼错了?)`);
+    }
+  }
+  // 辩论:阶段 id 唯一,且 `sees` 只能指向**排在自己前面**的阶段。
+  // 🔴 指向后面的阶段永远读不到内容(那时它还没跑)—— 而产出照样是一篇像样的文章,
+  //    看不出这一环其实是瞎写的。所以这条必须在注册期挡住。
+  {
+    const dbg = (d as { debate?: { stages: { id: string; sees: readonly string[] }[] } }).debate;
+    if (dbg) {
+      const seenIds: string[] = [];
+      for (const st of dbg.stages) {
+        if (seenIds.includes(st.id)) throw new Error(`Plugin.debate.stages 里的 id 重复:${st.id}`);
+        for (const ref of st.sees) {
+          if (!seenIds.includes(ref)) {
+            throw new Error(`Plugin.debate.stages.${st.id}.sees 指向 ${ref},但它不在自己前面(那时还没跑,永远读不到)`);
+          }
+        }
+        seenIds.push(st.id);
+      }
+    }
   }
   // 台账:与 stageSchemas 同样的三条 —— required ⊆ properties、片段真能编译、不许 $ref。
   // 🔴 少了"注册期编译"这一条,一个写错的字段 schema 会拖到**用户第一次点保存**才炸,
@@ -790,26 +1024,96 @@ function register(plugin: Plugin): void {
     semanticSlots: tableOnce("semanticSlots", plugin.semanticSlots),
     stageLabels: tableOnce("stageLabels", plugin.stageLabels),
     topicSections: tableOnce("topicSections", plugin.topicSections),
+    extraSectionsAfter: plugin.extraSectionsAfter,
+    topicMerge: tableOnce("topicMerge", plugin.topicMerge),
     alertFields: cp(plugin.alertFields),
     // null(垂类没有确定性计算库)要原样传给 ajv —— 拆成 { fn: undefined } 会被判成"缺字段的对象"
     selfTestCalc: st == null ? null : { fn: st.fn, args: st.args, expect: st.expect },
     // 台账种类表:**只读一次**,而且只在真的声明了才放进 decl ——
     // ajv 在 additionalProperties:false 下会把"键存在但值是 undefined"当成一个类型不对的字段。
     ...(rawLedger === undefined ? {} : { ledger: deepFrozen("ledger", rawLedger) }),
+    // 界面查询是纯声明数据,同 ledger 一样只读一次并深冻结;没声明就整个不带这个键
+    ...(plugin.pageQueries === undefined ? {} : { pageQueries: deepFrozen("pageQueries", plugin.pageQueries) }),
+    ...(plugin.debate === undefined ? {} : { debate: deepFrozen("debate", plugin.debate) }),
+    // ⚠️ pageContext 里有函数(resolve),**不能 deepFrozen**(它会拒函数)——
+    //    与 quoteDecision 那批同类:函数插槽单独带过去,由下面的类型检查兜底。
+
     // 档案模板整棵**深拷贝一次**:它是纯声明数据,后面既要校验又要进快照
     archive: deepFrozen("archive", plugin.archive),
   };
+  // pageContext 里有 resolve 函数,ajv 表达不了 ⇒ 与下面那批一样手查形状
+  if (plugin.pageContext !== undefined) {
+    const pc = plugin.pageContext;
+    assertNoExtraKeys("pageContext", pc, ["endpoint", "symbol", "resolve", "unavailable"]);
+    if (!pc.endpoint || typeof pc.endpoint !== "string") throw new Error("Plugin.pageContext.endpoint 必须是非空字符串");
+    if (typeof pc.resolve !== "function") throw new Error("Plugin.pageContext.resolve 必须是函数");
+    if (!pc.unavailable || typeof pc.unavailable !== "string") {
+      throw new Error("Plugin.pageContext.unavailable 必须是非空字符串(拿不到上下文时给用户看的话)");
+    }
+  }
+  // gate 里有 RegExp,ajv 表达不了 ⇒ 手查。**必填** —— 没有它红线就是没有,不能"缺了就当空表"
+  {
+    const g = (plugin as { gate?: unknown }).gate;
+    if (!g || typeof g !== "object") throw new Error("Plugin.gate 必填(产出红线;Core 侧没有默认值)");
+    assertNoExtraKeys("gate", g, ["patterns", "regexps", "exemptLines", "mentionableInStage", "probeLine"]);
+    const gg = g as Record<string, unknown>;
+    for (const k of ["patterns", "exemptLines", "mentionableInStage"]) {
+      const v = gg[k];
+      if (!Array.isArray(v) || v.some((x) => typeof x !== "string" || !x.trim())) {
+        throw new Error(`Plugin.gate.${k} 必须是非空字符串数组`);
+      }
+    }
+    // 🔴 三张表都可以为空**吗?不行**:patterns 空 = 子串一条都不拦。正则可以为空(有的垂类只用词表),
+    //    但 patterns 与 probeLine 少一个,gate 就名存实亡。
+    if (!(gg.patterns as string[]).length) throw new Error("Plugin.gate.patterns 不能是空表(等于红线失效)");
+    if (!Array.isArray(gg.regexps)) throw new Error("Plugin.gate.regexps 必须是数组");
+    for (const [i, r] of (gg.regexps as unknown[]).entries()) {
+      if (!r || typeof r !== "object") throw new Error(`Plugin.gate.regexps[${i}] 必须是对象`);
+      assertNoExtraKeys(`gate.regexps[${i}]`, r, ["name", "re"]);
+      const rr = r as { name?: unknown; re?: unknown };
+      if (typeof rr.name !== "string" || !rr.name.trim()) throw new Error(`Plugin.gate.regexps[${i}].name 必须是非空字符串(命中清单要靠它定位)`);
+      if (!(rr.re instanceof RegExp)) throw new Error(`Plugin.gate.regexps[${i}].re 必须是 RegExp`);
+      // 🔴 /g 与 /y 是**有状态的**:`lastIndex` 会在两次 test() 之间留存,
+      //    表现为"这一行拦住了、下一行漏了"的交替漏报 —— 而且看不出是 bug。
+      //    这类规则本来也不需要全局标志,直接拒掉(审计 gate-r1-P1)。
+      if (rr.re.global || rr.re.sticky) throw new Error(`Plugin.gate.regexps[${i}].re 不能带 g / y 标志(有状态,会造成交替漏报)`);
+    }
+    if (typeof gg.probeLine !== "string" || !gg.probeLine.trim()) {
+      throw new Error("Plugin.gate.probeLine 必须是非空字符串(硬测试注入、必须被拦住的一行)");
+    }
+    // ⚠️ 自检:**按真正会写进报告的那一整行**、走**真正的 gate**跑一遍,必须被拦住。
+    // 🔴 三个坑一次堵掉(审计 gate-r1 的三条 P1):
+    //    ① 自检的文本形态要与注入形态一致(锚定式规则否则会自检过、实战漏);
+    //    ② 必须经 canonicalForGate 规范化(否则规则与运行期不在同一语义域);
+    //    ③ 必须经 exemptLines(否则把注入行写进豁免表也能自检过,实战直接放行)。
+    //    ⇒ **同一个不变量只能有一个判官**:自检不再手搓匹配,直接调 complianceGate。
+    const runGate = (t: string) => complianceGate(t, gg.patterns as string[], gg.exemptLines as string[], gg.regexps as { name: string; re: RegExp }[]);
+    // 🔴 **先证明包装本身是干净的**(审计 gate-r2-P2):只查"整行被拦住"证明不了
+    //    "是 probeLine 让它被拦住的" —— 万一是固定前后缀里的某个词触发了规则,
+    //    一句完全无害的 probeLine 也能让自检通过,而硬测试从此测的是包装不是探针。
+    //    ⇒ 对照组必须先跑:中性内容套上同一层包装,应当**不**被拦。
+    const control = runGate(probeReportLine("中性对照内容"));
+    if (!control.ok) {
+      throw new Error(`探针的固定包装本身就会触发 gate(命中 ${control.hits.map((h) => h.pattern).join(" / ")}),这样自检证明不了 probeLine 有没有用`);
+    }
+    const probeText = probeReportLine(gg.probeLine as string);
+    if (runGate(probeText).ok) throw new Error(`Plugin.gate.probeLine 拼成的注入行「${probeText}」不会被自己的 gate 拦住(那条合规硬测试会永远绿)`);
+    // mentionableInStage 只有落在 patterns 里才起作用;拼错 / 改过名的词会静默失效
+    for (const w of gg.mentionableInStage as string[]) {
+      if (!(gg.patterns as string[]).includes(w)) throw new Error(`Plugin.gate.mentionableInStage 里的「${w}」不在 patterns 里(这条豁免静默不起作用)`);
+    }
+  }
   // 函数插槽 JSON Schema 表达不了,单独查(放在 ajv 之前:类型错时先给出更直白的信息)
   for (const [k, fn] of [["quoteDecision", quoteDecision], ["baselinePeriod", baselinePeriod], ["marketRegion", marketRegion], ["buildStagePrompt", buildStagePrompt], ["buildRewritePrompt", buildRewritePrompt]] as const) {
     if (typeof fn !== "function") throw new Error(`Plugin.${k} 必须是函数`);
   }
   // ⓪ 原对象的键集:ajv 只看得到投影后的 `decl`,多余字段得在这里比
-  assertNoExtraKeys("", plugin, [...(PLUGIN_SCHEMA.required as readonly string[]), "quoteDecision", "baselinePeriod", "marketRegion", "buildStagePrompt", "buildRewritePrompt", "lexicon", "afterFetch", "beforeFetch", "transformFetch", "afterRun", "doctorChecks", "ledger"]);
+  assertNoExtraKeys("", plugin, [...(PLUGIN_SCHEMA.required as readonly string[]), "quoteDecision", "baselinePeriod", "marketRegion", "buildStagePrompt", "buildRewritePrompt", "lexicon", "afterFetch", "beforeFetch", "transformFetch", "afterRun", "doctorChecks", "gate", "ledger", "pageQueries", "pageContext", "debate"]);
   assertNoExtraKeys("evidence", ev, ["markets", "adjustments", "marketWideCodes", "marketWideOnlyCodes"]);
   assertNoExtraKeys("selfTestCalc", st, ["fn", "args", "expect"]);
   assertNoExtraKeys("archive", decl.archive, ["validDays", "maxFacts", "sections"]);
   if (rawLedger !== undefined) {
-    assertNoExtraKeys("ledger", rawLedger, ["kinds"]);
+    assertNoExtraKeys("ledger", rawLedger, ["kinds", "fieldLabels", "enumLabels"]);
     for (const [k, v] of Object.entries((decl as { ledger?: { kinds: Record<string, unknown> } }).ledger?.kinds ?? {})) {
       assertNoExtraKeys(`ledger.kinds.${k}`, v, ["label", "properties", "required"]);
     }
@@ -867,10 +1171,18 @@ function register(plugin: Plugin): void {
     baselinePeriod,
     stageLabels: Object.freeze({ ...d.stageLabels }),
     topicSections: Object.freeze({ ...d.topicSections }),
+    extraSectionsAfter: d.extraSectionsAfter,
+    topicMerge: Object.freeze({ ...d.topicMerge }),
     alertFields: Object.freeze([...d.alertFields]),
     selfTestCalc: d.selfTestCalc ? Object.freeze({ fn: d.selfTestCalc.fn, args: args as Record<string, unknown>, expect: d.selfTestCalc.expect }) : null,
     // 摄入时已 deepFrozen;没声明就整个不带这个键(消费方一律走 `?.`)
     ...(d.ledger === undefined ? {} : { ledger: d.ledger }),
+    ...((d as { debate?: unknown }).debate === undefined ? {} : { debate: (d as { debate?: Plugin["debate"] }).debate }),
+    ...(d.pageQueries === undefined ? {} : { pageQueries: d.pageQueries }),
+    // pageContext 含函数,没进 ajv 的 decl —— 从原插件对象直接带过来(同 quoteDecision 那批)
+    ...(plugin.pageContext === undefined ? {} : { pageContext: plugin.pageContext }),
+    // gate 含 RegExp,同样没进 ajv 的 decl —— 从原插件对象直接带过来
+    gate: plugin.gate,
     archive: d.archive,          // 摄入时已 deepFrozen
   };
 
