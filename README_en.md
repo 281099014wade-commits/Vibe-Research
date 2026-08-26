@@ -105,7 +105,7 @@ Exit codes: 0 complete / 2 incomplete or stale / 3 failed. Status semantics are 
 | Run-to-run change alerts | `node orchestrator/src/alerts.ts --symbol 300308 --market SZ [--base run-a --new run-b]` → `.local/alerts/…` |
 | Data-source health check | `<venv>/bin/python datasources/health.py` |
 | Init / doctor | `scripts/init [--python P] [--provider <id>] [--force]` / `scripts/doctor [--net] [--json]` (exit 0 all ok / 2 warnings only / 3 failures; report in `.local/doctor/`) |
-| Provider compatibility matrix | `node orchestrator/src/provider_matrix.ts --provider deepseek --model deepseek-chat` |
+| Provider compatibility matrix | `node orchestrator/src/finance/provider_matrix.ts --provider deepseek --model deepseek-v4-flash` |
 
 Always append `< /dev/null` when running in the background; otherwise Codex waits on stdin.
 
@@ -115,11 +115,13 @@ The default is **ChatGPT subscription login** (the product's own CODEX_HOME; `~/
 
 ```bash
 export DEEPSEEK_API_KEY=...                                             # 1) keys live in environment variables only (names in providers/*.json)
-node orchestrator/src/provider_matrix.ts --provider deepseek            # 2) run the 10-item compatibility matrix first (results in .local/provider-matrix/)
-node orchestrator/src/run.ts --symbol 300308 --provider deepseek --model deepseek-chat --python ...   # 3) use it for research once green
+node orchestrator/src/finance/provider_matrix.ts --provider deepseek            # 2) run the 10-item compatibility matrix first (results in .local/provider-matrix/)
+node orchestrator/src/run.ts --symbol 300308 --provider deepseek --model deepseek-v4-flash --python ...   # 3) use it for research once green
 ```
 
-Built-in profiles: `openai` / `deepseek` / `qwen` (DashScope compatible mode) / `glm` / `kimi`. Or set it in `.local/config.json`: `{"provider": {"profile": "deepseek"}, "defaults": {"model": "deepseek-chat"}}`. If you do not set `auth`, the template's only supported mode (`api_key`) is chosen automatically; an explicit `--auth` / `VRA_PROVIDER_AUTH` always wins. Third-party templates must declare an explicit https `base_url` (Codex falls back to the official OpenAI endpoint when `base_url` is empty).
+Built-in profiles: `openai` / `deepseek` (official Responses API) / `qwen` · `glm` · `kimi` (hosted on Alibaba Cloud Bailian). Or set it in `.local/config.json`: `{"provider": {"profile": "deepseek"}, "defaults": {"model": "deepseek-v4-flash"}}`.
+
+**Responses protocol only.** The engine removed `wire_api="chat"` entirely, so a vendor must expose an OpenAI-compatible `/responses` endpoint — otherwise you need your own Responses→Chat gateway (`responses_support: "gateway"`). The three Bailian templates carry a `{WorkspaceId}` placeholder in `base_url`: copy one to `.local/providers/<id>.json` and fill in your own workspace ID, or selecting it fails immediately. If you do not set `auth`, the template's only supported mode (`api_key`) is chosen automatically; an explicit `--auth` / `VRA_PROVIDER_AUTH` always wins. Third-party templates must declare an explicit https `base_url` (Codex falls back to the official OpenAI endpoint when `base_url` is empty).
 
 OpenAI baseline matrix (subscription login, 2026-08-22): 9 pass · 1 n/a. Matrices for Chinese vendors can only be run with the corresponding API keys; `matrix.status` in each template is filled in from real results. Detailed guide: [docs/model-access.md](docs/model-access.md) (Chinese); template fields and constraints: [providers/README.md](providers/README.md).
 
@@ -139,7 +141,7 @@ Example `.local/config.json`:
 |---|---|
 | `VRA_PYTHON` / `VRA_CODEX_PATH` / `VRA_CODEX_HOME` | Python interpreter / Codex binary (empty = SDK-bundled) / product CODEX_HOME (default `.local/codex-home`) |
 | `VRA_PROVIDER` / `VRA_PROVIDER_AUTH` | provider profile id / auth mode (`chatgpt_login` or `api_key`) |
-| `OPENAI_API_KEY`, `DEEPSEEK_API_KEY`, `DASHSCOPE_API_KEY`, `ZHIPU_API_KEY`, `MOONSHOT_API_KEY` | provider keys (names declared by each template's `env_key`) |
+| `OPENAI_API_KEY`, `DEEPSEEK_API_KEY`, `DASHSCOPE_API_KEY` (shared by the three Bailian templates) | provider keys (names declared by each template's `env_key`) |
 | `VRA_API_TOKEN` | Bearer token for the HTTP API (auto-generated into `.local/api.token` if unset) |
 | `VRA_SEC_CONTACT` | contact required by SEC endpoints ("name email", per SEC policy) |
 | `IWENCAI_API_KEY` | iwencai (optional) |

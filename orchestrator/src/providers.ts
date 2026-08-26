@@ -81,9 +81,30 @@ export function validateProfile(p: unknown, label: string): ProviderProfileFile 
   if (prof.id !== "openai") {
     // Codex 对空 base_url 会回退到 api.openai.com/v1(codex-rs/model-provider-info/src/lib.rs to_api_provider),第三方密钥会发到错误主机 → 必须显式 https
     if (!prof.base_url) throw new Error(`${label}:非 openai provider 必须显式给出 https base_url(空值会让 Codex 回退到 OpenAI 官方端点)`);
+    // 模板里有需要用户替换的占位(如百炼的 {WorkspaceId})。没换就直接发请求,会得到一个看不懂的 404/401
+    const ph = /[{<]([A-Za-z_][A-Za-z0-9_]*)[}>]/.exec(prof.base_url);
+    if (ph)
+      throw new Error(
+        `${label}:base_url 里还有没替换的占位符 ${ph[0]},模板不能直接用。` +
+          `请把这份模板复制到 <数据根>/providers/${prof.id}.json,把 ${ph[0]} 换成你自己的值,再选用 ${prof.id}。`,
+      );
     if (prof.auth_modes.some((m) => m !== "api_key")) throw new Error(`${label}:非 openai provider 只能 auth_modes=["api_key"](chatgpt_login 是 OpenAI 登录态)`);
   }
-  // responses_support 与 wire_api 双向自洽:native ⇒ responses;responses ⇒ native|gateway(none 矛盾);chat ⇒ 非 native
+  // 🔴 **引擎已彻底移除 chat 协议**:codex-rs/model-provider-info/src/lib.rs:56 里有硬报错
+  //    `wire_api = "chat" is no longer supported`(实测 0.149.0 仍在)。
+  //    以前不拦是因为契约层"理论上允许" —— 结果是配置能存下、能加载,**跑到引擎深处才炸**,
+  //    错误还出现在一个跟 provider 配置八竿子打不着的地方。⇒ 在这里就说清楚。
+  //    枚举里保留 "chat" 是为了**读得懂旧档并给出解释**,不是为了放行。
+  if (prof.wire_api === "chat") {
+    throw new Error(
+      `${label}:引擎不再支持 wire_api="chat"(codex-rs 硬报错)。` +
+        "改法:① 该厂商若已提供 OpenAI 兼容的 Responses 端点,就把 wire_api 改成 responses、base_url 指到它;" +
+        "② 否则要在中间架一个把 Responses 翻成 Chat Completions 的网关,再把 base_url 指向网关(responses_support=gateway)。",
+    );
+  }
+  // responses_support 与 wire_api 双向自洽:native ⇒ responses;responses ⇒ native|gateway(none 矛盾)
+  // ⚠️ 上面那条 chat 硬拒之后,wire_api 只剩 "responses" 一个取值 ⇒ **本行现在够不到**(测不出来,别假装它被覆盖了)。
+  //    留着是因为 wire_api 枚举日后若加第三个取值,这条就是那时该有的守卫。
   if (prof.responses_support === "native" && prof.wire_api !== "responses") throw new Error(`${label}:responses_support=native 要求 wire_api=responses`);
   if (prof.wire_api === "responses" && prof.responses_support === "none") throw new Error(`${label}:wire_api=responses 要求 responses_support=native|gateway(none 矛盾)`);
   // env_http_headers 引用的变量不得是 FORBIDDEN_ENV(HOME/PATH 等),且不得与 env_key 重名以外的"像密钥"的名字混淆——值会作为 HTTP 头发给 provider

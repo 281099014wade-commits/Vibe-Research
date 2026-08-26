@@ -2,7 +2,7 @@
 /**
  * Provider 兼容测试矩阵(Phase 1 M4,开发方案 v2 §6 的 10 项):对某个 provider profile 用 Codex SDK 真跑 10 个小回合,机器判定 pass / partial / fail,
  * 结果写 .local/provider-matrix/<id>/<时间>/results.json + summary.md(不含任何密钥值)。
- * 用法:node orchestrator/src/finance/provider_matrix.ts --provider deepseek [--model deepseek-chat] [--tests 1,2,8] [--timeout-min 5] [--reasoning medium] [--auth api_key|chatgpt_login]
+ * 用法:node orchestrator/src/finance/provider_matrix.ts --provider deepseek [--model deepseek-v4-flash] [--tests 1,2,8] [--timeout-min 5] [--reasoning medium] [--auth api_key|chatgpt_login]
  * 每项定义(可判定口径):
  *  ① 单次文本:回复含约定 token;② 单工具调用:至少 1 条 command 且输出含约定串;③ 连续三轮工具调用:step-A/B/C 三条输出各出自不同的 command 项且按序出现(合并成一条 → partial);
  *  ④ 并行工具调用:两条 command 都执行且事件流里观察到两条 command 同时在途(item.started 后未 completed 又来一条)→ pass;都执行但串行 → partial;

@@ -14,23 +14,55 @@ import { codexOptionsFor } from "../src/runner.ts";
 import "../src/finance/register.ts";   // 测试文件也是入口:插件要先注册
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 
-test("providers:产品模板全部可加载且通过 schema;openai 为 responses 原生;国产模板 chat + api_key + requires_openai_auth=false;不含密钥", () => {
+/** 把模板里留给用户填的占位符换成一个合法值 —— 只用于"模板本身是否自洽"的校验 */
+const fillPlaceholders = (raw: string): string => raw.replace(/[{<][A-Za-z_][A-Za-z0-9_]*[}>]/g, "filled-by-user");
+
+test("providers:产品模板全部通过 schema;openai 为 responses 原生;国产模板 responses + api_key + requires_openai_auth=false;不含密钥", () => {
   const ids = listProviderIds(REPO, path.join(REPO, ".local"));
   assert.ok(ids.includes("openai") && ids.includes("deepseek") && ids.includes("qwen") && ids.includes("glm") && ids.includes("kimi"), ids.join(","));
   for (const id of ids) {
-    const { profile } = loadProviderProfile(REPO, path.join(REPO, ".local"), id);
-    assert.equal(profile.id, id);
     const raw = fs.readFileSync(path.join(REPO, "providers", `${id}.json`), "utf8");
+    // 带占位符的模板 loadProviderProfile 会按设计拒绝(下一个 test 验),所以这里补上占位再校验模板本身是否自洽
+    const profile = validateProfile(JSON.parse(fillPlaceholders(raw)), `模板 ${id}`);
+    assert.equal(profile.id, id);
     assert.ok(!/sk-[A-Za-z0-9]{8,}/.test(raw) && !/Bearer\s+\S{8,}/.test(raw), `${id} 模板含密钥样式`);
     if (id === "openai") { assert.equal(profile.wire_api, "responses"); assert.equal(profile.base_url, null); assert.ok(profile.auth_modes.includes("chatgpt_login")); }
-    else { assert.equal(profile.wire_api, "chat"); assert.equal(profile.requires_openai_auth, false); assert.deepEqual(profile.auth_modes, ["api_key"]); assert.ok(profile.base_url!.startsWith("https://")); }
+    else {
+      // 🔴 2026-08-26 起:引擎硬拒 wire_api="chat",所以**没有任何模板**还能是 chat。
+      //    国产厂商这边的现状(当日核实):DeepSeek 官方已原生支持 Responses;
+      //    Qwen / Kimi / GLM 走阿里云百炼的 compatible-mode;智谱官方无原生 /responses。
+      assert.equal(profile.wire_api, "responses", `${id} 不能再用 chat 协议(引擎已移除)`);
+      assert.equal(profile.requires_openai_auth, false);
+      assert.deepEqual(profile.auth_modes, ["api_key"]);
+      assert.ok(profile.base_url!.startsWith("https://"));
+    }
   }
   assert.throws(() => loadProviderProfile(REPO, path.join(REPO, ".local"), "nope"), /未知 provider/);
   assert.throws(() => loadProviderProfile(REPO, path.join(REPO, ".local"), "../x"), /非法 provider id/);
 });
 
+test("providers:带占位符的模板不能直接用 —— 选用时当场拒,而不是发一个坏 URL 出去", () => {
+  const dir = path.join(REPO, "providers");
+  const withPh: string[] = [];
+  for (const f of fs.readdirSync(dir).filter((x) => x.endsWith(".json"))) {
+    const raw = JSON.parse(fs.readFileSync(path.join(dir, f), "utf8")) as { base_url: string | null };
+    if (raw.base_url && /[{<][A-Za-z_]/.test(raw.base_url)) withPh.push(path.basename(f, ".json"));
+  }
+  // 百炼那三个模板的 base_url 里带 {WorkspaceId} —— 用户不填就用不了,这是事实不是缺陷
+  assert.ok(withPh.length >= 1, "至少有一个模板需要用户填占位符");
+  for (const id of withPh) {
+    assert.throws(
+      () => loadProviderProfile(REPO, path.join(REPO, ".local"), id),
+      /占位符/,
+      `${id} 应在选用时因占位符被拒`,
+    );
+  }
+});
+
 test("providers:validateProfile 拒绝密钥值 / 非 openai requires_openai_auth / openai 自定义 base_url / 非法 env_key", () => {
-  const base = { id: "x", name: "X", wire_api: "chat", base_url: "https://x.example/v1", env_key: "X_API_KEY", auth_modes: ["api_key"], requires_openai_auth: false, default_model: "m", responses_support: "none" };
+  const base = { id: "x", name: "X", wire_api: "responses", base_url: "https://x.example/v1", env_key: "X_API_KEY", auth_modes: ["api_key"], requires_openai_auth: false, default_model: "m", responses_support: "native" };
+  // 引擎已移除 chat:契约层必须当场拒,并说清两条出路(换 Responses 端点 / 架网关)
+  assert.throws(() => validateProfile({ ...base, wire_api: "chat", responses_support: "none" }, "t"), /不再支持 wire_api="chat"|不再支持 wire_api/);
   assert.equal(validateProfile(base, "t").id, "x");
   assert.throws(() => validateProfile({ ...base, http_headers: { Authorization: "Bearer sk-abcdefghijklmnop" } }, "t"), /密钥/);
   assert.throws(() => validateProfile({ ...base, query_params: { api_key: "0123456789abcdef" } }, "t"), /密钥/);
@@ -45,7 +77,7 @@ test("providers:Codex 配置映射与环境注入(密钥只按 env_key 名透传
   const ds = loadProviderProfile(REPO, path.join(REPO, ".local"), "deepseek").profile;
   const cfg = codexProviderConfig(ds) as { model_provider: string; model_providers: Record<string, Record<string, unknown>> };
   assert.equal(cfg.model_provider, "deepseek");
-  assert.deepEqual(cfg.model_providers.deepseek, { name: ds.name, base_url: "https://api.deepseek.com/v1", env_key: "DEEPSEEK_API_KEY", wire_api: "chat", requires_openai_auth: false });
+  assert.deepEqual(cfg.model_providers.deepseek, { name: ds.name, base_url: "https://api.deepseek.com", env_key: "DEEPSEEK_API_KEY", wire_api: "responses", requires_openai_auth: false });
   assert.deepEqual(codexProviderConfig(loadProviderProfile(REPO, path.join(REPO, ".local"), "openai").profile), {});
   assert.deepEqual(providerEnv(ds, "api_key", { DEEPSEEK_API_KEY: "k1", OPENAI_API_KEY: "k2", OTHER_TOKEN: "x" }), { DEEPSEEK_API_KEY: "k1" });
   assert.throws(() => providerEnv(ds, "api_key", {}), /DEEPSEEK_API_KEY/);
@@ -64,32 +96,42 @@ test("productConfig:profile=deepseek + 环境变量 → provider 字段由模板
   fs.writeFileSync(path.join(repo, "AGENTS.md"), "#\n");
   const a = loadProductConfig(repo, { env: {} });
   assert.equal(a.provider.name, "openai"); assert.equal(a.providerProfile?.id, "openai"); assert.equal(a.provider.auth, "chatgpt_login");
-  fs.writeFileSync(path.join(repo, ".local", "config.json"), JSON.stringify({ provider: { profile: "deepseek", auth: "api_key" }, defaults: { model: "deepseek-chat" } }));
+  fs.writeFileSync(path.join(repo, ".local", "config.json"), JSON.stringify({ provider: { profile: "deepseek", auth: "api_key" }, defaults: { model: "deepseek-v4-flash" } }));
   assert.throws(() => loadProductConfig(repo, { env: {} }), /DEEPSEEK_API_KEY/);
   const b = loadProductConfig(repo, { env: { DEEPSEEK_API_KEY: "k" } });
-  assert.equal(b.provider.name, "deepseek"); assert.equal(b.provider.wire_api, "chat"); assert.equal(b.provider.base_url, "https://api.deepseek.com/v1"); assert.equal(b.provider.env_key, "DEEPSEEK_API_KEY"); assert.equal(b.providerProfile?.id, "deepseek");
+  assert.equal(b.provider.name, "deepseek"); assert.equal(b.provider.wire_api, "responses"); assert.equal(b.provider.base_url, "https://api.deepseek.com"); assert.equal(b.provider.env_key, "DEEPSEEK_API_KEY"); assert.equal(b.providerProfile?.id, "deepseek");
   fs.writeFileSync(path.join(repo, ".local", "config.json"), JSON.stringify({ provider: { profile: "deepseek", auth: "chatgpt_login" } }));
   assert.throws(() => loadProductConfig(repo, { env: { DEEPSEEK_API_KEY: "k" } }), /不支持 auth=chatgpt_login/);
   fs.writeFileSync(path.join(repo, ".local", "config.json"), JSON.stringify({ provider: { profile: "nope", auth: "api_key" } }));
   assert.throws(() => loadProductConfig(repo, { env: {} }), /未知 provider/);
   fs.rmSync(path.join(repo, ".local", "config.json"));
+  // 🔑 kimi 模板的 base_url 带 {WorkspaceId} 占位符,直接选用会被拒 —— 这里走**真实用户流程**:
+  //    把填好的副本放进 <数据根>/providers/,用户覆盖优先于产品模板
+  fs.mkdirSync(path.join(repo, ".local", "providers"), { recursive: true });
+  {
+    const tpl = JSON.parse(fs.readFileSync(path.join(REPO, "providers", "kimi.json"), "utf8")) as { base_url: string };
+    assert.ok(/[{<][A-Za-z_]/.test(tpl.base_url), "前提:kimi 模板确实带占位符(不带了就该改这段测试)");
+    tpl.base_url = tpl.base_url.replace(/[{<][A-Za-z_][A-Za-z0-9_]*[}>]/g, "ws-123");
+    fs.writeFileSync(path.join(repo, ".local", "providers", "kimi.json"), JSON.stringify(tpl));
+  }
+  assert.throws(() => loadProductConfig(repo, { env: { DASHSCOPE_API_KEY: "k" }, providerOverride: "qwen" }), /占位符/, "没填占位符的模板不许静默用一个坏 URL 去发密钥");
   // CLI / 环境变量切换 profile 且 auth 未显式写过 → 自动用模板唯一支持的 api_key(缺密钥仍报错);显式写了 chatgpt_login 则明确报错,不覆盖用户设置
-  const k1 = loadProductConfig(repo, { env: { MOONSHOT_API_KEY: "k" }, providerOverride: "kimi" });
-  assert.equal(k1.provider.name, "kimi"); assert.equal(k1.provider.auth, "api_key"); assert.equal(k1.provider.env_key, "MOONSHOT_API_KEY"); assert.ok(k1.sources.includes("cli"));
-  assert.equal(loadProductConfig(repo, { env: { MOONSHOT_API_KEY: "k", VRA_PROVIDER: "kimi" } }).provider.auth, "api_key");
-  assert.throws(() => loadProductConfig(repo, { env: {}, providerOverride: "kimi" }), /MOONSHOT_API_KEY/);
-  assert.throws(() => loadProductConfig(repo, { env: { MOONSHOT_API_KEY: "k", VRA_PROVIDER: "kimi", VRA_PROVIDER_AUTH: "chatgpt_login" } }), /不支持 auth=chatgpt_login/);
-  assert.throws(() => loadProductConfig(repo, { env: { MOONSHOT_API_KEY: "k" }, providerOverride: "kimi", authOverride: "chatgpt_login" }), /不支持 auth=chatgpt_login/);
-  assert.throws(() => loadProductConfig(repo, { env: { MOONSHOT_API_KEY: "k" }, providerOverride: "kimi", authOverride: "basic" }), /--auth 只能是/);
+  const k1 = loadProductConfig(repo, { env: { DASHSCOPE_API_KEY: "k" }, providerOverride: "kimi" });
+  assert.equal(k1.provider.name, "kimi"); assert.equal(k1.provider.auth, "api_key"); assert.equal(k1.provider.env_key, "DASHSCOPE_API_KEY"); assert.ok(k1.sources.includes("cli"));
+  assert.equal(loadProductConfig(repo, { env: { DASHSCOPE_API_KEY: "k", VRA_PROVIDER: "kimi" } }).provider.auth, "api_key");
+  assert.throws(() => loadProductConfig(repo, { env: {}, providerOverride: "kimi" }), /DASHSCOPE_API_KEY/);
+  assert.throws(() => loadProductConfig(repo, { env: { DASHSCOPE_API_KEY: "k", VRA_PROVIDER: "kimi", VRA_PROVIDER_AUTH: "chatgpt_login" } }), /不支持 auth=chatgpt_login/);
+  assert.throws(() => loadProductConfig(repo, { env: { DASHSCOPE_API_KEY: "k" }, providerOverride: "kimi", authOverride: "chatgpt_login" }), /不支持 auth=chatgpt_login/);
+  assert.throws(() => loadProductConfig(repo, { env: { DASHSCOPE_API_KEY: "k" }, providerOverride: "kimi", authOverride: "basic" }), /--auth 只能是/);
   fs.writeFileSync(path.join(repo, ".local", "config.json"), JSON.stringify({ provider: { auth: "chatgpt_login" } }));
-  assert.throws(() => loadProductConfig(repo, { env: { MOONSHOT_API_KEY: "k" }, providerOverride: "kimi" }), /不支持 auth=chatgpt_login/, "用户显式写的 auth 不被覆盖");
+  assert.throws(() => loadProductConfig(repo, { env: { DASHSCOPE_API_KEY: "k" }, providerOverride: "kimi" }), /不支持 auth=chatgpt_login/, "用户显式写的 auth 不被覆盖");
   fs.writeFileSync(path.join(repo, ".local", "config.json"), JSON.stringify({ provider: { auth: "api_key" } }));
-  const c = loadProductConfig(repo, { env: { MOONSHOT_API_KEY: "k" }, providerOverride: "kimi" });
-  assert.equal(c.provider.name, "kimi"); assert.equal(c.provider.env_key, "MOONSHOT_API_KEY"); assert.ok(c.sources.includes("cli"));
+  const c = loadProductConfig(repo, { env: { DASHSCOPE_API_KEY: "k" }, providerOverride: "kimi" });
+  assert.equal(c.provider.name, "kimi"); assert.equal(c.provider.env_key, "DASHSCOPE_API_KEY"); assert.ok(c.sources.includes("cli"));
   // 产品配置(vibe-research.config.json)写了 auth 只是产品默认,不算用户显式 → 切第三方仍自动选 api_key
   fs.rmSync(path.join(repo, ".local", "config.json"));
   fs.writeFileSync(path.join(repo, "vibe-research.config.json"), JSON.stringify({ provider: { auth: "chatgpt_login" } }));
-  assert.equal(loadProductConfig(repo, { env: { MOONSHOT_API_KEY: "k" }, providerOverride: "kimi" }).provider.auth, "api_key");
+  assert.equal(loadProductConfig(repo, { env: { DASHSCOPE_API_KEY: "k" }, providerOverride: "kimi" }).provider.auth, "api_key");
   fs.rmSync(path.join(repo, "vibe-research.config.json"));
   // 环境变量层整体生效:VRA_PROVIDER 与 VRA_CODEX_HOME / VRA_CODEX_PATH / VRA_PYTHON 同时存在时一个都不丢
   const e = loadProductConfig(repo, { env: { DEEPSEEK_API_KEY: "k", VRA_PROVIDER: "deepseek", VRA_CODEX_HOME: "/tmp/ch", VRA_CODEX_PATH: "/tmp/codex-bin", VRA_PYTHON: "/tmp/py" } });
@@ -101,7 +143,7 @@ test("productConfig:profile=deepseek + 环境变量 → provider 字段由模板
 
 test("runner/config:非 openai provider 注入 model_provider + model_providers;codexEnvFor 透传 env_key;默认模型来自模板;openai 不注入", () => {
   const ds = loadProviderProfile(REPO, path.join(REPO, ".local"), "deepseek").profile;
-  const cfg = makeConfig({ symbol: "300308", repoRoot: REPO, runId: "t-prov", provider: { name: "deepseek", wire_api: "chat", base_url: ds.base_url, env_key: ds.env_key, auth: "api_key", profile: "deepseek" }, providerProfile: ds });
+  const cfg = makeConfig({ symbol: "300308", repoRoot: REPO, runId: "t-prov", provider: { name: "deepseek", wire_api: "responses", base_url: ds.base_url, env_key: ds.env_key, auth: "api_key", profile: "deepseek" }, providerProfile: ds });
   const env = { PATH: "/bin", DEEPSEEK_API_KEY: "k1", OPENAI_API_KEY: "k2" };
   const opts = codexOptionsFor(cfg, env) as { config: Record<string, unknown>; env: Record<string, string> };
   assert.equal(opts.config.model_provider, "deepseek");
@@ -121,7 +163,9 @@ test("providers:组合约束——第三方 base_url 不得为空(Codex 会回�
   assert.throws(v({ base_url: null }), /必须显式给出 https base_url/);
   assert.throws(v({ auth_modes: ["api_key", "chatgpt_login"] }), /只能 auth_modes=\["api_key"\]/);
   assert.throws(v({ auth_modes: ["api_key", "api_key"] }), /schema/);
-  assert.throws(v({ responses_support: "native" }), /responses_support=native 要求 wire_api=responses/);
+  // ⚠️ "responses_support=native 要求 wire_api=responses" 这条**现在够不到**:
+  //    wire_api 只剩 responses 一个可用取值(chat 在它之前就被硬拒了)。不写一个假断言假装它被测了。
+  assert.throws(v({ wire_api: "chat" }), /不再支持 wire_api/, "chat 在到达自洽校验之前就被拒");
   assert.throws(v({ wire_api: "responses", responses_support: "none" }), /wire_api=responses 要求 responses_support=native\|gateway/);
   assert.throws(v({ context_limit_tokens: 0 }), /schema/);
   assert.doesNotThrow(v({ verified_at: "2026-08-22" }));

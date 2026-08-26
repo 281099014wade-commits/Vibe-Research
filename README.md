@@ -105,7 +105,7 @@ node orchestrator/src/run.ts --symbol 300308 --market SZ --python "$(pwd)/.venv/
 | 两次运行变化提醒 | `node orchestrator/src/alerts.ts --symbol 300308 --market SZ [--base run-a --new run-b]` → `.local/alerts/…` |
 | 数据源健康巡检 | `<venv>/bin/python datasources/health.py` |
 | 初始化 / 体检 | `scripts/init [--python P] [--provider <id>] [--force]` / `scripts/doctor [--net] [--json]`(退出码 0 全 ok / 2 只有 warn / 3 有 fail;报告在 `.local/doctor/`) |
-| provider 兼容矩阵 | `node orchestrator/src/provider_matrix.ts --provider deepseek --model deepseek-chat` |
+| provider 兼容矩阵 | `node orchestrator/src/finance/provider_matrix.ts --provider deepseek --model deepseek-v4-flash` |
 
 后台运行一律加 `< /dev/null`,否则 Codex 会停在等待标准输入。
 
@@ -115,11 +115,13 @@ node orchestrator/src/run.ts --symbol 300308 --market SZ --python "$(pwd)/.venv/
 
 ```bash
 export DEEPSEEK_API_KEY=...                                             # 1) 密钥只放环境变量(各家变量名见 providers/*.json)
-node orchestrator/src/provider_matrix.ts --provider deepseek            # 2) 先跑 10 项兼容矩阵(结果在 .local/provider-matrix/)
-node orchestrator/src/run.ts --symbol 300308 --provider deepseek --model deepseek-chat --python ...   # 3) 全绿再用于研究
+node orchestrator/src/finance/provider_matrix.ts --provider deepseek    # 2) 先跑 10 项兼容矩阵(结果在 .local/provider-matrix/)
+node orchestrator/src/run.ts --symbol 300308 --provider deepseek --model deepseek-v4-flash --python ...   # 3) 全绿再用于研究
 ```
 
-内置模板:`openai` / `deepseek` / `qwen`(DashScope 兼容模式)/ `glm` / `kimi`。也可写进 `.local/config.json`:`{"provider": {"profile": "deepseek"}, "defaults": {"model": "deepseek-chat"}}`;auth 不写时自动按模板选 `api_key`,显式 `--auth` / `VRA_PROVIDER_AUTH` 优先。第三方模板必须显式 https `base_url`(Codex 对空 base_url 会回退到 OpenAI 官方端点)。
+内置模板:`openai` / `deepseek`(官方 Responses)/ `qwen` · `glm` · `kimi`(经阿里云百炼)。也可写进 `.local/config.json`:`{"provider": {"profile": "deepseek"}, "defaults": {"model": "deepseek-v4-flash"}}`;auth 不写时自动按模板选 `api_key`,显式 `--auth` / `VRA_PROVIDER_AUTH` 优先。
+
+🔴 **只支持 Responses 协议**:引擎已彻底移除 `wire_api="chat"`,厂商必须提供 OpenAI 兼容的 `/responses`,否则需自建 Responses→Chat 网关(填 `responses_support: "gateway"`)。第三方模板必须显式 https `base_url`(Codex 对空 base_url 会回退到 OpenAI 官方端点)。⚠️ 百炼那三个模板的 `base_url` 带 `{WorkspaceId}` 占位符,**要先复制到 `.local/providers/<id>.json` 换成自己的工作空间 ID**,否则选用时会被当场拒绝。
 
 OpenAI 基线矩阵(订阅登录,2026-08-22):9 pass · 1 n/a。国产模型矩阵需要对应 API key 才能真跑,模板的 `matrix.status` 以实际结果回填。详细指南:[docs/model-access.md](docs/model-access.md);模板字段与约束:[providers/README.md](providers/README.md)。
 
@@ -139,7 +141,7 @@ OpenAI 基线矩阵(订阅登录,2026-08-22):9 pass · 1 n/a。国产模型矩�
 |---|---|
 | `VRA_PYTHON` / `VRA_CODEX_PATH` / `VRA_CODEX_HOME` | Python 解释器 / Codex 二进制(空 = SDK 内置)/ 产品 CODEX_HOME(默认 `.local/codex-home`) |
 | `VRA_PROVIDER` / `VRA_PROVIDER_AUTH` | provider 模板 id / 认证方式(`chatgpt_login` 或 `api_key`) |
-| `OPENAI_API_KEY`、`DEEPSEEK_API_KEY`、`DASHSCOPE_API_KEY`、`ZHIPU_API_KEY`、`MOONSHOT_API_KEY` | 各 provider 的密钥(名字由模板 `env_key` 声明) |
+| `OPENAI_API_KEY`、`DEEPSEEK_API_KEY`、`DASHSCOPE_API_KEY`(百炼三件套共用) | 各 provider 的密钥(名字由模板 `env_key` 声明) |
 | `VRA_API_TOKEN` | HTTP API 的 Bearer token(不设则自动生成到 `.local/api.token`) |
 | `VRA_SEC_CONTACT` | SEC 端点必需的联系方式("姓名 邮箱",SEC 要求) |
 | `IWENCAI_API_KEY` | 同花顺问财(可选) |

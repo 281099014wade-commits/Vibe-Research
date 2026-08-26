@@ -1,30 +1,31 @@
 {
   "id": "kimi",
-  "name": "Moonshot Kimi(OpenAI 兼容 Chat Completions)",
-  "wire_api": "chat",
-  "base_url": "https://api.moonshot.cn/v1",
-  "env_key": "MOONSHOT_API_KEY",
+  "name": "Kimi(经阿里云百炼 · OpenAI 兼容 Responses)",
+  "wire_api": "responses",
+  "base_url": "https://{WorkspaceId}.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
+  "env_key": "DASHSCOPE_API_KEY",
   "auth_modes": [
     "api_key"
   ],
   "requires_openai_auth": false,
-  "default_model": "kimi-k2-0711-preview",
-  "responses_support": "none",
-  "stream_format": "chat-completions-sse",
+  "default_model": "kimi-k2.7-code",
+  "responses_support": "native",
+  "stream_format": "responses-sse",
   "tool_calls": true,
-  "reasoning": "model-dependent",
-  "context_limit_tokens": 131072,
+  "context_limit_tokens": null,
   "retryable_errors": [
     "429",
     "5xx",
     "stream-idle"
   ],
   "known_incompatibilities": [
-    "previous_response_id 不支持"
+    "这里走的是**百炼托管**而非月之暗面官方端点:官方端点是否提供 /responses 尚未核实,别想当然",
+    "base_url 里的 {WorkspaceId} 必须换成自己的工作空间 ID",
+    "模型名以百炼控制台实际可用的为准(kimi-k2.7-code / kimi-k2.7-code-highspeed / kimi-k2.5 等)"
   ],
   "matrix": {
     "status": "untested",
-    "note": "需 MOONSHOT_API_KEY;用 provider_matrix.ts 跑 10 项后回填"
+    "note": "需 DASHSCOPE_API_KEY + WorkspaceId;官方直连待核实"
   },
-  "verified_at": null
+  "verified_at": "2026-08-26"
 }
