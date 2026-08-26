@@ -78,3 +78,37 @@ test("configFromArgs:产品配置进入 RunConfig;CLI 覆盖配置文件", () =>
   assert.equal(cfg.codexHome, "/x/home");
   assert.equal(cfg.turnTimeoutMs, 3 * 60_000);
 });
+
+/* ===== 数据根:装机版必需的口子(2026-08-26) ===== */
+
+test("VRA_DATA_ROOT 改数据根 —— 用户配置 / 产物 / 引擎 home 必须同时跟着走", () => {
+  const repo = tmpRepo();
+  const data = tmpRepo();                        // 一个与产品根完全无关的位置
+  // 用户配置放在**新数据根**下:能读到它,才证明"读配置的根"确实换了
+  fs.writeFileSync(path.join(data, "config.json"), JSON.stringify({ defaults: { max_retries: 4 } }));
+
+  const pc = loadProductConfig(repo, { env: { VRA_DATA_ROOT: data } });
+
+  assert.equal(pc.resolved.dataRoot, data, "产物根没跟着换 —— 装机版会往只读的 App 包里写");
+  assert.equal(pc.defaults.max_retries, 4, "没读到新数据根下的用户配置 —— 说明读配置的根还是旧的");
+  // 🔴 引擎 home 的默认值写的是「数据根下面那一格」,数据根一换它必须跟着换
+  assert.equal(pc.resolved.codexHome, path.join(data, "codex-home"),
+    "引擎 home 留在产品根下 —— 装机版会把引擎状态写进 App 包，报出来是一句看不懂的权限错误");
+  assert.ok(pc.sources.some((s) => s.startsWith(data)), `用户配置来源应指向新数据根:${pc.sources.join(" / ")}`);
+});
+
+test("显式配过的引擎 home 不被数据根带走", () => {
+  const repo = tmpRepo();
+  const data = tmpRepo();
+  const pc = loadProductConfig(repo, { env: { VRA_DATA_ROOT: data, VRA_CODEX_HOME: "/tmp/my-engine-home" } });
+  assert.equal(pc.resolved.dataRoot, data);
+  assert.equal(pc.resolved.codexHome, "/tmp/my-engine-home", "显式指定的 home 被数据根覆盖了");
+});
+
+test("调用方显式 override 优先于 VRA_DATA_ROOT", () => {
+  const repo = tmpRepo();
+  const viaEnv = tmpRepo();
+  const viaOpt = tmpRepo();
+  const pc = loadProductConfig(repo, { env: { VRA_DATA_ROOT: viaEnv }, dataRootOverride: viaOpt });
+  assert.equal(pc.resolved.dataRoot, viaOpt, "显式 override 应当赢过环境变量");
+});

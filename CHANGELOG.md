@@ -2,6 +2,43 @@
 
 格式遵循 Keep a Changelog;版本号待首次发布时定(当前未发布)。
 
+## 未发布 · macOS 安装包:Electron 桌面外壳(2026-08-26)
+
+`shell/` —— 用户拿到手的形态。Electron 主进程拉起编排器、`app://` 协议服务界面、
+`/api` 转发到本地后端;`scripts/assemble.mjs` 装配载荷(引擎二进制 + 可重定位 Python +
+界面构建产物 + 编排器源码),`electron-builder.yml` 出 dmg。
+**一条命令出片** `npm run dist`(外壳重编 → 界面重构建 → 载荷重装配 → 验证 → 打包)。
+
+产物 `VibeResearch-0.1.0-arm64.dmg` **331 MB**,已装到 `/Applications`、
+**清空数据根当全新用户**实测:0.6 秒起后端 → 界面加载 → 真实行情,退出无孤儿进程。
+
+🔴 **五条实测才定下来的**(与最初方案不同):
+
+1. **`.app` 名字不能带空格** —— 产品根就在 App 包里,而编排器对"产品根 / 数据根含空格"是硬拒绝
+   ⇒ `productName: VibeResearch`,显示名走 `CFBundleDisplayName: Vibe Research`。
+2. **数据根 = `~/.vibe-research-agent`**,不是 `~/.vibe-research` —— 后者是**开源版看板的**
+   (里面有它的 portfolio.json / myreports / monitor),第一次装机跑起来才发现。
+3. **编排器发 `.ts` 源码不编译** —— 编译反而更脆(它自己按硬编码路径拉起 `orchestrator/src/run.ts`);
+   宿主 Node 24 默认能剥类型。
+4. **引擎打整个 npm 平台包**不抠二进制 —— 给 SDK 显式路径会让它把 `codex-path/` 那份 PATH 清空。
+5. **字节码要预编进发行版** —— akshare 冷 import 带缓存 1.15 秒 / 不带 **21.9 秒**,
+   而 App 包在别人机器上很可能只读(+55 MB,值)。
+
+底座六处配套修复:`--port 0`(0 是 falsy,原来被两个 `||` 各吃一次)· `VRA_DATA_ROOT` 可改数据根 ·
+`ELECTRON_RUN_AS_NODE` 透传(装机版的 node 就是 Electron 二进制,丢了它子进程会去开窗口)·
+doctor 跳过 `payload` / `release`(不跳会把密钥扫描的额度吃光、真源码反而没扫)· 纯净度棘轮覆盖 `shell/src`。
+
+🔴 **两次"成功地打进了上一版"**:一次是没重跑 esbuild 就打包,一次是 `beforePack` 只检查三个载荷文件在不在。
+⇒ `beforePack` 改成**无条件重做**,不判新鲜度。
+🔴 **`ps` 按 locale 转义非 ASCII** —— 中文安装路径下收尸静默匹配不上,已改成 ASCII 片段有序匹配 + `LC_ALL=C`。
+
+外壳过 **Codex 8 轮审计**(4 初审 + 4 复审 + 打包侧 1 轮,20 条全部处置),每条修复做过变异测试。
+测试 shell **77** · orchestrator **433**。
+
+**还差**:应用图标(现在是 Electron 默认)· 签名 + 公证 + 自动更新(等 `Developer ID Application` 证书)·
+🔴 **装机版怎么拿到模型 API key**(从访达双击启动的 App 没有 shell 环境,而密钥只从环境变量读)——
+**这是产品决策,不是 bug**。
+
 ## 未发布 · 让 Codex 看真实页面 + session resolver + 界面查询契约(2026-08-26)
 
 Simon:「你先把这个 UI 的页面告诉他地址,让他打开看一下……听听他的建议,然后再综合进行推荐」。

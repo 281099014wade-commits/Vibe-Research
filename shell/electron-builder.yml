@@ -1,0 +1,55 @@
+# electron-builder 配置 —— 先只出 macOS / Apple Silicon 的 dmg。
+#
+# 🔴 productName **不能带空格**：它决定 .app 的目录名，而产品根就在 App 包里
+#    （`…/VibeResearch.app/Contents/Resources/app`）。编排器对"产品根 / 数据根含空格"是**硬拒绝**的
+#    —— 执行层的命令扫描器按空白切 token 找绝对路径，带空格的路径会被切断，
+#    于是 agent 每一条引用运行目录的命令都被拒（见 orchestrator/src/config.ts:makeConfig）。
+#    ⇒ 目录名用 VibeResearch，给人看的名字走 CFBundleDisplayName（见下面的 extendInfo）。
+#
+# 🔴 载荷走 extraResources，**不进 asar**：里面有 200 多 MB 的引擎二进制和一整棵 Python，
+#    它们必须是磁盘上可执行的真实文件。asar 里的东西没法直接 exec。
+appId: ai.phoenixtree.viberesearch
+productName: VibeResearch
+copyright: Copyright © 2026 Simon Lin
+
+beforePack: scripts/before-pack.cjs
+
+directories:
+  output: release
+
+# 进 asar 的只有外壳自己：esbuild 已经把它打成一个 main.cjs，不需要 node_modules
+files:
+  - dist/main.cjs
+  - package.json
+
+extraResources:
+  - from: payload/app
+    to: app
+  - from: payload/ui
+    to: ui
+  - from: payload/python
+    to: python
+
+mac:
+  target:
+    - target: dmg
+      arch: [arm64]
+  category: public.app-category.finance
+  # 先不签名（还没开 Developer ID 证书）。首次打开要右键→打开；自动更新也要等签名。
+  identity: null
+  extendInfo:
+    # Finder / Dock 上显示的名字，可以带空格 —— 它不参与路径
+    CFBundleDisplayName: Vibe Research
+
+dmg:
+  title: Vibe Research
+  contents:
+    - x: 130
+      y: 220
+    - x: 410
+      y: 220
+      type: link
+      path: /Applications
+
+# 我们不发布，只出本地 dmg
+publish: null

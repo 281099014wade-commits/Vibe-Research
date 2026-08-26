@@ -1,0 +1,25 @@
+{
+  "name": "vibe-research-shell",
+  "productName": "Vibe Research",
+  "version": "0.1.0",
+  "private": true,
+  "description": "桌面外壳（Electron）——开窗口、拉起本机编排器、装载界面。",
+  "main": "dist/main.cjs",
+  "type": "module",
+  "scripts": {
+    "build:main": "esbuild src/main.ts --bundle --platform=node --target=node22 --format=cjs --external:electron --outfile=dist/main.cjs",
+    "dev": "npm run build:main && electron .",
+    "typecheck": "tsc --noEmit",
+    "test": "node --test \"test/*.test.ts\"",
+    "assemble": "node scripts/assemble.mjs",
+    "dist": "electron-builder --mac --arm64 --publish never"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "electron": "^44.0.0",
+    "electron-builder": "^26.15.3",
+    "esbuild": "^0.28.2",
+    "typescript": "^5.9.0"
+  },
+  "author": "Simon Lin <simonlin0423@gmail.com>"
+}

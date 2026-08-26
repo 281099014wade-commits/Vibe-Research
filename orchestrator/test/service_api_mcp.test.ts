@@ -420,3 +420,11 @@ test("displayUrl 剥掉用户名 / 密码 / 查询串 / 片段", () => {
   // 换行 / 空白不能把内容带出来
   assert.ok(!displayUrl("https://h.example/v1?x=1\n\nSECRET")!.includes("SECRET"));
 });
+
+test("🔴 researchEnv 透传 ELECTRON_RUN_AS_NODE：装机版的 node 就是 Electron 二进制,丢了它子进程会去开窗口", () => {
+  const env = { ELECTRON_RUN_AS_NODE: "1", PATH: "/usr/bin", HOME: "/Users/x", MIMO_API_KEY: "k", RANDOM_SECRET: "s" };
+  const out = researchEnv({ providerEnvKey: "MIMO_API_KEY" }, env);
+  assert.equal(out.ELECTRON_RUN_AS_NODE, "1");
+  assert.equal(out.MIMO_API_KEY, "k");
+  assert.equal(out.RANDOM_SECRET, undefined, "不相干的变量仍然不透传");
+});

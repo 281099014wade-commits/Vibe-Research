@@ -127,8 +127,22 @@ export function loadProductConfig(repoRoot: string, opts: {
   // 没写过时切换 profile 按模板唯一支持的模式自动选;写过的永不覆盖
   let authExplicit = false;
   if (fs.existsSync(productFile)) { cfg = mergeLayer(cfg, readLayer(productFile, "产品配置")); sources.push(productFile); }
-  const dataRootTmp = opts.dataRootOverride ? path.resolve(opts.dataRootOverride) : path.resolve(repoRoot, cfg.paths.data_root);
-  const userFile = opts.userConfigPath ?? path.join(dataRootTmp, USER_CONFIG_FILE);
+  /**
+   * 数据根。**只在这里算一次,后面所有地方都用它。**
+   *
+   * 优先级:调用方显式 override > `VRA_DATA_ROOT` > 产品配置里的 `paths.data_root`(相对产品根)。
+   *
+   * 🔴 `VRA_DATA_ROOT` 是**装机版必需的**:安装后产品根在 App 包里(只读、而且升级时整个换掉),
+   *    用户数据一个字节都不能落在那儿。启动器把它指到 `~/.vibe-research`。
+   * 🔴 原先这里算了两遍(`dataRootTmp` / `dataRootAbs`),而 `resolved.dataRoot` **压根没看 override** ——
+   *    传了 override 时,"用户配置从 A 读、产物往 B 写",两个根不一致且不报错。改成一处算、处处用。
+   */
+  const dataRoot = opts.dataRootOverride
+    ? path.resolve(opts.dataRootOverride)
+    : env.VRA_DATA_ROOT
+      ? path.resolve(env.VRA_DATA_ROOT)
+      : path.resolve(repoRoot, cfg.paths.data_root);
+  const userFile = opts.userConfigPath ?? path.join(dataRoot, USER_CONFIG_FILE);
   if (fs.existsSync(userFile)) {
     const layer = readLayer(userFile, "用户配置");
     if (layer.paths && "data_root" in layer.paths) throw new Error(`用户配置不得修改 paths.data_root(它决定了用户配置自身的位置):${userFile}`);
@@ -148,8 +162,8 @@ export function loadProductConfig(repoRoot: string, opts: {
     if (opts.authOverride) authExplicit = true;
     cfg = mergeLayer(cfg, { provider: cli }); sources.push("cli");
   }
-  // 🔴 与上面 userFile **必须同一个根**:两处不一致时,用户配置从 A 读、provider 覆盖模板从 B 找
-  const dataRootAbs = opts.dataRootOverride ? path.resolve(opts.dataRootOverride) : path.resolve(repoRoot, cfg.paths.data_root);
+  // (数据根在上面算过了 —— 与 userFile 必然同一个根)
+  const dataRootAbs = dataRoot;
   // M4:provider 要么是 openai 原生默认,要么是 providers/<id>.json 里的已知模板(字段由模板决定;非 openai 只能 api_key)
   let providerProfile: ProviderProfileFile | null = null;
   const profileId = cfg.provider.profile ?? (cfg.provider.name === "openai" ? "openai" : null);
@@ -170,12 +184,21 @@ export function loadProductConfig(repoRoot: string, opts: {
   }
   const abs = (p: string) => path.resolve(repoRoot, p);
   const skills = abs(cfg.paths.skills);
+  /**
+   * 引擎 home。默认值 `.local/codex-home` 写的是"数据根下面那一格" ——
+   * 🔴 所以数据根被改到别处时它必须跟着走,否则装机版会把引擎状态写进只读的 App 包里,
+   *    报出来的还是一句看不懂的权限错误。显式配过(配置文件 / `VRA_CODEX_HOME`)的一律不动。
+   */
+  const codexHomeIsDefault = cfg.engine.codex_home === DEFAULT_PRODUCT_CONFIG.engine.codex_home;
+  const codexHome = codexHomeIsDefault
+    ? path.join(dataRoot, path.basename(DEFAULT_PRODUCT_CONFIG.engine.codex_home))
+    : abs(cfg.engine.codex_home);
   return {
     ...cfg,
     authError,
     resolved: {
-      codexHome: abs(cfg.engine.codex_home),
-      dataRoot: abs(cfg.paths.data_root),
+      codexHome,
+      dataRoot,
       constitution: abs(cfg.paths.constitution),
       skills,
       calcCli: abs(cfg.paths.calc_cli),

@@ -247,18 +247,55 @@ export function isLoopbackHost(host: string): boolean {
   return host === "127.0.0.1" || host === "localhost" || host === "::1" || host === "[::1]";
 }
 
+/**
+ * 解析 `--port`。
+ * 🔴 **必须能接受 0**（0 = 让系统分配一个空闲端口，桌面版就靠它避开"端口被占"）。
+ *    原来写的是 `Number(x || 8765) || 8765` —— `0` 是 falsy，两个 `||` 各吃掉它一次,
+ *    于是 `--port 0` 会**静默变成 8765**：不报错、看着正常、绑到了另一个端口。
+ */
+export function parsePortArg(args: readonly string[], fallback = 8765): number {
+  const i = args.indexOf("--port");
+  if (i < 0 || i + 1 >= args.length) return fallback;
+  const raw = args[i + 1]!;
+  if (!/^\d+$/.test(raw)) return fallback;
+  const n = Number(raw);
+  return n >= 0 && n <= 65535 ? n : fallback;
+}
+
+/**
+ * 这个文件是不是被当入口跑的。
+ * 🔴 装机版跑的是**编译后的 `api.js`** —— 只认 `.ts` 的话打包出来的产品
+ *    会「什么都不做地正常退出」，是最难查的那种失败。
+ */
+export function isEntryPath(argv1: string | undefined): boolean {
+  return /[\\/]api\.(ts|js|mjs|cjs)$/.test(argv1 ?? "");
+}
+
 async function main(): Promise<void> {
   const args = process.argv.slice(2);
-  const port = Number(args[args.indexOf("--port") + 1] || 8765) || 8765;
+  const port = parsePortArg(args);
   const host = args.includes("--host") ? args[args.indexOf("--host") + 1] : "127.0.0.1";
   const loopback = isLoopbackHost(host);
   if (!loopback && !process.env.VRA_API_TOKEN) { console.error("[api] 非回环地址绑定必须显式设置 VRA_API_TOKEN"); process.exit(2); }
   const ctx = serviceContext();
   const tk = resolveToken(ctx);
   const srv = createApiServer(ctx, { token: tk.token, cookieLogin: loopback });
-  srv.listen(port, host, () => console.error(`[api] listening http://${host}:${port}  token 来源=${tk.source}(文件 .local/api.token;请求头 Authorization: Bearer <token>;${loopback ? `浏览器打开 http://${host}:${port}/login?token=<token> 进入运行列表页 /ui` : "非本机绑定:cookie 登录已关闭,只认 Bearer"})`));
+  // 🔴 打印**实际绑上的端口**,不是请求的那个 —— `--port 0` 时请求的是 0,
+  //    调用方（桌面外壳）就是靠这一行知道该连哪儿的
+  srv.listen(port, host, () => {
+    // 🔴 **整行都用实际端口**。只改前半段的话,给用户点的那个登录链接仍然写着 `:0`,
+    //    照着点必然打不开 —— 而这一行看起来是「已经修好了」的。
+    const p = actualPort(srv, port);
+    console.error(`[api] listening http://${host}:${p}  token 来源=${tk.source}(文件 .local/api.token;请求头 Authorization: Bearer <token>;${loopback ? `浏览器打开 http://${host}:${p}/login?token=<token> 进入运行列表页 /ui` : "非本机绑定:cookie 登录已关闭,只认 Bearer"})`);
+  });
 }
 
-if (process.argv[1] && (process.argv[1].endsWith("/api.ts") || process.argv[1].endsWith("\\api.ts"))) {
+/** 实际绑定的端口;取不到就退回请求值(只可能发生在非 TCP 的 address() 上) */
+function actualPort(srv: http.Server, requested: number): number {
+  const a = srv.address();
+  return a && typeof a === "object" ? a.port : requested;
+}
+
+if (isEntryPath(process.argv[1])) {
   main().catch((e) => { console.error(`[api] ${e instanceof Error ? e.message : String(e)}`); process.exit(1); });
 }

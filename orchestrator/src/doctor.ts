@@ -36,7 +36,15 @@ const MIN_NODE = [22, 18] as const;
 const REQUIRED_SKILLS = ["data-access", "company-research"];
 const PY_IMPORTS = "requests, pandas, lxml, akshare, baostock";
 const NET_PROBE_ENDPOINT = "tx_quote";
-const SCAN_SKIP_DIRS = new Set([".local", "node_modules", ".venv", ".git", "assets", "__pycache__", ".pytest_cache", "test", "tests", "dist", "htmlcov"]);
+/**
+ * 不扫的目录。
+ * 🔴 `payload` / `release` 是**桌面外壳的构建产物**(装配好的载荷、打好的 App)。
+ *    它们里面是三万多个文件(整棵 Python + 引擎二进制),不排掉就会把 SCAN_MAX_FILES 的
+ *    额度吃光 —— 表现是"密钥扫描 warn:文件数超过 5000,已截断未全扫",**真正的源码反而没扫到**。
+ *    ⚠️ 跳过它们不降低覆盖:`payload/app` 是按清单从仓库源文件拷过去的副本,原件本来就在扫描范围内;
+ *    另外两块(Python 依赖、引擎二进制)是第三方产物,不是我们的产品文件。
+ */
+const SCAN_SKIP_DIRS = new Set([".local", "node_modules", ".venv", ".git", "assets", "__pycache__", ".pytest_cache", "test", "tests", "dist", "htmlcov", "payload", "release"]);
 const SCAN_SKIP_EXT = new Set([".png", ".jpg", ".jpeg", ".gif", ".pdf", ".ico", ".woff", ".woff2", ".zip", ".gz", ".lock"]);
 const SCAN_MAX_BYTES = 2 * 1024 * 1024;
 const SCAN_MAX_FILES = 5000;

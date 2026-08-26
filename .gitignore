@@ -23,3 +23,7 @@ dist/
 # 系统与日志
 .DS_Store
 *.log
+
+# 桌面外壳的构建产物
+shell/payload/
+shell/release/
