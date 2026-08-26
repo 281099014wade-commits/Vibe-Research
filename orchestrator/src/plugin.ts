@@ -237,6 +237,14 @@ export interface Plugin {
   readonly transformFetch?: (cfg: unknown, stage: string, ledger: unknown, log: (t: string, p: Record<string, unknown>) => void) => void;
   /** **归档后**的垂类处理(可选)。原本 Core 直接 import 金融的温度计账本归档。 */
   readonly afterRun?: (ctx: { cfg: unknown; ledger: unknown; record(key: string, value: unknown): void; log(type: string, payload: Record<string, unknown>): void }) => void;
+  /**
+   * **端点观测序列**(可选):跨运行累积下来的同一端点历史读数。
+   * 🔴 放进契约而不是让 Core 直接 import —— Core 不该知道"温度计"这回事;
+   *    换个垂类没有这种序列时,不声明这一项即可(界面自己会说"没有序列")。
+   * ⚠️ 实现方必须自己校验 endpoint 合法性:它会被拼进文件路径。
+   */
+  readonly seriesFor?: (dataRoot: string, endpoint: string) =>
+    { observations: unknown[]; exists: boolean; unreadable: boolean; dropped: number };
   /** 垂类自己的**体检项**(可选):doctor 会把它们并进报告。原本 doctor 直接 import 金融模块。 */
   readonly doctorChecks?: (ctx: { dataRoot: string; repoRoot: string }) => { id: string; title: string; status: string; detail: string; fix?: string }[];
   /** 基准期(语义槽位里 `fy: "T"` 的那个 T)怎么定 —— 金融看当前财年,别的垂类可能完全不同 */
@@ -987,6 +995,8 @@ function register(plugin: Plugin): void {
   if (afterRun !== undefined && typeof afterRun !== "function") throw new Error("Plugin.afterRun 必须是函数或不提供");
   const doctorChecks = plugin.doctorChecks;
   if (doctorChecks !== undefined && typeof doctorChecks !== "function") throw new Error("Plugin.doctorChecks 必须是函数或不提供");
+  const seriesFor = plugin.seriesFor;
+  if (seriesFor !== undefined && typeof seriesFor !== "function") throw new Error("Plugin.seriesFor 必须是函数或不提供");
   const beforeFetch = plugin.beforeFetch;
   if (beforeFetch !== undefined && typeof beforeFetch !== "function") throw new Error("Plugin.beforeFetch 必须是函数或不提供");
   const buildRewritePrompt = plugin.buildRewritePrompt;
@@ -1108,7 +1118,7 @@ function register(plugin: Plugin): void {
     if (typeof fn !== "function") throw new Error(`Plugin.${k} 必须是函数`);
   }
   // ⓪ 原对象的键集:ajv 只看得到投影后的 `decl`,多余字段得在这里比
-  assertNoExtraKeys("", plugin, [...(PLUGIN_SCHEMA.required as readonly string[]), "quoteDecision", "baselinePeriod", "marketRegion", "buildStagePrompt", "buildRewritePrompt", "lexicon", "afterFetch", "beforeFetch", "transformFetch", "afterRun", "doctorChecks", "gate", "ledger", "pageQueries", "pageContext", "debate"]);
+  assertNoExtraKeys("", plugin, [...(PLUGIN_SCHEMA.required as readonly string[]), "quoteDecision", "baselinePeriod", "marketRegion", "buildStagePrompt", "buildRewritePrompt", "lexicon", "afterFetch", "beforeFetch", "transformFetch", "afterRun", "doctorChecks", "seriesFor", "gate", "ledger", "pageQueries", "pageContext", "debate"]);
   assertNoExtraKeys("evidence", ev, ["markets", "adjustments", "marketWideCodes", "marketWideOnlyCodes"]);
   assertNoExtraKeys("selfTestCalc", st, ["fn", "args", "expect"]);
   assertNoExtraKeys("archive", decl.archive, ["validDays", "maxFacts", "sections"]);
@@ -1168,6 +1178,7 @@ function register(plugin: Plugin): void {
     transformFetch,
     afterRun,
     doctorChecks,
+    seriesFor,
     baselinePeriod,
     stageLabels: Object.freeze({ ...d.stageLabels }),
     topicSections: Object.freeze({ ...d.topicSections }),

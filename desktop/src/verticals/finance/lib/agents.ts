@@ -1,0 +1,121 @@
+/**
+ * 多 agent 能力(多空辩论 + 反思审计)—— **接我们的底座**。
+ *
+ * 上游走它自己后端的 NDJSON 流,并把用户的 key 一起发过去。
+ * 我们的底座:辩论是 `POST /debate` 开场 + 逐阶段 `POST /debate/:id/advance`,
+ * 密钥留在后端。**对外的 handler 事件与上游保持一致**,所以 `Debate.tsx` / `Notes.tsx`
+ * 一行不用改。
+ *
+ * 🔴 我们的辩论有一条上游没有的性质:**资料包在开场那一刻现拉,五个角色共用同一份**
+ *    —— 谁也不能靠编数字赢。资料包为空(取数全挂)时**直接拒开**,
+ *    因为没有共同事实的"辩论"只是两段作文,而它看着像做过功课。
+ */
+import { ApiError, backend, type DebateState } from "./backend";
+
+export type DebateStage = "bull" | "bear" | "bull_rebut" | "bear_rebut" | "referee";
+
+export interface DebateHandlers {
+  onStatus?: (message: string) => void;
+  onDossierProgress?: (title: string, ok: boolean, loaded: number, total: number) => void;
+  onDossierReady?: (sections: { title: string; tool: string }[], missing: string[]) => void;
+  onStageStart?: (stage: DebateStage, label: string) => void;
+  onDelta?: (stage: DebateStage, text: string) => void;
+  onStageDone?: (stage: DebateStage, label: string, content: string) => void;
+  onError?: (message: string, stage?: DebateStage) => void;
+}
+
+/**
+ * 跑一场多空辩论。
+ * ⚠️ `rounds` 上游用来加轮次;我们的阶段由**后端契约**声明(`Plugin.debate.stages`),
+ *    前端说了不算 —— 收下这个参数只为签名兼容,不假装它起作用。
+ * ⚠️ 我们的后端不流式:每个阶段跑完一次性给全文,所以 `onDelta` 每阶段只吐一次。
+ */
+export async function debateStream(
+  code: string,
+  _rounds: number,
+  handlers: DebateHandlers = {},
+  signal?: AbortSignal,
+): Promise<void> {
+  // 每个事件只发一次 —— 我们是轮询式推进,不去重的话每轮都会把已完成的阶段重发一遍
+  const emitted = new Set<string>();
+  const push = (st: DebateState) => {
+    for (const s of st.stages) {
+      if (s.status === "running" && !emitted.has(`start:${s.id}`)) {
+        emitted.add(`start:${s.id}`);
+        handlers.onStageStart?.(s.id as DebateStage, s.label);
+      }
+      if (s.status === "done" && !emitted.has(`done:${s.id}`)) {
+        emitted.add(`done:${s.id}`);
+        if (!emitted.has(`start:${s.id}`)) {
+          emitted.add(`start:${s.id}`);
+          handlers.onStageStart?.(s.id as DebateStage, s.label);
+        }
+        handlers.onDelta?.(s.id as DebateStage, s.text);
+        handlers.onStageDone?.(s.id as DebateStage, s.label, s.text);
+      }
+      if (s.status === "failed" && !emitted.has(`fail:${s.id}`)) {
+        emitted.add(`fail:${s.id}`);
+        // 单个阶段挂掉不废整场,但要说清是哪一环没打上
+        handlers.onError?.(s.error ?? "这一环没打上", s.id as DebateStage);
+      }
+    }
+  };
+
+  try {
+    handlers.onStatus?.("正在现拉资料包(五个角色共用同一份)…");
+    let st = await backend.debateStart(code);
+    if (signal?.aborted) return;
+    handlers.onDossierReady?.([{ title: `资料包 ${st.evidence_count} 条证据`, tool: "取数层" }], st.gaps);
+    handlers.onStatus?.(st.gaps.length ? "资料包就绪(有缺口,已告知双方),辩论开始" : "资料包就绪,辩论开始");
+    push(st);
+
+    while (!st.done) {
+      if (signal?.aborted) return;
+      st = await backend.debateAdvance(st.id);
+      push(st);
+    }
+    // 🔴 全挂了要说全挂了 —— 只看 done 会把"五段全空"读成"辩论正常完成"
+    if (st.outcome === "failed") handlers.onError?.("所有阶段都失败了:不是「没有分歧」,是根本没跑起来");
+    else handlers.onStatus?.(st.outcome === "completed_with_errors" ? "跑完了,但有环节没打上" : "辩论结束");
+  } catch (e) {
+    if (signal?.aborted) return;
+    handlers.onError?.(e instanceof ApiError ? e.message : String(e));
+  }
+}
+
+export interface ReflectHandlers {
+  onStatus?: (message: string) => void;
+  onDelta?: (text: string) => void;
+  onDone?: (content: string, truncated: boolean) => void;
+  onError?: (message: string) => void;
+}
+
+/**
+ * 对一段已写好的分析做**推理审计**:哪些有数据撑着、哪些是脑补、最脆弱的一环在哪。
+ * ⚠️ 明确要求它**只审不建议** —— 审计一旦滑成"那你应该怎么做",就越过产出红线了。
+ */
+export async function reflectStream(
+  source: string,
+  title: string,
+  handlers: ReflectHandlers = {},
+  signal?: AbortSignal,
+): Promise<void> {
+  try {
+    handlers.onStatus?.("审计中…");
+    const msg = [
+      "回头审下面这段我自己写的推理,逐条标出:哪些结论有数据撑着、哪些是脑补、最脆弱的一环在哪。",
+      "**只做审计,不要给我任何操作建议。**",
+      "",
+      `标题:${title}`,
+      "",
+      source || "(没有正文)",
+    ].join("\n");
+    const r = await backend.chat(msg);
+    if (signal?.aborted) return;
+    handlers.onDelta?.(r.reply);
+    handlers.onDone?.(r.reply, false);
+  } catch (e) {
+    if (signal?.aborted) return;
+    handlers.onError?.(e instanceof ApiError ? e.message : String(e));
+  }
+}

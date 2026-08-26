@@ -1,283 +1,419 @@
+import { useEffect, useMemo, useState } from "react";
+import { useNavigate, useParams } from "react-router-dom";
+import {
+  Thermometer, RefreshCw, Loader2, AlertCircle, Info, Gauge, CalendarClock, History, LineChart,
+} from "lucide-react";
+import { PageHeader } from "@/components/ui/PageHeader";
+import { GlassCard } from "@/components/ui/GlassCard";
+import { Disclaimer } from "@/components/ui/Disclaimer";
+import { EChart } from "@/components/ui/EChart";
+import { api, ApiError, type GpuRentData, type GpuSpot, type ForwardMonth } from "@/lib/api";
+import { cn } from "@/lib/utils";
 
-// ⚠️ 宏观概率**刻意不进页面查询**:它约 28 秒才回,放进一屏会让整页都等它。
-//    慢端点走"按需取"(lazy),这是 EndpointPanel 仍然存在的唯一理由。
-import { EndpointPanel } from "../../../core/ui/EndpointPanel";
-import { Block, PageShell } from "../../../core/ui/PageShell";
-import { PctCell, show, unitOf } from "../../../core/ui/envelope";
-import { AskAgent } from "../../../core/ui/AskAgent";
-import { Card, CardHead } from "../../../core/ui/primitives";
-import type { Envelope } from "../../../core/lib/api";
-import { guardOf, noteKV, pivot, visibleNote, type Row } from "../../../core/lib/records";
+// 产业信号：每期从公开零鉴权数据源移植一个「一句话信号」小栏目，逐期在此添加。
+const TABS = [
+  { key: "gpu-rent", label: "GPU租金", icon: Thermometer, desc: "近一年走势 + 现货中位价 + 远期资金预期" },
+];
 
-/**
- * 护栏句。项目铁律:**"这个数该怎么读"必须与数字同段显示** ——
- * 取数层已经把它写进 note 的 `读法:` 之后,页面只负责端出来,不许省。省掉它 = 替上游打包票。
- */
-function Guard({ text }: { text: string }) {
-  if (!text) return null;
+// 各型号折线颜色（主题橙留给旗舰 B200；中性灰文字两种主题下都可读）
+const GPU_COLORS: Record<string, string> = {
+  "B200": "#f97316", "H100 SXM": "#0ea5e9", "A100 SXM4": "#a78bfa",
+};
+const AXIS_COLOR = "#78716c";
+const SPLIT_COLOR = "rgba(120,113,108,.18)";
+const TOOLTIP_STYLE = {
+  backgroundColor: "rgba(28,25,23,.92)", borderColor: "rgba(120,113,108,.3)",
+  textStyle: { color: "#e7e5e4", fontSize: 12 },
+};
+
+// 数据是旧值回填（本轮抓取失败）时的提示徽标
+function StaleBadge({ observedAt, fetchError }: { observedAt?: string | null; fetchError?: string }) {
   return (
-    <p className="mt-2 rounded-md bg-warning/10 px-2.5 py-1.5 text-[11px] leading-relaxed text-muted-foreground">
-      读法 · {text}
-    </p>
+    <span
+      className="inline-flex items-center gap-1 rounded-full bg-warning/15 px-2 py-0.5 text-[10px] text-warning"
+      title={fetchError ? `本轮抓取失败：${fetchError}` : undefined}
+    >
+      <History className="h-3 w-3" /> 本轮抓取失败 · 显示 {observedAt || "上次"} 的数据
+    </span>
   );
 }
 
-/** 同一端点的护栏是同一句,取第一条即可(逐行重复没意义) */
-function guardOfEnv(env: Envelope): string {
-  for (const e of env.evidence) {
-    const g = guardOf(e.note ?? "");
-    if (g) return g;
+function SpotCard({ g }: { g: GpuSpot }) {
+  if (g.err) {
+    return (
+      <div className="rounded-xl border border-destructive/30 bg-destructive/5 p-4">
+        <div className="font-mono text-sm font-semibold">{g.gpu}</div>
+        <p className="mt-2 flex items-start gap-1.5 text-xs text-destructive">
+          <AlertCircle className="mt-0.5 h-3.5 w-3.5 shrink-0" /> 抓取失败：{g.err}
+        </p>
+      </div>
+    );
   }
-  return "";
-}
-
-/** 温度计的一行:代码 + 名称 + 当期值 + 若干变动列 */
-function ThermoRow({ row, valueField, cols }: { row: Row; valueField: string; cols: [string, string][] }) {
-  const v = row.fields[valueField];
-  const kv = noteKV(row.note);
-  // 有 name= 就用它;没有就出可见 note(由 CSS 省略、完整留 tooltip)。
-  // 别再按标点截断 —— 那是猜格式,而且截出来的半句看着像渲染坏了。
-  const label = kv.name ?? (visibleNote(row.note) || row.key);
+  if (g.unavailable) {
+    return (
+      <div className="rounded-xl border border-border/60 bg-muted/20 p-4">
+        <div className="flex items-center justify-between">
+          <span className="font-mono text-sm font-semibold">{g.gpu}</span>
+          {g.stale && <StaleBadge observedAt={g.observed_at} fetchError={g.fetch_error} />}
+        </div>
+        <p className="mt-2 text-sm text-muted-foreground">{g.note || "当前无在租报价"}</p>
+        <p className="mt-1 text-[11px] text-muted-foreground/60">这是市场状态，不是数据故障。</p>
+      </div>
+    );
+  }
   return (
-    <div className="flex items-baseline gap-2 border-b border-border/40 py-1.5 text-[11.5px]">
-      <span className="w-14 shrink-0 truncate font-mono text-muted-foreground">{row.key}</span>
-      <span className="min-w-0 flex-1 truncate" title={row.note}>
-        {label}
-      </span>
-      <span className="tnum w-28 shrink-0 text-right" title={v ? `${v.period} · ${v.id}` : "无此项"}>
-        {show(v)}
-        {unitOf(v) ? <span className="ml-0.5 text-[10.5px] text-muted-foreground">{unitOf(v)}</span> : null}
-      </span>
-      {cols.map(([f, t]) => (
-        <span key={f} className="w-16 shrink-0 text-right" title={t}>
-          <PctCell ev={row.fields[f]} />
+    <div className="rounded-xl border border-primary/25 bg-primary/5 p-4">
+      <div className="flex items-center justify-between">
+        <span className="flex items-center gap-1.5 font-mono text-sm font-semibold">
+          <span className="h-2 w-2 rounded-full" style={{ background: GPU_COLORS[g.gpu] || "#f97316" }} />
+          {g.gpu}
         </span>
-      ))}
+        {g.stale && <StaleBadge observedAt={g.observed_at} fetchError={g.fetch_error} />}
+      </div>
+      <div className="mt-2 flex items-baseline gap-2">
+        <span className="text-3xl font-extrabold tracking-tight text-primary text-glow">${g.median?.toFixed(2)}</span>
+        <span className="text-xs text-muted-foreground">/卡·时（中位）</span>
+      </div>
+      <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-[11px] text-muted-foreground">
+        <span>
+          = 上方曲线最新点
+          {g.asof_ts != null && `（${new Date(g.asof_ts * 1000).toLocaleString("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" })} 观测）`}
+        </span>
+        {g.available_gpus != null && g.total_gpus != null && g.total_gpus > 0 && (
+          <span>
+            可租 {g.available_gpus} / 共 {g.total_gpus} 张（{Math.round((1 - g.available_gpus / g.total_gpus) * 100)}% 在租）
+          </span>
+        )}
+      </div>
     </div>
   );
 }
 
+// 远期单月：一句话总结 + 概率分布柱图
+function ForwardMonthPanel({ m }: { m: ForwardMonth }) {
+  const im = m.implied_median;
+  const impliedText = !im ? null
+    : im.bound === "exact" ? `$${im.value.toFixed(2)}`
+    : im.bound === "above" ? `高于 $${im.value}（最高档之上）`
+    : `低于 $${im.value}（最低档之下）`;
+  const mlIndex = m.distribution.findIndex((b) => b.label === m.most_likely.label);
 
-export function Signals() {
+  const option = useMemo(() => ({
+    grid: { left: 44, right: 16, top: 24, bottom: 44 },
+    tooltip: {
+      trigger: "axis" as const, ...TOOLTIP_STYLE,
+      valueFormatter: (v: unknown) => `${v}%`,
+    },
+    xAxis: {
+      type: "category" as const,
+      data: m.distribution.map((b) => b.label),
+      axisLabel: { color: AXIS_COLOR, fontSize: 10, rotate: 32 },
+      axisLine: { lineStyle: { color: SPLIT_COLOR } },
+      axisTick: { show: false },
+    },
+    yAxis: {
+      type: "value" as const,
+      axisLabel: { color: AXIS_COLOR, fontSize: 10, formatter: "{value}%" },
+      splitLine: { lineStyle: { color: SPLIT_COLOR } },
+    },
+    series: [{
+      name: "概率", type: "bar" as const, barMaxWidth: 34,
+      data: m.distribution.map((b, i) => ({
+        value: +(b.p * 100).toFixed(1),
+        itemStyle: { color: i === mlIndex ? "#f97316" : "rgba(249,115,22,.32)", borderRadius: [4, 4, 0, 0] },
+      })),
+    }],
+  }), [m, mlIndex]);
 
   return (
-    <PageShell query="signals">
-      {({ block }) => (
-    <div className="space-y-4">
-      <Card>
-        <CardHead
-          title="这一页在回答什么"
-          note="公司自己之外,它所在的产业链本身是冷是热。跟公司口径对得上=互相印证;对不上=反证,喂给裁决点。"
-        />
-        <p className="text-[12px] leading-relaxed text-muted-foreground">
-          ⚠️ 在一次<span className="text-foreground">研究运行</span>里,这些温度计按标的的产业标签自动挂载 ——
-          没命中标签就是不相关,不是缺数据。这一页是手动巡检,所以全部列出。
-        </p>
-      </Card>
+    <div>
+      {/* 一句话总结：预期多少钱 + 概率多少 */}
+      <div className="mb-3 rounded-xl border border-primary/25 bg-primary/5 p-3.5 text-sm leading-relaxed">
+        市场当前对 <b className="font-mono">{m.month}</b> 月均租金（B200）的预期：
+        {impliedText && <>中位约 <b className="text-primary">{impliedText}</b>/卡·时，</>}
+        最可能落在 <b className="text-primary">{m.most_likely.label}</b>
+        （概率 <b className="text-primary">{(m.most_likely.p * 100).toFixed(0)}%</b>）。
+        <span className="text-xs text-muted-foreground">
+          按 Ornn 跨平台指数的整月平均结算——是「整月均价」，与上方「此刻」的现货挂单价口径不同，数值不能直接对比。
+        </span>
+      </div>
+      <EChart option={option} height={230} />
+      <p className="mt-1 text-center text-[11px] text-muted-foreground/60">
+        {m.month} 月均租金落在各价位区间的预期概率 · {m.close_date} 结算
+      </p>
+    </div>
+  );
+}
 
-      <Block b={block("tw_revenue")}>
-        {(res) => {
-          const rows = pivot(res.envelope);
-          const diff = rows.find((r) => r.fields.tw_chain_differential);
-          const firms = rows.filter((r) => r.fields.tw_monthly_revenue);
-          return (
-            <div>
-              <div className="flex items-baseline gap-2 pb-1 text-[10.5px] text-muted-foreground">
-                <span className="w-14">代码</span>
-                <span className="flex-1">公司与角色</span>
-                <span className="w-28 text-right">当月营收</span>
-                <span className="w-16 text-right">环比</span>
-                <span className="w-16 text-right">同比</span>
-              </div>
-              {firms.map((r) => (
-                <ThermoRow
-                  key={r.key}
-                  row={r}
-                  valueField="tw_monthly_revenue"
-                  cols={[
-                    ["tw_monthly_revenue_mom_pct", "环比上月"],
-                    ["tw_monthly_revenue_yoy_pct", "同比去年同月"],
-                  ]}
-                />
-              ))}
-              {diff ? (
-                <div className="mt-3 rounded-md bg-muted/60 px-2.5 py-2 text-[11.5px] leading-relaxed">
-                  <span className="text-muted-foreground">链路差分 </span>
-                  <span className="tnum">{show(diff.fields.tw_chain_differential)}</span>
-                  {/* 只出 `读法:` 之前那段:护栏在下面单独渲染,这里再铺一遍就成了带 raw_ref 的噪音 */}
-                  <div className="mt-1 text-[11px] leading-relaxed text-muted-foreground" title={diff.note}>
-                    {visibleNote(diff.note)}
-                  </div>
-                </div>
-              ) : null}
-              <Guard text={guardOfEnv(res.envelope)} />
-            </div>
-          );
-        }}
-      </Block>
+function GpuRentPanel() {
+  const [data, setData] = useState<GpuRentData | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  const [refreshing, setRefreshing] = useState(false);
+  const [activeMonth, setActiveMonth] = useState(0);
 
-      <div className="grid gap-4 xl:grid-cols-2">
-        <Block b={block("gpu_rent")}>
-          {(res) => (
-            <div>
-              {pivot(res.envelope).map((r) => (
-                <div key={r.key} className="border-b border-border/40 py-1.5 text-[11.5px]">
-                  <div className="flex items-baseline gap-2">
-                    <span className="w-14 shrink-0 font-mono">{r.key}</span>
-                    <span className="tnum min-w-0 flex-1">
-                      {show(r.fields.gpu_spot_median_usd_per_gpu_hr)}
-                      {unitOf(r.fields.gpu_spot_median_usd_per_gpu_hr) ? (
-                        <span className="ml-0.5 text-[10.5px] text-muted-foreground">
-                          {unitOf(r.fields.gpu_spot_median_usd_per_gpu_hr)}
-                        </span>
-                      ) : null}
-                    </span>
-                    <span className="tnum w-16 shrink-0 text-right text-muted-foreground">
-                      {show(r.fields.gpu_spot_offer_count ?? r.fields.gpu_forward_rung_count)} 档
-                    </span>
-                  </div>
-                  <div className="mt-0.5 truncate text-[10.5px] text-muted-foreground" title={r.note}>
-                    {visibleNote(r.note)}
-                  </div>
-                </div>
-              ))}
-              <Guard text={guardOfEnv(res.envelope)} />
-            </div>
-          )}
-        </Block>
+  useEffect(() => {
+    api.gpuRent().then(setData).catch((e) => setErr(e instanceof ApiError ? e.message : "加载失败"));
+  }, []);
 
-        <Block b={block("dram")}>
-          {(res) => (
-            <div>
-              <div className="flex items-baseline gap-2 pb-1 text-[10.5px] text-muted-foreground">
-                <span className="w-14">品类</span>
-                <span className="flex-1" />
-                <span className="w-28 text-right">均价</span>
-                <span className="w-16 text-right">7 日</span>
-                <span className="w-16 text-right">30 日</span>
-              </div>
-              {pivot(res.envelope).map((r) => (
-                <ThermoRow
-                  key={r.key}
-                  row={r}
-                  valueField="dram_spot_avg"
-                  cols={[
-                    ["dram_spot_chg7_pct", "约 7 日"],
-                    ["dram_spot_chg30_pct", "约 30 日"],
-                  ]}
-                />
-              ))}
-              <Guard text={guardOfEnv(res.envelope)} />
-            </div>
-          )}
-        </Block>
+  const refresh = async () => {
+    setRefreshing(true); setErr(null);
+    try { setData(await api.gpuRentRefresh()); setActiveMonth(0); }
+    catch (e) { setErr(e instanceof ApiError ? e.message : "刷新失败"); }
+    finally { setRefreshing(false); }
+  };
+
+  const hasData = !!data?.generated_at;
+  const fw = data?.forward;
+  const months = fw?.months || [];
+  const month = months[Math.min(activeMonth, Math.max(months.length - 1, 0))];
+  const histGpus = data?.history?.gpus || [];
+  const histStale = histGpus.filter((g) => g.stale);
+
+  // 主图：近一年三条日线。刻意不把 Kalshi 远期画进来——它按 Ornn 指数「整月平均」
+  // 结算，与 Vast 日中位是两个市场两种口径，拼在一条线上会误导（实测就被看出"冲突"）。
+  const trendOption = useMemo(() => {
+    const series: Record<string, unknown>[] = histGpus
+      .filter((g) => g.points && g.points.length > 0)
+      .map((g) => ({
+        name: g.gpu, type: "line", showSymbol: false,
+        data: g.points!.map(([t, v]) => [t * 1000, v]),
+        lineStyle: { width: 1.8 }, itemStyle: { color: GPU_COLORS[g.gpu] || "#f97316" },
+        emphasis: { focus: "series" },
+      }));
+    return {
+      grid: { left: 44, right: 20, top: 40, bottom: 28 },
+      legend: { top: 4, textStyle: { color: AXIS_COLOR, fontSize: 11 }, itemWidth: 16 },
+      tooltip: {
+        trigger: "axis" as const, ...TOOLTIP_STYLE,
+        valueFormatter: (v: unknown) => (typeof v === "number" ? `$${v.toFixed(2)}` : `${v}`),
+      },
+      xAxis: {
+        type: "time" as const,
+        axisLabel: { color: AXIS_COLOR, fontSize: 10 },
+        axisLine: { lineStyle: { color: SPLIT_COLOR } },
+      },
+      yAxis: {
+        type: "value" as const,
+        axisLabel: { color: AXIS_COLOR, fontSize: 10, formatter: "${value}" },
+        splitLine: { lineStyle: { color: SPLIT_COLOR } },
+      },
+      series,
+    };
+  }, [histGpus]);
+
+  const settledText = (fw?.settled || [])
+    .map((s) => `${s.month} 实际落在 ${s.lo != null && s.hi != null ? `$${s.lo}~${s.hi}` : s.lo != null ? `≥$${s.lo}` : `<$${s.hi}`} 档`)
+    .join(" · ");
+
+  // 预期曲线（term structure）：已结算月的实际落点 + 各在市结算月的隐含预期中位。
+  // 两段都是 Ornn 指数「月均」口径——同一把尺子，连成一条时间线是合法的
+  // （与 Vast 日中位历史曲线不同口径，所以这张图独立放在远期区、不与上方主图混）。
+  const curveOption = useMemo(() => {
+    // 只画有完整区间的结算月：单边结果（全 yes / 全 no）只是「高于/低于某档」的
+    // 开放区间，画成精确点就是把边界当实际值——那些月留在下方文字行里表述
+    const actual = (fw?.settled || [])
+      .filter((s) => s.lo != null && s.hi != null)
+      .map((s) => ({ month: s.month, mid: (s.lo! + s.hi!) / 2 }));
+    const expected = months
+      .filter((m) => m.implied_median?.bound === "exact")
+      .map((m) => ({ month: m.month, mid: m.implied_median!.value }));
+    const cats = [...new Set([...actual.map((a) => a.month), ...expected.map((e) => e.month)])].sort();
+    const lastActualIdx = actual.length ? cats.indexOf(actual[actual.length - 1]!.month) : -1;
+    const actualData = cats.map((c) => actual.find((a) => a.month === c)?.mid ?? null);
+    // 预期线从最后一个实际点起笔，视觉上连续
+    const expectedData = cats.map((c, i) => {
+      const e = expected.find((x) => x.month === c);
+      if (e) return e.mid;
+      return i === lastActualIdx ? actual[actual.length - 1]!.mid : null;
+    });
+    return {
+      grid: { left: 44, right: 20, top: 34, bottom: 28 },
+      legend: { top: 2, textStyle: { color: AXIS_COLOR, fontSize: 11 }, itemWidth: 16 },
+      tooltip: {
+        trigger: "axis" as const, ...TOOLTIP_STYLE,
+        valueFormatter: (v: unknown) => (typeof v === "number" ? `$${v.toFixed(2)}` : "—"),
+      },
+      xAxis: {
+        type: "category" as const, data: cats,
+        axisLabel: { color: AXIS_COLOR, fontSize: 10, rotate: 28 },
+        axisLine: { lineStyle: { color: SPLIT_COLOR } },
+        axisTick: { show: false },
+      },
+      yAxis: {
+        type: "value" as const, scale: true,
+        axisLabel: { color: AXIS_COLOR, fontSize: 10, formatter: "${value}" },
+        splitLine: { lineStyle: { color: SPLIT_COLOR } },
+      },
+      series: [
+        {
+          name: "已结算月实际（区间中点）", type: "line" as const, data: actualData,
+          symbol: "circle", symbolSize: 7, lineStyle: { width: 2 },
+          itemStyle: { color: "#2dd4bf" }, connectNulls: false,
+        },
+        {
+          name: "市场预期中位", type: "line" as const, data: expectedData,
+          symbol: "circle", symbolSize: 5, lineStyle: { width: 2, type: "dashed" as const },
+          itemStyle: { color: "#f97316" }, connectNulls: false,
+        },
+      ],
+    };
+  }, [fw, months]);
+  const hasCurve = months.some((m) => m.implied_median?.bound === "exact");
+
+  return (
+    <div>
+      <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+        <span className="text-xs text-muted-foreground">
+          {hasData ? `更新于 ${data!.generated_at}` : "历史 / 现货 / 远期三条腿，都来自零鉴权公开接口"}
+        </span>
+        <button onClick={refresh} disabled={refreshing}
+          className="inline-flex items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-sm text-muted-foreground hover:text-foreground disabled:opacity-50">
+          {refreshing ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
+          {refreshing ? "抓取中…（远期 123 张合约逐档拉取，约 1 分钟）" : "刷新"}
+        </button>
       </div>
 
-      <Block b={block("commodity")}>
-        {(res) => (
-          <div>
-            <div className="flex items-baseline gap-2 pb-1 text-[10.5px] text-muted-foreground">
-              <span className="w-14">合约</span>
-              <span className="flex-1">用途</span>
-              <span className="w-28 text-right">收盘</span>
-              <span className="w-16 text-right">7 日</span>
-              <span className="w-16 text-right">30 日</span>
-            </div>
-            {pivot(res.envelope).map((r) => (
-              <ThermoRow
-                key={r.key}
-                row={r}
-                valueField="commodity_futures_close"
-                cols={[
-                  ["commodity_futures_chg7_pct", "约 7 日"],
-                  ["commodity_futures_chg30_pct", "约 30 日"],
-                ]}
-              />
-            ))}
-            <Guard text={guardOfEnv(res.envelope)} />
-          </div>
-        )}
-      </Block>
-
-      <Block b={block("hiring")}>
-        {(res) => {
-          const ex = res.envelope.extra ?? {};
-          const degraded = typeof ex.degraded === "string" ? ex.degraded : "";
-          const warnings = Array.isArray(ex.warnings) ? ex.warnings.map(String) : [];
-          const rows = pivot(res.envelope);
-          if (rows.length === 0) {
-            return (
-              <div className="text-[12px] leading-relaxed">
-                {/* 🔴 0 条不等于 0 岗位。照抄取数层自己给的降级说明,不改写成"暂无数据"。 */}
-                <p className="text-warning">{degraded || "本次没有可用锚点"}</p>
-                {warnings.map((w) => (
-                  <p key={w} className="mt-1 text-muted-foreground">
-                    {w}
-                  </p>
-                ))}
-                <p className="mt-2 text-muted-foreground">
-                  这一层只在一次<span className="text-foreground">研究运行</span>
-                  里取得到:锚点由标的的产业标签决定,单独取数没有那个上下文。
-                </p>
-              </div>
-            );
-          }
-          return (
-            <div>
-              {rows.map((r) => (
-                <div key={r.key} className="flex items-baseline gap-2 border-b border-border/40 py-1.5 text-[11.5px]">
-                  <span className="min-w-0 flex-1 truncate" title={r.note}>
-                    {r.key}
-                  </span>
-                  <span className="tnum w-20 shrink-0 text-right">
-                    {show(Object.values(r.fields).find((e) => e?.field.includes("count")))}
-                  </span>
-                </div>
-              ))}
-              <Guard text={guardOfEnv(res.envelope)} />
-            </div>
-          );
-        }}
-      </Block>
-
-      <div className="grid gap-4 xl:grid-cols-2">
-        <EndpointPanel
-          endpoint="macro_probability"
-          title="宏观预期概率"
-          note="预测市场合约的隐含概率(约 28 秒,按需取);是资金预期不是预报"
-          lazy
-        >
-          {(res) => (
-            <div>
-              {pivot(res.envelope)
-                .slice(0, 12)
-                .map((r) => (
-                  <div key={r.key} className="flex items-baseline gap-2 border-b border-border/40 py-1.5 text-[11.5px]">
-                    <span className="min-w-0 flex-1 truncate" title={r.note}>
-                      {r.note}
-                    </span>
-                    <span
-                      className="tnum w-16 shrink-0 text-right"
-                      title={`${r.fields.macro_probability?.period ?? ""} · ${r.fields.macro_probability?.id ?? ""}`}
-                    >
-                      {show(r.fields.macro_probability)}
-                    </span>
-                  </div>
-                ))}
-              <Guard text={guardOfEnv(res.envelope)} />
-            </div>
-          )}
-        </EndpointPanel>
-
-        {/* 🔴 「管制与准入 / 名单核查」**刻意不在界面上展示**(Simon 明确要求)。
-            它与供需正交、只是打折项,摆在这里只是噪音;但对分析有用 ⇒ 端点仍在,
-            注册表标了 `exposure: "agent"`,AI 需要时照样能调。
-            ⚠️ 光靠"这一页不渲染"守不住 —— 所以过滤做在 `listEndpoints` 的 `for_ui` 上。 */}
-      </div>
-
-      <AskAgent prompt={"把这一页的产业温度计跟我关注标的的最新财报口径做一次对照:哪几项互相印证,哪几项对不上?对不上的写成裁决点。"}>就产业信号问 Agent</AskAgent>
+      {err && (
+        <div className="mb-3 flex items-center gap-2 rounded-lg border border-destructive/30 bg-destructive/5 p-3 text-sm text-destructive">
+          <AlertCircle className="h-4 w-4 shrink-0" /> {err}
         </div>
       )}
-    </PageShell>
+      {data?.errors && data.errors.length > 0 && (
+        <div className="mb-3 rounded-lg border border-warning/30 bg-warning/5 p-3 text-xs text-warning">
+          <p className="mb-1 font-medium">本轮有数据源抓取失败（对应区块显示上一次的数据）：</p>
+          {data.errors.map((e, i) => <p key={i}>· {e}</p>)}
+        </div>
+      )}
+
+      {!hasData && !err ? (
+        <div className="rounded-lg border border-dashed border-border/70 p-8 text-center text-sm text-muted-foreground/70">
+          还没有抓取数据，点上方<b className="text-foreground">「刷新」</b>拉取（约 30 秒）。
+        </div>
+      ) : hasData && (
+        <>
+          {/* ① 近一年走势 */}
+          <div className="mb-1.5 flex items-center gap-1.5 text-sm font-semibold">
+            <LineChart className="h-4 w-4 text-primary" /> 近一年租金走势 · 每日中位价
+            {histStale.length > 0 && <StaleBadge observedAt={histStale[0]!.observed_at} fetchError={histStale[0]!.fetch_error} />}
+          </div>
+          <p className="mb-2 text-[11px] text-muted-foreground/70">
+            {data!.history_source}
+          </p>
+          {histGpus.some((g) => g.points?.length) ? (
+            <EChart option={trendOption} height={320} />
+          ) : (
+            <p className="py-6 text-center text-sm text-muted-foreground/60">
+              历史序列暂不可用{histGpus.find((g) => g.err) ? `：${histGpus.find((g) => g.err)!.err}` : ""}
+            </p>
+          )}
+
+          {/* ② 现货 */}
+          <div className="mb-1.5 mt-6 flex items-center gap-1.5 text-sm font-semibold">
+            <Gauge className="h-4 w-4 text-primary" /> 现货租金 · 最新观测值
+          </div>
+          <p className="mb-3 text-[11px] text-muted-foreground/70">{data!.spot_source}</p>
+          <div className="grid gap-3 sm:grid-cols-3">
+            {data!.spot.gpus.map((g) => <SpotCard key={g.gpu} g={g} />)}
+          </div>
+
+          {/* ③ 远期 */}
+          <div className="mb-1.5 mt-6 flex items-center gap-1.5 text-sm font-semibold">
+            <CalendarClock className="h-4 w-4 text-primary" /> 远期 · 全球资金的预期概率（仅 B200）
+            {fw?.stale && <StaleBadge observedAt={fw.observed_at} fetchError={fw.fetch_error} />}
+          </div>
+          <p className="mb-3 text-[11px] text-muted-foreground/70">
+            {data!.forward_source}
+            {fw?.n_contracts != null && ` · 在市合约 ${fw.n_contracts} 张 · 有报价结算月 ${months.length} 个${
+              fw.n_months != null && fw.n_months > months.length ? `（另 ${fw.n_months - months.length} 个月暂无报价）` : ""}`}
+          </p>
+          {fw?.err ? (
+            <p className="flex items-start gap-1.5 text-xs text-destructive">
+              <AlertCircle className="mt-0.5 h-3.5 w-3.5 shrink-0" /> 抓取失败：{fw.err}
+            </p>
+          ) : fw?.unavailable ? (
+            <p className="text-sm text-muted-foreground">{fw.note}（市场状态，非故障）</p>
+          ) : months.length > 0 ? (
+            <>
+              {/* 预期曲线：远期是涨是跌一眼看清（实线=已结算实际，虚线=各月预期中位，同为月均口径） */}
+              {hasCurve && (
+                <div className="mb-4">
+                  <EChart option={curveOption} height={240} />
+                  <p className="mt-1 text-center text-[11px] text-muted-foreground/60">
+                    同一把尺子（Ornn 指数月均）：实线 = 已结算月的实际落点（取区间中点），虚线 = 各结算月的市场预期中位
+                  </p>
+                </div>
+              )}
+              <div className="mb-3 flex flex-wrap gap-2">
+                {months.map((m, i) => (
+                  <button key={m.month} onClick={() => setActiveMonth(i)}
+                    className={cn(
+                      "rounded-full border px-3 py-1 font-mono text-xs transition-colors",
+                      i === Math.min(activeMonth, months.length - 1)
+                        ? "border-primary bg-primary/15 font-medium text-primary shadow-glow"
+                        : "border-primary/25 text-muted-foreground hover:border-primary/60 hover:text-foreground",
+                    )}>
+                    {m.month}
+                  </button>
+                ))}
+              </div>
+              {month && <ForwardMonthPanel m={month} />}
+              {settledText && (
+                <p className="mt-3 text-[11px] text-muted-foreground/70">
+                  已结算月份（月均实际落点，可与上方历史曲线互证）：{settledText}
+                </p>
+              )}
+            </>
+          ) : null}
+
+          {/* ④ 怎么读 */}
+          <div className="mt-6 rounded-xl border border-border/60 bg-muted/20 p-4">
+            <div className="mb-2 flex items-center gap-1.5 text-sm font-semibold">
+              <Info className="h-4 w-4 text-primary" /> 怎么读这组数（三条口径边界）
+            </div>
+            <ol className="list-decimal space-y-1 pl-5 text-xs leading-relaxed text-muted-foreground">
+              {data!.how_to_read.map((h, i) => <li key={i}>{h}</li>)}
+            </ol>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+export function Signals() {
+  // 当前小栏目由路由驱动（/signals/:tab），与侧栏子项联动；不认识的参数回落到第一个
+  const { tab: tabParam } = useParams();
+  const navigate = useNavigate();
+  const tab = TABS.some((t) => t.key === tabParam) ? tabParam! : TABS[0]!.key;
+  const cur = TABS.find((t) => t.key === tab)!;
+
+  return (
+    <div>
+      <PageHeader title="产业信号" subtitle="一句话产业信号：零鉴权公开数据直连，逐期添加小栏目" />
+
+      <div className="mb-4 flex flex-wrap gap-2">
+        {TABS.map(({ key, label, icon: Icon }) => (
+          <button key={key} onClick={() => navigate(`/signals/${key}`)}
+            className={cn("inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-sm transition-colors",
+              tab === key ? "bg-primary/15 font-medium text-primary shadow-glow" : "text-muted-foreground hover:bg-muted/50")}>
+            <Icon className="h-4 w-4" /> {label}
+          </button>
+        ))}
+      </div>
+
+      <GlassCard glow>
+        <div className="mb-3 flex items-center gap-2">
+          <cur.icon className="h-5 w-5 text-primary" />
+          <h3 className="font-semibold">{cur.label}</h3>
+          <span className="text-xs text-muted-foreground">{cur.desc}</span>
+        </div>
+        {cur.key === "gpu-rent" && <GpuRentPanel />}
+      </GlassCard>
+
+      <p className="mt-3 text-[11px] text-muted-foreground/60">
+        只呈现公开接口的价格事实与合约报价，不产出「过剩 / 短缺」的判断、不构成任何建议——怎么解读，交给你自己接入的 AI（工具名 query_gpu_rent）。
+      </p>
+      <Disclaimer />
+    </div>
   );
 }

@@ -1,188 +1,212 @@
-import { Play, Swords } from "lucide-react";
-import { useCallback, useRef, useState } from "react";
-import Markdown from "react-markdown";
+import { useRef, useState } from "react";
+import { Swords, Play, Square, Save, CheckCircle2, Circle, AlertTriangle } from "lucide-react";
+import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import { PageHeader } from "@/components/ui/PageHeader";
+import { GlassCard } from "@/components/ui/GlassCard";
+import { Disclaimer } from "@/components/ui/Disclaimer";
+import { debateStream, type DebateStage } from "@/lib/agents";
+import { addNote } from "@/lib/notes";
+import { ApiError } from "@/lib/api";
 
-import { ApiError, api, type DebateState } from "../../../core/lib/api";
-import { useLedger } from "../../../core/lib/useLedger";
-import { Badge, Card, CardHead, cx } from "../../../core/ui/primitives";
+interface StageBox {
+  stage: DebateStage;
+  label: string;
+  content: string;
+  done: boolean;
+}
 
-/**
- * 多空辩论:同一份现拉的资料包,多空各打一遍,再由裁判收口成**判据**。
- *
- * 🔴 这个功能唯一的价值是「**双方拿到的是同一份数字,谁也不能靠编数字赢**」。
- *    资料包在开场那一刻现拉(不读快照),之后每个角色看到的完全一样。
- * 🔴 裁判**不判谁赢**,只输出"双方都认的事实 / 争议点 / 每个争议点的可裁决判据" ——
- *    要一个"谁赢"的结论,等于让它替你下判断,那在产出红线的另一边。
- * ⚠️ 逐个阶段跑、跑完一个显示一个 —— 整场一两分钟,干等一个 spinner 很难受。
- */
-
-/** 多方用主色、空方用蓝灰、裁判无色。**刻意不用红绿** —— 免得跟涨跌撞车被读成方向信号。 */
-const TONE: Record<string, string> = {
+// 多方用品牌橙、空方用蓝灰、主持用中性——刻意不用红绿，
+// 免得和 A 股「红涨绿跌」撞车被读成涨跌信号。
+const STAGE_TONE: Record<DebateStage, string> = {
   bull: "border-primary/50 bg-primary/[0.06]",
   bull_rebut: "border-primary/30 bg-primary/[0.03]",
   bear: "border-sky-500/40 bg-sky-500/[0.06]",
   bear_rebut: "border-sky-500/25 bg-sky-500/[0.03]",
-  referee: "border-border bg-muted/30",
+  referee: "border-border bg-background/40",
 };
 
-const A_SHARE = /^(6\d{5}|0\d{5}|3\d{5})$/;
+const DOSSIER_HINT = "多空双方拿到的是同一份接口实时拉取的数据，谁也不能靠编数字赢。";
 
 export function Debate() {
-  const [input, setInput] = useState("300308");
-  const [state, setState] = useState<DebateState | null>(null);
+  const [code, setCode] = useState("");
+  const [rounds, setRounds] = useState(1);
   const [running, setRunning] = useState(false);
+  const [status, setStatus] = useState("");
+  const [progress, setProgress] = useState<{ title: string; ok: boolean }[]>([]);
+  const [missing, setMissing] = useState<string[]>([]);
+  const [stages, setStages] = useState<StageBox[]>([]);
   const [error, setError] = useState("");
   const [saved, setSaved] = useState(false);
-  // 重开一场时,别让上一场的循环继续往里写(它还在 await 里挂着)
-  const runId = useRef(0);
-  const save = useLedger((s) => s.save);
-  const valid = A_SHARE.test(input.trim());
+  const abortRef = useRef<AbortController | null>(null);
 
-  const run = useCallback(async () => {
-    const mine = ++runId.current;
+  const reset = () => {
+    setStatus(""); setProgress([]); setMissing([]); setStages([]); setError(""); setSaved(false);
+  };
+
+  async function start() {
+    const c = code.trim();
+    if (!/^\d{6}$/.test(c)) { setError("请输入 6 位 A 股代码"); return; }
+    reset();
     setRunning(true);
-    setError("");
-    setSaved(false);
-    setState(null);
+    const ctrl = new AbortController();
+    abortRef.current = ctrl;
     try {
-      let st = await api.debateStart(input.trim());
-      if (runId.current !== mine) return;
-      setState(st);
-      // 逐个阶段推进。**每一步都把最新状态画出来**,不要跑完再一次性出现。
-      while (!st.done) {
-        st = await api.debateAdvance(st.id);
-        if (runId.current !== mine) return;
-        setState(st);
-      }
+      await debateStream(c, rounds, {
+        onStatus: setStatus,
+        onDossierProgress: (title, ok, loaded, total) => {
+          setStatus(`正在拉取客观事实底稿… ${loaded}/${total}`);
+          setProgress((p) => [...p, { title, ok }]);
+        },
+        onDossierReady: (_sections, miss) => { setMissing(miss); setStatus("底稿就绪，辩论开始"); },
+        onStageStart: (stage, label) =>
+          setStages((s) => [...s, { stage, label, content: "", done: false }]),
+        onDelta: (stage, text) =>
+          setStages((s) => s.map((b) => (b.stage === stage && !b.done ? { ...b, content: b.content + text } : b))),
+        onStageDone: (stage, _label, content) =>
+          setStages((s) => s.map((b) => (b.stage === stage && !b.done ? { ...b, content, done: true } : b))),
+        onError: (message, stage) => setError(stage ? `${stage}：${message}` : message),
+      }, ctrl.signal);
+      setStatus("辩论完成");
     } catch (e) {
-      if (runId.current !== mine) return;
-      setError(e instanceof ApiError ? `${e.code} · ${e.message}` : String(e));
+      if (e instanceof DOMException && e.name === "AbortError") setStatus("已中止");
+      else setError(e instanceof ApiError ? e.message : String(e));
     } finally {
-      if (runId.current === mine) setRunning(false);
+      setRunning(false);
+      abortRef.current = null;
     }
-  }, [input]);
+  }
 
-  /** 存进台账 —— 辩论只在内存里,关掉就没了 */
-  const saveNote = useCallback(async () => {
-    if (!state) return;
-    const body = state.stages
-      .filter((s) => s.status === "done")
-      .map((s) => `## ${s.label}\n\n${s.text}`)
-      .join("\n\n");
-    await save("note", {
-      category: "debate",
-      symbol: state.symbol,
-      title: `多空辩论 · ${state.symbol}`,
-      body: `> 资料包 ${state.evidence_count} 条证据${state.gaps.length ? `;缺口:${state.gaps.join("; ")}` : ""}\n\n${body}`,
-    });
+  function stop() {
+    abortRef.current?.abort();
+    setRunning(false);
+  }
+
+  function save() {
+    const body = stages.map((s) => `## ${s.label}\n\n${s.content}`).join("\n\n---\n\n");
+    addNote("多空辩论", `多空辩论 · ${code.trim()}`, body);
     setSaved(true);
-  }, [state, save]);
+  }
+
+  const finished = stages.length > 0 && stages.every((s) => s.done);
 
   return (
-    <div className="space-y-4">
-      <Card>
-        <CardHead title="这一页在回答什么" note="同一份现拉的资料,多空各打一遍,裁判收口成判据" />
-        <p className="text-[12px] leading-relaxed text-muted-foreground">
-          多空双方拿到的是<span className="text-foreground">同一份接口实时拉来的数据</span>,谁也不能靠编数字赢。
-          裁判<span className="text-foreground">不判谁赢</span> —— 它只列出双方都认的事实、争议点,
-          以及每个争议点要看到什么数据才能裁决。
-        </p>
-      </Card>
+    <div>
+      <PageHeader
+        title="多空辩论"
+        subtitle="同一份客观数据，多方与空方各自立论、互相质疑，最后由中立主持归纳分歧点与验证清单——不给买卖结论，判断留给你自己。"
+      />
 
-      <Card>
-        <div className="flex flex-wrap items-center gap-2">
-          <input
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter" && valid && !running) void run();
-            }}
-            aria-label="股票代码"
-            placeholder="六位 A 股代码"
-            className="tnum w-32 rounded-lg border border-border bg-input/60 px-2.5 py-1.5 text-[12.5px] outline-none placeholder:text-muted-foreground focus:border-ring"
-          />
-          <button
-            type="button"
-            disabled={!valid || running}
-            onClick={() => void run()}
-            className="inline-flex cursor-pointer items-center gap-1.5 rounded-lg bg-primary px-3 py-1.5 text-[12px] font-medium text-primary-foreground transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
-          >
-            {running ? (
-              <Swords className="h-3.5 w-3.5 animate-pulse" aria-hidden />
-            ) : (
-              <Play className="h-3.5 w-3.5" aria-hidden />
-            )}
-            {running ? "辩论中…" : "开一场"}
-          </button>
-          {input.trim() && !valid ? <span className="text-[11.5px] text-warning">要六位 A 股代码</span> : null}
-          {state ? (
-            <span className="ml-auto text-[11.5px] text-muted-foreground">
-              资料包 <span className="tnum text-foreground">{state.evidence_count}</span> 条证据
-            </span>
-          ) : null}
-        </div>
-        {error ? <p className="mt-2 text-[12px] text-warning">{error}</p> : null}
-        {state?.gaps.length ? (
-          // 缺口必须显示:少一块,辩论的地基就窄一截,而产出照样是一篇像样的文章
-          <p className="mt-2 rounded-md bg-muted/60 px-2.5 py-1.5 text-[11px] leading-relaxed text-warning">
-            ⚠️ 资料包有缺口(双方已被告知别当它们不存在):{state.gaps.join(" / ")}
-          </p>
-        ) : null}
-      </Card>
-
-      {state?.stages.map((s) => (
-        <div key={s.id} className={cx("rounded-xl border px-4 py-3", TONE[s.id] ?? "border-border")}>
-          <div className="mb-2 flex items-center gap-2">
-            <span className="text-[12.5px] font-medium">{s.label}</span>
-            <Badge tone={s.status === "done" ? "success" : s.status === "failed" ? "danger" : "neutral"}>
-              {s.status === "done" ? "已完成" : s.status === "failed" ? "失败" : "等待中"}
-            </Badge>
+      <GlassCard>
+        <div className="flex flex-wrap items-end gap-3">
+          <div>
+            <label className="mb-1 block text-xs text-muted-foreground">股票代码</label>
+            <input
+              value={code}
+              onChange={(e) => setCode(e.target.value.replace(/[^\d]/g, "").slice(0, 6))}
+              onKeyDown={(e) => { if (e.key === "Enter" && !running) start(); }}
+              placeholder="6 位代码，如 600519"
+              disabled={running}
+              className="w-44 rounded-lg border border-border/60 bg-background/60 px-3 py-2 font-mono text-sm outline-none focus:border-primary/60"
+            />
           </div>
-          {s.status === "failed" ? (
-            // 单个阶段失败不废掉整场,但要说清是哪一环没打上
-            <p className="text-[12px] text-warning">这一环没打上:{s.error ?? "未知原因"}</p>
-          ) : s.text ? (
-            <div className="markdown text-[12.5px] leading-relaxed">
-              <Markdown remarkPlugins={[remarkGfm]}>{s.text}</Markdown>
-            </div>
+          <div>
+            <label className="mb-1 block text-xs text-muted-foreground">辩论深度</label>
+            <select
+              value={rounds}
+              onChange={(e) => setRounds(Number(e.target.value))}
+              disabled={running}
+              className="rounded-lg border border-border/60 bg-background/60 px-3 py-2 text-sm outline-none focus:border-primary/60"
+            >
+              <option value={1}>一轮 · 各自陈述</option>
+              <option value={2}>两轮 · 加交叉反驳</option>
+            </select>
+          </div>
+          {running ? (
+            <button onClick={stop}
+              className="inline-flex items-center gap-1.5 rounded-lg border border-border/60 px-4 py-2 text-sm hover:text-destructive">
+              <Square className="h-4 w-4" /> 中止
+            </button>
           ) : (
-            <p className="text-[12px] text-muted-foreground">{running ? "…" : "还没跑"}</p>
+            <button onClick={start}
+              className="inline-flex items-center gap-1.5 rounded-lg bg-primary/90 px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary">
+              <Play className="h-4 w-4" /> 开始辩论
+            </button>
+          )}
+          {finished && !running && (
+            <button onClick={save} disabled={saved}
+              className="inline-flex items-center gap-1.5 rounded-lg border border-border/60 px-4 py-2 text-sm text-muted-foreground hover:text-foreground disabled:opacity-50">
+              <Save className="h-4 w-4" /> {saved ? "已存入沉淀" : "存入沉淀"}
+            </button>
           )}
         </div>
-      ))}
 
-      {/* 🔴 全挂了要说全挂了。只看 `done` 的话,"五段全空"会显示成"辩论正常完成"
-          —— 用户以为做过一遍功课,其实什么都没打上(审计 pages-r2)。 */}
-      {state?.outcome === "failed" ? (
-        <Card className="border-warning/50">
-          <CardHead title="这一场没打成" note="所有阶段都失败了 —— 不是「没有分歧」,是根本没跑起来" />
-          <p className="text-[12.5px] leading-relaxed text-warning">
-            逐条原因见上面每一段。常见是模型接入出了问题(去「设置」看凭据是否就绪)。
+        {/* 开销提示：辩论比问答重得多，让用户在点下去之前就知道要花多久、调几次模型 */}
+        {!running && !status && (
+          <p className="mt-3 text-[11px] leading-relaxed text-muted-foreground/70">
+            ⏱ {rounds === 2
+              ? "两轮约 3 分钟 · 5 次模型调用 · 约 6 万字进上下文"
+              : "一轮约 100 秒 · 3 次模型调用 · 约 3.5 万字进上下文"}
+            （每个角色都会带上完整底稿）。其中拉底稿约 35 秒、走公开数据接口，不消耗 token。
+            省额度可用「订阅接入」的本机 CLI，或选中档模型——数据已备齐，模型只做组织和表达。
           </p>
-        </Card>
-      ) : null}
+        )}
 
-      {state?.done && state.outcome !== "failed" ? (
-        <Card>
-          <CardHead
-            title="留下来"
-            note={
-              state.outcome === "completed_with_errors"
-                ? "⚠️ 有环节没打上(见上面标红的那几段)—— 存下来的是不完整的一场"
-                : "辩论只在内存里,关掉就没了 —— 要留就存进研究记录"
-            }
-          />
-          <button
-            type="button"
-            disabled={saved}
-            onClick={() => void saveNote()}
-            className="cursor-pointer rounded-lg border border-primary/45 bg-primary/10 px-3 py-1.5 text-[12px] font-medium text-primary transition-colors hover:bg-primary/20 disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            {saved ? "已存入研究记录" : "存为研究记录"}
-          </button>
-        </Card>
-      ) : null}
+        {status && <p className="mt-3 text-xs text-muted-foreground">{status}</p>}
+        {error && (
+          <p className="mt-3 flex items-start gap-1.5 text-xs text-destructive">
+            <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" /> {error}
+          </p>
+        )}
+
+        {progress.length > 0 && (
+          <div className="mt-4 border-t border-border/40 pt-3">
+            <p className="mb-2 text-[11px] text-muted-foreground">{DOSSIER_HINT}</p>
+            <div className="flex flex-wrap gap-x-4 gap-y-1.5">
+              {progress.map((p) => (
+                <span key={p.title} className="inline-flex items-center gap-1 text-[11px] text-muted-foreground">
+                  {p.ok
+                    ? <CheckCircle2 className="h-3 w-3 text-primary/70" />
+                    : <Circle className="h-3 w-3 text-muted-foreground/40" />}
+                  {p.title}
+                </span>
+              ))}
+            </div>
+            {missing.length > 0 && (
+              <p className="mt-2 text-[11px] text-warning">
+                未取到：{missing.join("、")}（双方立论时不得臆测这部分）
+              </p>
+            )}
+          </div>
+        )}
+      </GlassCard>
+
+      <div className="mt-4 space-y-4">
+        {stages.map((s) => (
+          <div key={s.stage} className={`rounded-xl border p-4 ${STAGE_TONE[s.stage]}`}>
+            <div className="mb-2 flex items-center gap-2">
+              <Swords className="h-4 w-4 text-muted-foreground" />
+              <span className="text-sm font-semibold">{s.label}</span>
+              {!s.done && <span className="animate-pulse text-[11px] text-muted-foreground">生成中…</span>}
+            </div>
+            <div className="prose prose-sm dark:prose-invert max-w-none text-foreground prose-table:text-sm">
+              <ReactMarkdown remarkPlugins={[remarkGfm]}>{s.content || "…"}</ReactMarkdown>
+            </div>
+          </div>
+        ))}
+      </div>
+
+      {stages.length === 0 && !running && (
+        <GlassCard className="mt-4">
+          <div className="flex flex-col items-center gap-2 py-10 text-center text-sm text-muted-foreground">
+            <Swords className="h-8 w-8 text-muted-foreground/40" />
+            输入一个代码开始。后端会先拉一份客观事实底稿，再让多方 / 空方基于同一份数据互相质疑。
+            <span className="text-xs">产出的是「分歧点 + 验证清单」，不是买卖建议。</span>
+          </div>
+        </GlassCard>
+      )}
+
+      <Disclaimer />
     </div>
   );
 }

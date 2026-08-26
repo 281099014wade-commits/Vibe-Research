@@ -30,6 +30,9 @@ function apiToken(): string {
 
 export default defineConfig({
   plugins: [react()],
+  // 🔴 `@` 指向**垂类包**而不是 src:上游 UI 里写的是 `@/components`、`@/lib`、`@/data`,
+  //    我们把它整套放进 verticals/finance/,别名这么指,上游代码一行都不用改。
+  resolve: { alias: { "@": path.resolve(here, "src/verticals/finance") } },
   server: {
     // 🔴 必须写死 IPv4:默认 localhost 在本机解析成 [::1],而后端绑的是 127.0.0.1,对不上会 502
     host: "127.0.0.1",

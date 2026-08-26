@@ -20,7 +20,7 @@ import { FINANCE_STAGE_VALIDATORS } from "./stage_validators.ts";
 import { CHOKE_FILE_REL, loadChokeTable, scanChokepoints, writeChokeFile } from "./chokepoint.ts";
 import { buildGateRewritePrompt, buildStagePrompt } from "./stages.ts";
 import { INDUSTRY_FILE_REL, applyIndustryGate, detectIndustryTags, loadIndustryTags, writeIndustryFile } from "./industry.ts";
-import { appendThermoLedger, applyThermometerHistory, thermoDir, thermoLedgerOverview } from "./thermo_history.ts";
+import { appendThermoLedger, applyThermometerHistory, readThermoLedger, thermoDir, thermoLedgerOverview, thermoLedgerPath } from "./thermo_history.ts";
 
 /** 阶段顺序:摸清公司 → 财务 → 一致预期 → 估值 → 风险 → 成文 */
 export const FINANCE_STAGES = ["profile", "financials", "estimates", "valuation", "risk", "report"] as const;
@@ -189,6 +189,11 @@ export const FINANCE_PLUGIN: Plugin = {
   afterRun: (ctx) => {
     const t = appendThermoLedger(ctx.cfg as never, ctx.ledger as never, ctx.log);
     ctx.record("thermo_archived", { endpoints: t.endpoints, appended: t.appended, skipped: t.skipped.length, corrupt_moved: t.corrupt_moved.length });
+  },
+  // 产业温度计的历史序列。⚠️ 序列只在**完整研究运行**时追加,手动点看板不写 —— 稀疏是正常的
+  seriesFor: (dataRoot, endpoint) => {
+    const r = readThermoLedger(thermoLedgerPath({ dataRoot }, endpoint));
+    return { observations: r.obs, exists: r.exists, unreadable: r.unreadable, dropped: r.dropped };
   },
   doctorChecks: ({ dataRoot }) => {
     const rows = thermoLedgerOverview({ dataRoot });

@@ -15,7 +15,7 @@ import path from "node:path";
 
 import crypto from "node:crypto";
 
-import { IMPORT_MAX_TOTAL_BYTES, ServiceError, chatSend, fetchEndpoint, ingestFiles, debateAdvance, debateStart, ledgerKinds, ledgerLabels, ledgerList, productInfo, ledgerRemove, ledgerSnapshot, ledgerUpsert, pageQuery, getEvidence, getReport, knowledgeRecall, listEndpoints, listRuns, readRunFile, redact, researchStatus, safePath, serviceContext, startResearch, type ServiceContext } from "./service.ts";
+import { IMPORT_MAX_TOTAL_BYTES, ServiceError, chatSend, fetchEndpoint, ingestFiles, debateAdvance, debateStart, ledgerKinds, ledgerLabels, ledgerList, productInfo, ledgerRemove, ledgerSnapshot, ledgerUpsert, pageQuery, getEvidence, getReport, knowledgeRecall, listEndpoints, listRuns, readRunFile, redact, researchStatus, safePath, serviceContext, startResearch, thermoSeries, type ServiceContext } from "./service.ts";
 
 
 // **composition root**:插件在入口注册,Core 模块一律不 import 它
@@ -177,6 +177,12 @@ export function createApiServer(ctx: ServiceContext, opts: { token: string; cook
         if (parts[2] === "viewer") { const t = readRunFile(ctx, id, "viewer.html"); return t === null ? send(res, 404, { error: "no viewer" }) : send(res, 200, t, "text/html; charset=utf-8"); }
       }
       if (req.method === "GET" && parts[0] === "knowledge" && parts[1] && parts[2]) return send(res, 200, knowledgeRecall(ctx, parts[2], parts[1]));
+      // 端点观测序列(只读)。⚠️ 端点 id 会被拼进文件路径 —— service 层用**注册表白名单**校验,
+      //    不做路径清洗(清洗规则总有想不到的编码形式,白名单没有想不到的情形)
+      if (req.method === "GET" && parts[0] === "series" && parts[1] && parts.length === 2) {
+        return send(res, 200, thermoSeries(ctx, decodeURIComponent(parts[1])));
+      }
+
       // ---- 用户自有台账 ----
       // 🔴 写操作一律用 POST(含删除),不用 DELETE:crossSiteReject 的"必须 application/json"
       //    这条只覆盖 POST —— 换成 DELETE 就绕过了那道无预检防线,而 cookie 白名单又只放行只读 GET。

@@ -769,6 +769,27 @@ export function ledgerList(ctx: ServiceContext, kind?: string): Record<string, L
  *    反过来也可能出现 issue 指向一个响应里根本不存在的 id。
  *    **同一个响应里的两半必须来自同一次读取。**
  */
+/**
+ * 温度计历史序列(只读)。
+ *
+ * 🔴 端点 id 只接受**注册表里真实存在**的那些 —— 它会被拼进文件路径,
+ *    直接拿用户给的字符串去拼路径就是目录穿越。用白名单比做路径清洗可靠:
+ *    清洗规则总有想不到的编码形式,而"不在注册表里就拒绝"没有想不到的情形。
+ * ⚠️ 序列**只在完整研究运行时才追加**。手动点看板不写序列 ⇒ 观测很稀疏是正常的,
+ *    不是坏了。给出 `observations` 的真实条数,让界面自己说清楚。
+ */
+export function thermoSeries(ctx: ServiceContext, endpoint: string): {
+  endpoint: string; observations: unknown[]; exists: boolean; unreadable: boolean; dropped: number;
+} {
+  const known = listEndpoints(ctx, { for_ui: false }).some((e) => e.id === endpoint);
+  if (!known) throw new ServiceError("unknown_endpoint", `未知端点:${endpoint}`);
+  const read = currentPlugin().seriesFor;
+  // 垂类没有序列这回事 ⇒ 明说"这个垂类不提供",不要返回空数组冒充"没有观测"
+  if (!read) throw new ServiceError("no_series", "当前垂类不提供观测序列");
+  const r = read(ctx.dataRoot, endpoint);
+  return { endpoint, observations: r.observations, exists: r.exists, unreadable: r.unreadable, dropped: r.dropped };
+}
+
 export function ledgerSnapshot(ctx: ServiceContext): {
   records: Record<string, LedgerRecord[]>;
   issues: Record<string, LedgerIssue[]>;
