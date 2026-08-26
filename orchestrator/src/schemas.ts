@@ -4,6 +4,7 @@
  */
 import AjvModule, { type ValidateFunction } from "ajv";
 
+import { applyCoreFormats } from "./formats.ts";
 import { GAP_REASON_CODES, stages, type Stage } from "./config.ts";
 import { currentPlugin } from "./plugin.ts";
 
@@ -17,7 +18,9 @@ import { currentPlugin } from "./plugin.ts";
 // Node ESM 导入 CJS 包:默认导入是 module.exports(ajv 同时挂了 .default = Ajv 类);类型取 ajv 的 default 导出
 type AjvCtor = (typeof import("ajv"))["default"];
 const Ajv: AjvCtor = (AjvModule as unknown as { default?: AjvCtor }).default ?? (AjvModule as unknown as AjvCtor);
-const ajv = new Ajv({ allErrors: true, strict: false });
+// 🔴 运行期这份 ajv 也要装上 Core 的 format:注册期认了、运行期不认,等于"注册时通过、跑起来不校验"
+//    —— 两处口径不同,而不一致的那一半永远是静默的那一半。
+const ajv = applyCoreFormats(new Ajv({ allErrors: true, strict: false }));
 
 const ISO_TS = "^\\d{4}-\\d{2}-\\d{2}[T ]\\d{2}:\\d{2}(:\\d{2})?([.+\\-Z].*)?$";
 const DATE = "^\\d{4}-\\d{2}-\\d{2}$";

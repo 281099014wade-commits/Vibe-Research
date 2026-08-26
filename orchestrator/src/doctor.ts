@@ -142,7 +142,41 @@ export function scanSecrets(repoRoot: string, env: NodeJS.ProcessEnv): { hits: {
   return { hits, scanned: files.length, truncated };
 }
 
-export function runDoctor(opts: { repoRoot?: string; env?: NodeJS.ProcessEnv; exec?: Exec; net?: boolean; python?: string; writeReport?: boolean } = {}): DoctorResult {
+
+/** 探测这几个取数主机是否被代理接管(解析到保留网段) */
+const PROXY_PROBE_HOSTS = ["www.swsresearch.com", "push2delay.eastmoney.com", "qt.gtimg.cn"];
+
+/**
+ * 域名是否被解析到「不可能是公网服务器」的保留网段 —— fake-IP 代理的典型特征。
+ * 198.18.0.0/15 是 RFC 2544 基准测试段(Clash 默认用它);其余按 RFC 1918 / 环回 / 链路本地判。
+ * ⚠️ 只用**同步**的 DNS 缓存查询,拿不到就当没检测到 —— doctor 不该因为一次 DNS 卡住而卡住。
+ */
+function probeFakeIp(hosts: readonly string[]): string[] {
+  const hit: string[] = [];
+  for (const h of hosts) {
+    let ips: string[] = [];
+    try {
+      // lookup 是异步 API;这里用 spawnSync 调系统解析器,避免把 runDoctor 变成依赖网络的慢函数
+      const r = spawnSync("dscacheutil", ["-q", "host", "-a", "name", h], { encoding: "utf8", timeout: 3_000 });
+      ips = [...(r.stdout || "").matchAll(/ip_address:\s*([0-9.]+)/g)].map((m) => m[1] as string);
+    } catch { /* 解析不了就跳过这个主机 */ }
+    if (ips.some(isReservedIp)) hit.push(h);
+  }
+  return hit;
+}
+
+function isReservedIp(ip: string): boolean {
+  const p = ip.split(".").map(Number);
+  if (p.length !== 4 || p.some((n) => !Number.isInteger(n) || n < 0 || n > 255)) return false;
+  const [a, b] = p as [number, number, number, number];
+  if (a === 10 || a === 127) return true;
+  if (a === 172 && b >= 16 && b <= 31) return true;
+  if (a === 192 && b === 168) return true;
+  if (a === 169 && b === 254) return true;
+  return a === 198 && (b === 18 || b === 19); // RFC 2544:fake-IP 代理最常用
+}
+
+export async function runDoctor(opts: { repoRoot?: string; env?: NodeJS.ProcessEnv; exec?: Exec; net?: boolean; python?: string; writeReport?: boolean } = {}): Promise<DoctorResult> {
   const repoRoot = path.resolve(opts.repoRoot ?? repoRootFromHere());
   const env = opts.env ?? process.env;
   const exec = opts.exec ?? defaultExec;
@@ -303,6 +337,32 @@ export function runDoctor(opts: { repoRoot?: string; env?: NodeJS.ProcessEnv; ex
   const hits = scan.hits;
   add({ id: "secrets", title: "密钥扫描(产品文件)", status: hits.length ? "fail" : scan.truncated ? "warn" : "ok", detail: (hits.length ? hits.slice(0, 5).map((h) => `${h.file}:${h.line} ${h.what}`).join(";") + (hits.length > 5 ? ` …共 ${hits.length}` : "") : `扫描 ${scan.scanned} 个文件,未发现 PEM / AWS / GitHub / Slack / JWT / sk-… / Bearer / 字面赋值 / 环境密钥值(测试目录只查高置信形态;.local 与 node_modules 不扫)`) + (scan.truncated ? `;文件数超过 ${SCAN_MAX_FILES},已截断未全扫` : ""), fix: hits.length ? "把密钥移到环境变量;轮换已泄露的密钥" : scan.truncated ? "仓库过大,缩小范围后再扫或用专门工具" : undefined });
 
+  // 13.5 代理拦截检测
+  // 🔴 为什么值得单开一项:国内用户装代理是常态,而**代理是取数失败的头号根因**,
+  //    症状却是五花八门的 TLS / 超时 / 空响应 —— 用户根本猜不到是代理。
+  //    实测本机:所有取数主机都解析到 198.18.x.x(RFC 2544 基准段 = Clash 这类的 fake-IP),
+  //    某个域名 50% 概率握手失败,而错误消息只会建议"关掉证书校验" —— 那是拿安全换环境问题。
+  //    ⇒ 这里只**如实报告**,不替用户决定关不关代理(很多人必须挂着才能上网)。
+  {
+    const proxyVars = ["HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy", "ALL_PROXY", "all_proxy"]
+      .filter((k) => (env[k] ?? "").trim() !== "");
+    // fake-IP:代理把域名解析到保留网段,真实 IP 由代理内部持有
+    const fake = probeFakeIp(PROXY_PROBE_HOSTS);
+    const on = proxyVars.length > 0 || fake.length > 0;
+    add({
+      // ⚠️ 有代理**不算故障**,所以是 ok 不是 warn:国内用户常年挂代理、很多是必须挂,
+      //    永久黄字只会把 doctor 训练成"总有警告,忽略它"。这一项的价值是**取数出问题时的第一条线索**,
+      //    detail 写清楚就够了,不该抬高退出码。
+      id: "net_proxy", title: "代理拦截", status: "ok",
+      detail: on
+        ? `检测到本机流量可能经代理(${proxyVars.length ? `环境变量 ${proxyVars.join(" / ")}` : "无 *_proxy 变量"}` +
+          `${fake.length ? `;${fake.join("、")} 解析到保留网段 fake-IP` : ""})。` +
+          "取数失败(TLS 校验失败 / 超时 / 空响应)时**先查这里**,不要直接关掉证书校验。"
+        : "未发现代理迹象(无 *_proxy 变量;探测主机解析到公网地址)",
+      fix: on ? "取数异常时先临时关代理复测;确认是代理规则问题就改规则,别用 VRA_ALLOW_INSECURE_TLS 绕" : undefined,
+    });
+  }
+
   // 14. api.token 权限
   const tok = path.join(dataRoot, "api.token");
   if (fs.existsSync(tok)) { const mode = fs.statSync(tok).mode & 0o777; add({ id: "api_token", title: ".local/api.token 权限", status: (mode & 0o077) ? "warn" : "ok", detail: `mode ${mode.toString(8)}`, fix: (mode & 0o077) ? `chmod 600 ${tok}` : undefined }); }
@@ -315,7 +375,7 @@ export function runDoctor(opts: { repoRoot?: string; env?: NodeJS.ProcessEnv; ex
     try {
       const ctx = serviceContext({ repoRoot, python, env });
       // 用注册表里的零鉴权行情端点 tx_quote(腾讯)探一次;legacy 脚本端点不经 fetch_endpoint.py,不能用在这里
-      const r = fetchEndpoint(ctx, { endpoint: NET_PROBE_ENDPOINT, symbol: "300308", session: "doctor", timeout_ms: 60_000 });
+      const r = await fetchEndpoint(ctx, { endpoint: NET_PROBE_ENDPOINT, symbol: "300308", session: "doctor", timeout_ms: 60_000 });
       const st = String(r.envelope.status ?? "?");
       const err = Array.isArray(r.envelope.errors) && r.envelope.errors.length ? String((r.envelope.errors[0] as { message?: string })?.message ?? "").slice(0, 120) : "";
       add({ id: "net", title: "数据源连通", status: st === "ok" || st === "partial" ? "ok" : "warn", detail: `${NET_PROBE_ENDPOINT} 300308 → ${st}(${Math.round(r.duration_ms / 1000)}s${err ? `;${err}` : ""};结果只反映此刻网络与源状态)`, fix: st === "ok" || st === "partial" ? undefined : "检查网络 / 代理;python datasources/health.py 看全量" });
@@ -350,9 +410,11 @@ export function formatDoctor(r: DoctorResult): string {
 if (process.argv[1] && (process.argv[1].endsWith("/doctor.ts") || process.argv[1].endsWith("\\doctor.ts"))) {
   const a = parseArgs(process.argv.slice(2));
   const str = (v: string | boolean | undefined) => (typeof v === "string" ? v : undefined);
+  await (async () => {
   try {
-    const r = runDoctor({ net: a.net === true, python: str(a.python) });
+    const r = await runDoctor({ net: a.net === true, python: str(a.python) });
     console.log(a.json === true ? JSON.stringify(r, null, 2) : formatDoctor(r));
     process.exit(r.exit_code);
   } catch (e) { console.error(`[doctor] ${e instanceof Error ? e.message : String(e)}`); process.exit(3); }
+  })();
 }

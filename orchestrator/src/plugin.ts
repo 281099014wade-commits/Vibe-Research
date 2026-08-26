@@ -41,6 +41,7 @@
  */
 import AjvModule from "ajv";
 
+import { applyCoreFormats, assertKnownFormats } from "./formats.ts";
 import { currentLexicon, resetLexicon, setLexicon, type Lexicon } from "./number_fidelity.ts";
 
 /** 每阶段的取数脚本:required 全失败 → 阶段不完整;optional 缺失只记 gap */
@@ -255,14 +256,41 @@ export interface Plugin {
     readonly maxFacts: number;
     readonly sections: readonly ArchiveSection[];
   };
+  /**
+   * **用户自有台账**的记录种类(可选 —— 不是每个垂类都需要台账)。
+   *
+   * Core 只提供存储、校验与增删改查(`ledger.ts`);**种类叫什么、每种有哪些字段全在这里声明**。
+   * 换个垂类换一套种类,Core 一行不用改。
+   *
+   * ⚠️ 与研究产物是**两回事**:运行产物是取来的事实(带 raw_ref、可复算),
+   * 台账是用户自己写下的东西 —— 它不进证据账本,也不参与数字绑定。
+   */
+  readonly ledger?: {
+    /** 种类名 → 定义。种类名会被拼进文件路径,注册期按安全路径段校验 */
+    readonly kinds: Readonly<Record<string, LedgerKindDef>>;
+  };
   /** 数字判定用的词表(见 `number_fidelity.ts` 的 `Lexicon`) */
   readonly lexicon: Lexicon;
 }
+
+/** 台账里一个记录种类的定义(字段部分;`id`/`kind`/`created_at`/`updated_at` 由 Core 拥有) */
+export interface LedgerKindDef {
+  /** 显示名(界面用);Core 不解释它 */
+  readonly label: string;
+  /** 字段:JSON Schema 的 properties 片段 */
+  readonly properties: Readonly<Record<string, unknown>>;
+  /** 其中哪些必填(必须是 properties 的子集) */
+  readonly required: readonly string[];
+}
+
+/** Core 拥有的信封键 —— 垂类字段不许与它们重名(注册期校验) */
+export const LEDGER_ENVELOPE_KEYS = ["id", "kind", "created_at", "updated_at"] as const;
 
 // ---------- 形状:交给 ajv ----------
 
 const AjvCtor = ((AjvModule as unknown as { default?: unknown }).default ?? AjvModule) as new (o: object) => {
   compile: (s: object) => ((d: unknown) => boolean) & { errors?: { instancePath?: string; message?: string }[] | null };
+  addFormat: (name: string, def: { type: "string"; validate: (s: string) => boolean }) => unknown;
 };
 // `discriminator: true` 让区块的判别式 union 报出精确错误
 // (实测:缺参数 → "must have required property 'stage'";未知 kind → "value of tag \"kind\" must be in oneOf")
@@ -306,6 +334,27 @@ const ARCHIVE_BLOCK = {
     blockVariant("gaps"),
     blockVariant("knowledgeConflicts"),
   ],
+};
+
+/**
+ * 台账种类名会被拼进 `<dataRoot>/ledger/<kind>.json` —— 与阶段名同理,必须是安全路径段。
+ * 比 STAGE_NAME 更严(只许小写 + 下划线):它同时是 HTTP 路径段与前端的键,大小写变体只会制造歧义。
+ */
+const RISKY_KEYS = new Set(["__proto__", "constructor", "prototype"]);
+const LEDGER_KIND_NAME = { type: "string", pattern: "^[a-z][a-z0-9_]{0,31}$" };
+const LEDGER = {
+  type: "object", additionalProperties: false, required: ["kinds"],
+  properties: {
+    kinds: {
+      type: "object",
+      // 键要过 LEDGER_KIND_NAME;ajv 的 propertyNames 就是干这个的
+      propertyNames: LEDGER_KIND_NAME,
+      additionalProperties: {
+        type: "object", additionalProperties: false, required: ["label", "properties", "required"],
+        properties: { label: NONBLANK, properties: { type: "object" }, required: strArray({ uniqueItems: true }) },
+      },
+    },
+  },
 };
 
 /** 只覆盖**声明式**字段;函数插槽(quoteDecision / baselinePeriod / lexicon)另行手查 */
@@ -354,6 +403,8 @@ export const PLUGIN_SCHEMA = {
     topicSections: mapOf(NONBLANK),
     // ⚠️ 允许为空:垂类可以没有预警字段
     alertFields: strArray(),
+    // 可选:不声明台账的垂类完全合法(第二垂类验收装置里就没有)
+    ledger: LEDGER,
     archive: {
       type: "object", additionalProperties: false, required: ["validDays", "maxFacts", "sections"],
       properties: {
@@ -534,6 +585,7 @@ interface Decl {
   topicSections: Record<string, string>;
   alertFields: string[];
   selfTestCalc: { fn: string; args: Record<string, unknown>; expect: number } | null;
+  ledger?: { kinds: Record<string, { label: string; properties: Record<string, unknown>; required: string[] }> };
   archive: Plugin["archive"];
 }
 
@@ -569,8 +621,11 @@ function checkRelations(d: Decl): void {
     if (JSON.stringify(ext.properties).includes('"$ref"')) {
       throw new Error(`Plugin.stageSchemas.${st} 不支持 $ref —— 注册期无法解析跨核心骨架的引用,请把片段展开写全`);
     }
+    // 🔴 与 ledger 那处**同一根因**:未知 format 被 ajv 静默忽略。上一轮只改了 ledger 一处,
+    //    这个兄弟编译点漏了 ⇒ 阶段产物里写 `format: "date"` 等于没写、拼错成 "data" 也照样注册成功。
+    assertKnownFormats(`Plugin.stageSchemas.${st}`, ext.properties);
     try {
-      new AjvCtor({ allErrors: true, strict: false }).compile({ type: "object", properties: ext.properties, required: [...ext.required] });
+      applyCoreFormats(new AjvCtor({ allErrors: true, strict: false })).compile({ type: "object", properties: ext.properties, required: [...ext.required] });
     } catch (e) {
       throw new Error(`Plugin.stageSchemas.${st} 不是合法 JSON Schema(注册期编译失败,否则会拖到首次运行才炸):${e instanceof Error ? e.message : String(e)}`);
     }
@@ -631,6 +686,33 @@ function checkRelations(d: Decl): void {
   for (const k of Object.keys(d.topicSections)) {
     if (!declaredTopics.has(k)) throw new Error(`Plugin.topicSections 里的议题 ${k} 没有出现在任何阶段的 extraTopics 里(拼错了?)`);
   }
+  // 台账:与 stageSchemas 同样的三条 —— required ⊆ properties、片段真能编译、不许 $ref。
+  // 🔴 少了"注册期编译"这一条,一个写错的字段 schema 会拖到**用户第一次点保存**才炸,
+  //    而那时他刚写完一条记录 —— 最糟的时机。
+  for (const [kind, def] of Object.entries(d.ledger?.kinds ?? {})) {
+    // 🔴 pattern 挡不住 `constructor` / `prototype`(它们本身就是小写字母)。
+    //    作为文件名它们无害,但作为**对象键**会和原型打架:普通 `{}` 上 `obj["constructor"]`
+    //    在键不存在时返回构造函数(truthy),任何用"取值判真"当守卫的地方都会被它绕过。
+    if (RISKY_KEYS.has(kind)) throw new Error(`Plugin.ledger.kinds 不能用 ${kind} 当种类名(与对象原型成员重名)`);
+    for (const k of LEDGER_ENVELOPE_KEYS) {
+      if (k in def.properties) throw new Error(`Plugin.ledger.kinds.${kind} 的字段 ${k} 与 Core 的信封字段重名(Core 拥有 ${LEDGER_ENVELOPE_KEYS.join(" / ")})`);
+    }
+    for (const k of def.required) {
+      if (!(k in def.properties)) throw new Error(`Plugin.ledger.kinds.${kind}.required 里的 ${k} 没有对应的 properties 定义`);
+    }
+    if (JSON.stringify(def.properties).includes('"$ref"')) {
+      throw new Error(`Plugin.ledger.kinds.${kind} 不支持 $ref —— 请把片段展开写全`);
+    }
+    // 🔴 未知 format 会被 ajv **静默忽略** —— 字段上写着 `format: "xxx"`,校验却什么都没做。
+    //    注册期认不出来就当场拒,别让"写了等于没写"混过去。
+    assertKnownFormats(`Plugin.ledger.kinds.${kind}`, def.properties);
+    try {
+      // 编译时装上 Core 的 format,否则这里的"能编译"证明不了运行时那份能校验(两处口径不同)
+      applyCoreFormats(new AjvCtor({ allErrors: true, strict: false })).compile({ type: "object", properties: def.properties, required: [...def.required] });
+    } catch (e) {
+      throw new Error(`Plugin.ledger.kinds.${kind} 不是合法 JSON Schema(注册期编译失败,否则会拖到用户第一次保存才炸):${e instanceof Error ? e.message : String(e)}`);
+    }
+  }
 }
 
 /**
@@ -683,6 +765,7 @@ function register(plugin: Plugin): void {
   // 🔴 `stageScripts` 也只读一次:多余字段检查与 decl 投影**共用这一份**。
   //    我一度让检查再 `tableOnce(plugin.stageScripts)` 一遍 —— 同一个根因第三次犯(Codex ajv-r2)。
   const rawScripts = tableOnce("stageScripts", plugin.stageScripts);
+  const rawLedger = plugin.ledger;
   const decl = {
     id: plugin.id,
     stages: cp(plugin.stages),
@@ -710,6 +793,9 @@ function register(plugin: Plugin): void {
     alertFields: cp(plugin.alertFields),
     // null(垂类没有确定性计算库)要原样传给 ajv —— 拆成 { fn: undefined } 会被判成"缺字段的对象"
     selfTestCalc: st == null ? null : { fn: st.fn, args: st.args, expect: st.expect },
+    // 台账种类表:**只读一次**,而且只在真的声明了才放进 decl ——
+    // ajv 在 additionalProperties:false 下会把"键存在但值是 undefined"当成一个类型不对的字段。
+    ...(rawLedger === undefined ? {} : { ledger: deepFrozen("ledger", rawLedger) }),
     // 档案模板整棵**深拷贝一次**:它是纯声明数据,后面既要校验又要进快照
     archive: deepFrozen("archive", plugin.archive),
   };
@@ -718,10 +804,16 @@ function register(plugin: Plugin): void {
     if (typeof fn !== "function") throw new Error(`Plugin.${k} 必须是函数`);
   }
   // ⓪ 原对象的键集:ajv 只看得到投影后的 `decl`,多余字段得在这里比
-  assertNoExtraKeys("", plugin, [...(PLUGIN_SCHEMA.required as readonly string[]), "quoteDecision", "baselinePeriod", "marketRegion", "buildStagePrompt", "buildRewritePrompt", "lexicon", "afterFetch", "beforeFetch", "transformFetch", "afterRun", "doctorChecks"]);
+  assertNoExtraKeys("", plugin, [...(PLUGIN_SCHEMA.required as readonly string[]), "quoteDecision", "baselinePeriod", "marketRegion", "buildStagePrompt", "buildRewritePrompt", "lexicon", "afterFetch", "beforeFetch", "transformFetch", "afterRun", "doctorChecks", "ledger"]);
   assertNoExtraKeys("evidence", ev, ["markets", "adjustments", "marketWideCodes", "marketWideOnlyCodes"]);
   assertNoExtraKeys("selfTestCalc", st, ["fn", "args", "expect"]);
   assertNoExtraKeys("archive", decl.archive, ["validDays", "maxFacts", "sections"]);
+  if (rawLedger !== undefined) {
+    assertNoExtraKeys("ledger", rawLedger, ["kinds"]);
+    for (const [k, v] of Object.entries((decl as { ledger?: { kinds: Record<string, unknown> } }).ledger?.kinds ?? {})) {
+      assertNoExtraKeys(`ledger.kinds.${k}`, v, ["label", "properties", "required"]);
+    }
+  }
   for (const [k, v] of Object.entries(rawScripts)) {
     assertNoExtraKeys(`stageScripts.${k}`, v, ["required", "optional"]);
   }
@@ -777,6 +869,8 @@ function register(plugin: Plugin): void {
     topicSections: Object.freeze({ ...d.topicSections }),
     alertFields: Object.freeze([...d.alertFields]),
     selfTestCalc: d.selfTestCalc ? Object.freeze({ fn: d.selfTestCalc.fn, args: args as Record<string, unknown>, expect: d.selfTestCalc.expect }) : null,
+    // 摄入时已 deepFrozen;没声明就整个不带这个键(消费方一律走 `?.`)
+    ...(d.ledger === undefined ? {} : { ledger: d.ledger }),
     archive: d.archive,          // 摄入时已 deepFrozen
   };
 

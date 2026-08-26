@@ -20,6 +20,16 @@ function text(obj: unknown): { content: { type: "text"; text: string }[] } {
   return { content: [{ type: "text", text: typeof obj === "string" ? obj : JSON.stringify(obj, null, 1) }] };
 }
 
+/** 异步版 wrap:取数已改成不阻塞事件循环的 spawn,这里必须 await(同一套错误脱敏) */
+async function wrapAsync<T>(fn: () => Promise<T>): Promise<{ content: { type: "text"; text: string }[]; isError?: boolean }> {
+  try { return text(await fn()); }
+  catch (e) {
+    if (e instanceof ServiceError) return { ...text({ error: e.code, message: redact(e.message, 200) }), isError: true };
+    console.error(`[mcp] internal error: ${redact(e instanceof Error ? e.stack ?? e.message : String(e), 600)}`);
+    return { ...text({ error: "internal" }), isError: true };
+  }
+}
+
 function wrap<T>(fn: () => T): { content: { type: "text"; text: string }[]; isError?: boolean } {
   try { return text(fn()); }
   catch (e) {
@@ -37,7 +47,7 @@ export function buildServer(ctx: ServiceContext): McpServer {
     (a) => wrap(() => listEndpoints(ctx, a)));
   server.registerTool("fetch_endpoint", { title: "取数", description: "按端点 id 取数(由取数器子进程执行,原始响应落 .local/mcp/<session>/raw/),返回契约信封:status / evidence(每条带单位 · 币种 · 期间 · 来源 · raw_ref)/ extra / errors。不做任何计算。",
     inputSchema: { endpoint: z.string(), symbol: z.string().optional(), args: z.record(z.string(), z.unknown()).optional(), session: z.string().optional() } },
-    (a) => wrap(() => fetchEndpoint(ctx, a)));
+    (a) => wrapAsync(() => fetchEndpoint(ctx, a)));
   server.registerTool("start_research", { title: "启动研究运行", description: "后台拉起六阶段研究(编排器执行取数 → agent 解释 → validator → gate),立即返回 run_id;用 research_status 轮询。", 
     inputSchema: { symbol: z.string(), market: z.string().optional(), stages: z.array(z.string()).optional(), endpoints: z.enum(["full", "core"]).optional(), knowledge: z.enum(["on", "off"]).optional(), run_id: z.string().optional(), overwrite: z.boolean().optional(), no_agent: z.boolean().optional() } },
     (a) => wrap(() => startResearch(ctx, a)));

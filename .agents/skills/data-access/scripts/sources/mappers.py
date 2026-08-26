@@ -383,7 +383,11 @@ def em_hot_rank(result: list, ctx: dict) -> dict:
     if not result:
         return empty("东财人气榜为空")
     day = today_str()
-    evs = rows_fields(ctx, result, [("rank", "hot_rank", "名"), ("pct", "hot_rank_change_pct", "%"), ("price", "price", "元")], period_of=lambda r: day, key_of=lambda r: str(r.get("code")),
+    # 🔴 `pct` 来自 push2 的 f3 = **涨跌幅**,不是排名变化 —— 旧字段名叫"排名变化百分比",名不副实。
+    #    字段名会直接进证据、喂给 agent 写报告:**骗人的名字比缺数据更糟**,它不报错、只让人得出错的结论。
+    #    改叫 `change_pct`(与 tx_quote / 板块等同一量同名,口径统一);
+    #    **真正的排名变化 `rank_chg` 补成独立证据** —— 它原先只写在 note 里,取不出来用。
+    evs = rows_fields(ctx, result, [("rank", "hot_rank", "名"), ("pct", "change_pct", "%"), ("rank_chg", "hot_rank_chg", "名"), ("price", "price", "元")], period_of=lambda r: day, key_of=lambda r: str(r.get("code")),
                       note_of=lambda r: f"{r.get('code')} {r.get('name')} 排名变化 {r.get('rank_chg')}")
     return out(evs, extra={"top10": [(r.get("rank"), r.get("code"), r.get("name")) for r in result[:10]]})
 
@@ -405,7 +409,15 @@ def ths_hot_reason(result: list, ctx: dict) -> dict:
     evs = [ev(ctx, "strong_stock_count", len(result), "只", date, currency="n/a")]
     for r in result[:int(ctx["args"].get("limit", 150))]:
         code = str(r.get("code", ""))
-        note = f"{code} {r.get('name','')} 涨幅 {r.get('zhangfu')}% 换手 {r.get('huanshou')}% 成交额 {r.get('chengjiaoe')}"
+        # 🔴 缺的字段就不写进 note。原来是 f-string 直接插 `.get()`,拿不到时渲染成
+        #    "涨幅 None% 换手 None%" —— 这条 note 同时喂给 agent 和页面,
+        #    一个看着像真值的 None 比留白危险得多。
+        parts = [p for p in (code, str(r.get("name") or "")) if p]
+        for label, key, suffix in (("涨幅", "zhangfu", "%"), ("换手", "huanshou", "%"), ("成交额", "chengjiaoe", "")):
+            val = r.get(key)
+            if val is not None and str(val) != "":
+                parts.append(f"{label} {val}{suffix}")
+        note = " ".join(parts)
         if r.get("reason"):
             evs.append(ev(ctx, "strong_stock_reason", str(r["reason"])[:300], "text", date, currency="n/a", record_key=code, note=note))
         v = to_float(r.get("zhangfu"))
@@ -448,6 +460,7 @@ def ths_hot_list(result: list, ctx: dict) -> dict:
     if not result:
         return empty("同花顺热榜为空")
     day = today_str()
-    evs = rows_fields(ctx, result, [("rank", "ths_hot_rank", "名"), ("heat", "ths_hot_heat", "人气值"), ("pct", "hot_rank_change_pct", "%")], period_of=lambda r: day, key_of=lambda r: str(r.get("code")),
+    # 同上:`pct` 是 `rise_and_fall`(涨跌幅);`rank_chg` 才是排名变化,补成独立证据。
+    evs = rows_fields(ctx, result, [("rank", "ths_hot_rank", "名"), ("heat", "ths_hot_heat", "人气值"), ("pct", "change_pct", "%"), ("rank_chg", "hot_rank_chg", "名")], period_of=lambda r: day, key_of=lambda r: str(r.get("code")),
                       note_of=lambda r: f"{r.get('code')} {r.get('name')} 排名变化 {r.get('rank_chg')} 概念={','.join(map(str, r.get('concepts') or []))[:80]} {r.get('tag','')}")
     return out(evs, extra={"period": ctx["args"].get("period", "hour"), "top10": [(r.get("rank"), r.get("code"), r.get("name")) for r in result[:10]]})

@@ -348,3 +348,30 @@ test("archive:区块参数、阶段引用与 tail 由 schema + 关系检查一�
   assert.ok(currentPlugin().archive.sections.some((s) => s.tail), "金融包必须有 tail 章节");
   assert.throws(() => { (currentPlugin().archive.sections as unknown[]).push({} as never); }, /read only|frozen|extensible/i);
 });
+
+test("台账种类名:注册期必须挡住路径穿越与原型污染名(实测过 ajv propertyNames 真的生效)", () => {
+  // 🔴 这条是被 Codex 审计逼出来的:它说"白名单只证明字符串是插件对象的键,不证明是安全文件名"。
+  //    实测下来注册期确实挡住了,但**保证必须由代码钉死**,不能靠"另一处应该管住了"。
+  const bad = ["../../config", "..", "a/b", "a\\b", "__proto__", "constructor", "prototype", "A", "", "x".repeat(40), "a.b", "with space"];
+  for (const k of bad) {
+    resetPlugin();
+    assert.throws(
+      () => registerPlugin({ ...FINANCE_PLUGIN, ledger: { kinds: { [k]: { label: "x", properties: {}, required: [] } } } } as never),
+      `种类名 ${JSON.stringify(k)} 必须被拒`,
+    );
+  }
+  resetPlugin();
+  registerPlugin(FINANCE_PLUGIN);
+});
+
+test("🔴 stageSchemas 与 ledger 是**同一根因**的两个编译点:未知 format 两边都要拒", () => {
+  const st = FINANCE_PLUGIN.stages[0]!;
+  // ledger 那处上一轮已修;这次确认兄弟编译点没被漏下(漏一处 = 那一半静默不校验)
+  rejects(
+    plugin({ stageSchemas: { ...FINANCE_PLUGIN.stageSchemas, [st]: { properties: { d: { type: "string", format: "email" } }, required: [] } } }),
+    /不认识的 format/,
+  );
+  // 认识的照过 —— 不是把 format 一律关死
+  fresh(plugin({ stageSchemas: { ...FINANCE_PLUGIN.stageSchemas, [st]: { properties: { d: { type: "string", format: "date" } }, required: [] } } }));
+  fresh(FINANCE_PLUGIN);
+});

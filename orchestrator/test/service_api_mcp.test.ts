@@ -10,7 +10,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 
 import { createApiServer, resolveToken, isLoopbackHost } from "../src/api.ts";
-import { ServiceError, assertArgs, fetchEndpoint, getEvidence, getReport, knowledgeRecall, listEndpoints, listRuns, redact, researchEnv, researchStatus, safePath, startResearch, type ServiceContext } from "../src/service.ts";
+import { ServiceError, assertArgs, fetchEndpoint, ledgerList, ledgerSnapshot, ledgerUpsert, getEvidence, getReport, knowledgeRecall, listEndpoints, listRuns, redact, researchEnv, researchStatus, safePath, startResearch, type ServiceContext } from "../src/service.ts";
 import { writeJson } from "../src/fsutil.ts";
 import { detectPython } from "../src/init.ts";
 
@@ -49,13 +49,13 @@ json.dump(env, open(os.path.join(out,'fetch',ep+'.json'),'w')); print(json.dumps
 
 const noAbs = (v: unknown, ctx: ServiceContext) => { const s = JSON.stringify(v); assert.ok(!s.includes(ctx.dataRoot) && !s.includes(ctx.repoRoot) && !s.includes(os.tmpdir()), `返回值含绝对路径:${s.slice(0, 200)}`); };
 
-test("service:端点列表 / 取数(子进程 + 落 .local/mcp,只带 auth_env,stderr 脱敏,相对路径)/ 运行状态 / 报告 / 证据 / 列表 / 输入校验", () => {
+test("service:端点列表 / 取数(子进程 + 落 .local/mcp,只带 auth_env,stderr 脱敏,相对路径)/ 运行状态 / 报告 / 证据 / 列表 / 输入校验", async () => {
   const ctx = fakeCtx();
   const eps = listEndpoints(ctx, { market: "CN", q: "研报" });
   assert.ok(eps.length >= 1 && eps.every((e) => e.market.includes("CN")));
   process.env.IWENCAI_API_KEY = "iw-secret"; process.env.MY_SECRET_TOKEN = "leak-me"; process.env.VRA_SEC_CONTACT = "Name mail@x.com";
   try {
-    const r = fetchEndpoint(ctx, { endpoint: "em_reports", symbol: "300308", args: { max_pages: 1 }, session: "t1" });
+    const r = await fetchEndpoint(ctx, { endpoint: "em_reports", symbol: "300308", args: { max_pages: 1 }, session: "t1" });
     assert.equal(r.exit_code, 0);
     assert.equal((r.envelope as { status: string }).status, "ok");
     assert.equal(r.out_dir, "mcp/t1");
@@ -66,16 +66,16 @@ test("service:端点列表 / 取数(子进程 + 落 .local/mcp,只带 auth_env,s
     assert.equal(envs.OPENAI_API_KEY, null);
     assert.deepEqual((r.envelope as { extra: { args: unknown } }).extra.args, { max_pages: 1 });
     assert.ok(!r.stderr_tail.includes("abc123") && !r.stderr_tail.includes("SECRET"), r.stderr_tail);
-    const r2 = fetchEndpoint(ctx, { endpoint: "iwencai_search", args: { query: "x" }, session: "t2" });
+    const r2 = await fetchEndpoint(ctx, { endpoint: "iwencai_search", args: { query: "x" }, session: "t2" });
     assert.equal((r2.envelope as { extra: { envs: Record<string, string | null> } }).extra.envs.IWENCAI_API_KEY, "iw-secret", "只把该端点声明的 auth_env 传给取数器");
-    const r3 = fetchEndpoint(ctx, { endpoint: "sec_filings", symbol: "AAPL", session: "t3" });
+    const r3 = await fetchEndpoint(ctx, { endpoint: "sec_filings", symbol: "AAPL", session: "t3" });
     assert.equal((r3.envelope as { extra: { envs: Record<string, string | null> } }).extra.envs.VRA_SEC_CONTACT, "Name mail@x.com");
     assert.equal((r3.envelope as { extra: { envs: Record<string, string | null> } }).extra.envs.IWENCAI_API_KEY, null);
   } finally { delete process.env.IWENCAI_API_KEY; delete process.env.MY_SECRET_TOKEN; delete process.env.VRA_SEC_CONTACT; }
-  assert.throws(() => fetchEndpoint(ctx, { endpoint: "no_such" }), (e: unknown) => e instanceof ServiceError && e.code === "unknown_endpoint");
-  assert.throws(() => fetchEndpoint(ctx, { endpoint: "em_reports", symbol: "../x" }), (e: unknown) => e instanceof ServiceError && e.code === "bad_symbol");
-  assert.throws(() => fetchEndpoint(ctx, { endpoint: "em_reports" }), (e: unknown) => e instanceof ServiceError && e.code === "missing_symbol");
-  assert.throws(() => fetchEndpoint(ctx, { endpoint: "em_reports", symbol: "300308", session: "../evil" }), (e: unknown) => e instanceof ServiceError && e.code === "bad_session");
+  await assert.rejects(() => fetchEndpoint(ctx, { endpoint: "no_such" }), (e: unknown) => e instanceof ServiceError && e.code === "unknown_endpoint");
+  await assert.rejects(() => fetchEndpoint(ctx, { endpoint: "em_reports", symbol: "../x" }), (e: unknown) => e instanceof ServiceError && e.code === "bad_symbol");
+  await assert.rejects(() => fetchEndpoint(ctx, { endpoint: "em_reports" }), (e: unknown) => e instanceof ServiceError && e.code === "missing_symbol");
+  await assert.rejects(() => fetchEndpoint(ctx, { endpoint: "em_reports", symbol: "300308", session: "../evil" }), (e: unknown) => e instanceof ServiceError && e.code === "bad_session");
   // args 闭合校验
   const ep = { id: "em_reports", module: "eastmoney", function: "f", market: ["CN"], args: { max_pages: 2 } };
   assert.deepEqual(assertArgs(ep, { max_pages: 1, limit: 5 }), { max_pages: 1, limit: 5 });
@@ -99,7 +99,7 @@ test("service:端点列表 / 取数(子进程 + 落 .local/mcp,只带 auth_env,s
   assert.ok(!red.includes("abc") && !red.includes("def") && !red.includes("sig=1") && !red.includes("sk-1") && red.includes("***"), red);
 });
 
-test("service:符号链接穿越被拒(运行目录 / 产物文件 / session 目录)", () => {
+test("service:符号链接穿越被拒(运行目录 / 产物文件 / session 目录)", async () => {
   const ctx = fakeCtx();
   const outside = fs.mkdtempSync(path.join(os.tmpdir(), "vra-outside-"));
   fs.writeFileSync(path.join(outside, "report.md"), "OUTSIDE");
@@ -110,7 +110,7 @@ test("service:符号链接穿越被拒(运行目录 / 产物文件 / session 目
   assert.throws(() => getReport(ctx, "r1"), (e: unknown) => e instanceof ServiceError && e.code === "path_symlink");
   fs.mkdirSync(path.join(ctx.dataRoot, "mcp"), { recursive: true });
   fs.symlinkSync(outside, path.join(ctx.dataRoot, "mcp", "evil"));             // session 目录是链接
-  assert.throws(() => fetchEndpoint(ctx, { endpoint: "em_reports", symbol: "300308", session: "evil" }), (e: unknown) => e instanceof ServiceError && e.code === "path_symlink");
+  await assert.rejects(() => fetchEndpoint(ctx, { endpoint: "em_reports", symbol: "300308", session: "evil" }), (e: unknown) => e instanceof ServiceError && e.code === "path_symlink");
   assert.throws(() => safePath(ctx, "..", "x"), (e: unknown) => e instanceof ServiceError && e.code === "path_escape");
   assert.equal(safePath(ctx, "runs", "r1"), path.resolve(ctx.dataRoot, "runs", "r1"));
   // 最终文件是链接:日志 / manifest / api.token
@@ -130,7 +130,7 @@ test("service:符号链接穿越被拒(运行目录 / 产物文件 / session 目
   assert.equal(fs.readFileSync(path.join(outside, "tok"), "utf8"), "x".repeat(40), "数据区外 token 文件不得被覆盖");
 });
 
-test("service:startResearch 立即返回相对路径;子进程最小环境(researchEnv);参数校验", () => {
+test("service:startResearch 立即返回相对路径;子进程最小环境(researchEnv);参数校验", async () => {
   const ctx = fakeCtx();
   const r = startResearch(ctx, { symbol: "300308", market: "SZ", endpoints: "core", knowledge: "off", no_agent: true, run_id: "svc-test-1" });
   assert.equal(r.run_id, "svc-test-1");
@@ -266,4 +266,88 @@ test("MCP:stdio 起真实 server(SDK Client),tools/list 含 8 个工具,list_end
     const stText = (st.content as { text: string }[])[0].text;
     assert.equal(JSON.parse(stText).status, "complete"); assert.ok(!stText.includes(ctx.dataRoot));
   } finally { await client.close(); }
+});
+
+test("台账全量读取也要过 safePath —— 防线只在次要入口生效等于没有防线", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "vra-ledgersvc-"));
+  const outside = fs.mkdtempSync(path.join(os.tmpdir(), "vra-outside-"));
+  const ctx = { repoRoot: root, dataRoot: root, python: "python3", node: process.execPath, providerEnvKey: null } as ServiceContext;
+
+  // 先正常写一条,确保目录与文件存在
+  ledgerUpsert(ctx, { kind: "position", record: { symbol: "300308", shares: 1, cost: 1 } });
+  const f = path.join(root, "ledger", "position.json");
+  fs.writeFileSync(path.join(outside, "evil.json"), JSON.stringify({ schema_version: 1, kind: "position", records: [] }));
+  fs.rmSync(f);
+  fs.symlinkSync(path.join(outside, "evil.json"), f); // 数据区里被塞了指向区外的链接
+
+  // 单查会被挡 —— 这条原本就过
+  assert.throws(() => ledgerList(ctx, "position"), (e: unknown) => e instanceof ServiceError && e.code === "path_symlink");
+  // 🔴 全查是界面的**主入口**,原实现直接调 listAll,绕过了这道防线
+  assert.throws(() => ledgerList(ctx), (e: unknown) => e instanceof ServiceError && e.code === "path_symlink");
+});
+
+const svcCtx = (): ServiceContext => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "vra-svc-"));
+  return { repoRoot: root, dataRoot: root, python: "python3", node: process.execPath, providerEnvKey: null } as ServiceContext;
+};
+
+test("🔴 /ledger 的 records 与 issues 必须来自同一次读盘(分两次读会自相矛盾)", () => {
+  const ctx = svcCtx();
+  const rec = ledgerUpsert(ctx, { kind: "thesis", record: { title: "正常一条" } });
+  const snap = ledgerSnapshot(ctx);
+  assert.ok(snap.records.thesis?.some((r) => r.id === rec.id));
+  assert.deepEqual({ ...snap.issues }, {});
+
+  // 手改成不合契约的一条:同一次快照里,它既在 records 里、也在 issues 里 —— 两半对得上
+  const file = path.join(ctx.dataRoot, "ledger", "thesis.json");
+  const d = JSON.parse(fs.readFileSync(file, "utf8")) as { records: Record<string, unknown>[] };
+  d.records[0]!.title = 123; // title 应是字符串
+  fs.writeFileSync(file, JSON.stringify(d));
+  const bad = ledgerSnapshot(ctx);
+  assert.equal(bad.records.thesis?.length, 1, "坏记录仍然返回(不删不改)");
+  assert.equal(bad.issues.thesis?.length, 1, "同一份响应里必须同时报出问题");
+  assert.equal(bad.issues.thesis?.[0]!.id, rec.id, "issue 指的就是响应里那条");
+});
+
+test("请求体上限按字节算,不按字符算(一个中文 3 字节却只算 1 个字符)", async () => {
+  const ctx = svcCtx();
+  const server = createApiServer(ctx, { token: "t-test-token-0123456789" });
+  await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+  const port = (server.address() as { port: number }).port;
+  try {
+    const big = "中".repeat(200 * 1024); // 字符 20 万 < 256K 上限,字节约 600KB > 256KB
+    const r = await fetch(`http://127.0.0.1:${port}/ledger/thesis`, {
+      method: "POST",
+      headers: { authorization: "Bearer t-test-token-0123456789", "content-type": "application/json" },
+      body: JSON.stringify({ title: big }),
+    });
+    // 🔴 状态码也要断言:上一版只断言了 error 码,于是"注释说 413、代码回 400"这件事被放过去了
+    assert.equal(r.status, 413, "请求体过大是 413,不是笼统的 400");
+    assert.equal(((await r.json()) as { error?: string }).error, "body_too_large");
+    assert.equal(r.headers.get("connection"), "close", "不收连接的话客户端会一直卡在上传上");
+  } finally {
+    server.close();
+  }
+});
+
+test("运行产物的 HTML 以 CSP 送出 —— 产物里混进 <script> 时不能在已认证的源上执行", async () => {
+  const ctx = svcCtx();
+  const runDir = path.join(ctx.dataRoot, "runs", "r1");
+  fs.mkdirSync(runDir, { recursive: true });
+  fs.writeFileSync(path.join(runDir, "viewer.html"), "<html><body>hi</body></html>");
+  const server = createApiServer(ctx, { token: "t-test-token-0123456789" });
+  await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+  const port = (server.address() as { port: number }).port;
+  try {
+    const r = await fetch(`http://127.0.0.1:${port}/runs/r1/viewer`, { headers: { authorization: "Bearer t-test-token-0123456789" } });
+    assert.equal(r.status, 200);
+    const csp = r.headers.get("content-security-policy") ?? "";
+    assert.match(csp, /default-src 'none'/, "HTML 响应必须带 CSP");
+    assert.match(csp, /sandbox/);
+    // JSON 响应不需要 CSP(带上只是噪音)
+    const j = await fetch(`http://127.0.0.1:${port}/runs`, { headers: { authorization: "Bearer t-test-token-0123456789" } });
+    assert.equal(j.headers.get("content-security-policy"), null);
+  } finally {
+    server.close();
+  }
 });

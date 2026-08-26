@@ -15,7 +15,7 @@ import path from "node:path";
 
 import crypto from "node:crypto";
 
-import { ServiceError, fetchEndpoint, getEvidence, getReport, knowledgeRecall, listEndpoints, listRuns, readRunFile, redact, researchStatus, safePath, serviceContext, startResearch, type ServiceContext } from "./service.ts";
+import { IMPORT_MAX_TOTAL_BYTES, ServiceError, chatSend, fetchEndpoint, ingestFiles, ledgerKinds, ledgerList, ledgerRemove, ledgerSnapshot, ledgerUpsert, getEvidence, getReport, knowledgeRecall, listEndpoints, listRuns, readRunFile, redact, researchStatus, safePath, serviceContext, startResearch, type ServiceContext } from "./service.ts";
 
 
 // **composition root**:插件在入口注册,Core 模块一律不 import 它
@@ -25,21 +25,56 @@ const MAX_BODY = 256 * 1024;
 
 function send(res: http.ServerResponse, code: number, body: unknown, type = "application/json; charset=utf-8"): void {
   const data = typeof body === "string" ? body : JSON.stringify(body);
-  res.writeHead(code, { "Content-Type": type, "Content-Length": Buffer.byteLength(data), ...SECURITY_HEADERS });
+  const csp = type.startsWith("text/html") ? { "Content-Security-Policy": HTML_CSP } : {};
+  res.writeHead(code, { "Content-Type": type, "Content-Length": Buffer.byteLength(data), ...SECURITY_HEADERS, ...csp });
   res.end(data);
 }
 
 /** 所有响应统一带:不缓存、不发 Referer(登录 URL 含 token)、禁止 MIME 嗅探 */
 const SECURITY_HEADERS = { "Cache-Control": "no-store", "Referrer-Policy": "no-referrer", "X-Content-Type-Options": "nosniff" } as const;
 
+/**
+ * HTML 响应额外的 CSP。
+ * 🔴 `viewer.html` 是**运行产物**,内容来自生成链;它以 text/html 在 API 这个源上渲染,
+ *    一旦里面混进 `<script>`,脚本就在"已认证的源"里跑 —— 可以用 cookie 拉别的运行报告再发出去。
+ *    产物里本来就不该有脚本,所以直接禁掉:出问题时是页面少点东西,而不是数据被带走。
+ */
+const HTML_CSP = "default-src 'none'; style-src 'unsafe-inline'; img-src data:; base-uri 'none'; form-action 'none'; sandbox";
+
 /** Cookie 只对这些只读 GET 路由有效(白名单,而不是"任何 GET");其余路由只认 Bearer */
 export const COOKIE_GET_ROUTES: readonly RegExp[] = [/^\/ui$/, /^\/ui\/runs\/[^/]+$/, /^\/runs$/, /^\/runs\/[^/]+\/(viewer|report|status)$/];
 
-function readBody(req: http.IncomingMessage): Promise<Record<string, unknown>> {
+/** `max` 只对明确需要大体积的路由放宽(导入要带 base64 文件);其余一律用默认 256KB */
+function readBody(req: http.IncomingMessage, max = MAX_BODY): Promise<Record<string, unknown>> {
   return new Promise((resolve, reject) => {
-    let buf = "";
-    req.on("data", (c) => { buf += c; if (buf.length > MAX_BODY) { reject(new ServiceError("body_too_large", "请求体过大")); req.destroy(); } });
-    req.on("end", () => { if (!buf.trim()) return resolve({}); try { const v = JSON.parse(buf); resolve(v && typeof v === "object" && !Array.isArray(v) ? v : {}); } catch { reject(new ServiceError("bad_json", "请求体不是合法 JSON")); } });
+    // 🔴 按**字节**计,不按字符计。原来 `buf += c` 先把 chunk 解码成字符串,再拿 `buf.length`
+    //    (UTF-16 码元数)跟字节上限比 —— 一个中文字 3 字节只算 1,256KB 的上限实际能塞进约 768KB。
+    //    顺带:攒 Buffer 也避免了在 chunk 边界上把多字节字符切成两半。
+    const chunks: Buffer[] = [];
+    let bytes = 0;
+    let over = false;
+    req.on("data", (c: Buffer) => {
+      if (over) return; // 已经判超限了:继续把数据读完丢掉,别再累计也别再攒
+      bytes += c.length;
+      if (bytes > max) {
+        // 超限之后:**继续读、但一律丢掉**。
+        // 🔴 两条更"干脆"的做法都试过,都是错的:
+        //    ① `req.destroy()` —— 掐断连接,客户端拿到 EPIPE / "network error",
+        //       看不到那句"请求体过大",只会以为网断了;
+        //    ② `req.pause()` —— 不读了但也不收,客户端卡在上传上、连接被长期占住;
+        //       想在响应 flush 之后再 destroy socket 也不行:客户端还在写,照样 EPIPE。
+        //    ⇒ 只有边读边丢才能同时做到:内存有界(丢掉不攒)、客户端写得完、
+        //      写完就能读到我们回的 413。这也是通用 HTTP 服务器的常规做法。
+        if (!over) {
+          over = true;
+          chunks.length = 0;
+          reject(new ServiceError("body_too_large", "请求体过大"));
+        }
+        return;
+      }
+      chunks.push(c);
+    });
+    req.on("end", () => { const buf = Buffer.concat(chunks).toString("utf8"); if (!buf.trim()) return resolve({}); try { const v = JSON.parse(buf); resolve(v && typeof v === "object" && !Array.isArray(v) ? v : {}); } catch { reject(new ServiceError("bad_json", "请求体不是合法 JSON")); } });
     req.on("error", reject);
   });
 }
@@ -99,7 +134,18 @@ export function createApiServer(ctx: ServiceContext, opts: { token: string; cook
       const q = Object.fromEntries(url.searchParams.entries());
       if (req.method === "GET" && url.pathname === "/health") return send(res, 200, { ok: true, version: productVersion() });
       if (req.method === "GET" && url.pathname === "/endpoints") return send(res, 200, listEndpoints(ctx, { layer: q.layer, market: q.market, q: q.q, enabled_only: q.enabled_only === "1" }));
-      if (req.method === "POST" && url.pathname === "/fetch") { const b = await readBody(req); return send(res, 200, fetchEndpoint(ctx, b as never)); }
+      if (req.method === "POST" && url.pathname === "/fetch") { const b = await readBody(req); return send(res, 200, await fetchEndpoint(ctx, b as never)); }
+      // 自由对话:一问一答。**只读沙箱 + 不联网 + 过合规 gate**(见 chat.ts),不产出证据、不写台账。
+      if (req.method === "POST" && url.pathname === "/chat") {
+        const b = await readBody(req);
+        return send(res, 200, await chatSend(ctx, b as never));
+      }
+      // 资料导入:上传截图 / 文本 → agent 转写成台账**草稿**(不直接落库,见 ingest.ts)。
+      // base64 会把体积放大约 1/3,再留些余量给 JSON 外壳
+      if (req.method === "POST" && url.pathname === "/import") {
+        const b = await readBody(req, Math.ceil(IMPORT_MAX_TOTAL_BYTES * 1.4));
+        return send(res, 200, await ingestFiles(ctx, b as never));
+      }
       if (req.method === "POST" && url.pathname === "/research") { const b = await readBody(req); return send(res, 202, startResearch(ctx, b as never)); }
       if (req.method === "GET" && url.pathname === "/runs") return send(res, 200, listRuns(ctx, q.limit ? Number(q.limit) : undefined));
       if (req.method === "GET" && parts[0] === "runs" && parts[1] && parts[2]) {
@@ -111,9 +157,42 @@ export function createApiServer(ctx: ServiceContext, opts: { token: string; cook
         if (parts[2] === "viewer") { const t = readRunFile(ctx, id, "viewer.html"); return t === null ? send(res, 404, { error: "no viewer" }) : send(res, 200, t, "text/html; charset=utf-8"); }
       }
       if (req.method === "GET" && parts[0] === "knowledge" && parts[1] && parts[2]) return send(res, 200, knowledgeRecall(ctx, parts[2], parts[1]));
+      // ---- 用户自有台账 ----
+      // 🔴 写操作一律用 POST(含删除),不用 DELETE:crossSiteReject 的"必须 application/json"
+      //    这条只覆盖 POST —— 换成 DELETE 就绕过了那道无预检防线,而 cookie 白名单又只放行只读 GET。
+      //    路径可读性让位于"所有写操作走同一套防护"。
+      if (req.method === "GET" && url.pathname === "/ledger") {
+        // 一次读盘拿两半:分两次调会让 records 与 issues 来自不同快照(见 service.ledgerSnapshot)
+        const snap = ledgerSnapshot(ctx);
+        return send(res, 200, { kinds: ledgerKinds(ctx), records: snap.records, issues: snap.issues });
+      }
+      if (req.method === "GET" && parts[0] === "ledger" && parts[1] && parts.length === 2) return send(res, 200, ledgerList(ctx, parts[1]));
+      if (req.method === "POST" && parts[0] === "ledger" && parts[1] && parts.length === 2) {
+        const b = await readBody(req);
+        // 兼容两种写法:{...字段} 或 {record:{...}}。
+        // ⚠️ 用 hasOwnProperty 而不是 `b.record ?? b` —— 后者会把显式的 `{"record": null}`
+        //    回退成"整个请求体就是记录",把一个结构错误伪装成字段校验错误。
+        const rec = Object.prototype.hasOwnProperty.call(b, "record") ? b.record : b;
+        return send(res, 200, ledgerUpsert(ctx, { kind: parts[1], record: rec as Record<string, unknown> }));
+      }
+      if (req.method === "POST" && parts[0] === "ledger" && parts[1] && parts[2] === "delete" && parts.length === 3) {
+        const b = await readBody(req);
+        return send(res, 200, ledgerRemove(ctx, { kind: parts[1], id: String(b.id ?? "") }));
+      }
       return send(res, 404, { error: "not found" });
     } catch (e) {
-      if (e instanceof ServiceError) return send(res, 400, { error: e.code, message: redact(e.message, 200) });
+      if (e instanceof ServiceError) {
+        // 🔴 请求体过大要回 **413**,不能混在 400 里。
+        //    上一版注释写着"照常回一个 413",代码却走统一的 400 —— 又一次**声称与代码不符**
+        //    (自己的测试只断言了 error 码、没断言状态码,所以放过去了)。
+        if (e.code === "body_too_large") {
+          // Connection: close = 这条连接用完不复用;剩下的请求体由 readBody **边读边丢**,
+          // 客户端写完就能读到这个响应(不要在这里 destroy socket —— 它还在写,会变成 EPIPE)
+          res.setHeader("Connection", "close");
+          return send(res, 413, { error: e.code, message: redact(e.message, 200) });
+        }
+        return send(res, 400, { error: e.code, message: redact(e.message, 200) });
+      }
       console.error(`[api] internal error: ${redact(e instanceof Error ? e.stack ?? e.message : String(e), 600)}`);
       return send(res, 500, { error: "internal" });
     }

@@ -11,9 +11,12 @@ import { fileURLToPath } from "node:url";
 
 import { FETCH_ENV_KEYS, RUN_ID_RE, stages as packStages, fetchEnv } from "./config.ts";
 import { readJsonIfExists } from "./fsutil.ts";
+import { ChatError, chatSend as chatSendCore, type ChatTurnResult } from "./chat.ts";
+import { IngestError, MAX_TOTAL_BYTES, ingestFiles as ingestFilesCore, type IngestFileInput, type IngestResult } from "./ingest.ts";
+import { LedgerError, kinds as ledgerKindDefs, listRecordsChecked, listRecords as listRecordsOf, removeRecord as removeLedgerRecord, upsertRecord as upsertLedgerRecord, type LedgerIssue, type LedgerRecord } from "./ledger.ts";
 import { recallKnowledge, type KnowledgeRecall } from "./knowledge.ts";
 import { loadProductConfig } from "./productConfig.ts";
-import { REGISTRY_REL, loadRegistry, type EndpointDef } from "./registry.ts";
+import { REGISTRY_REL, fetchArgv, loadRegistry, type EndpointDef } from "./registry.ts";
 import { currentPlugin } from "./plugin.ts";
 
 
@@ -166,7 +169,7 @@ export function endpointDef(ctx: ServiceContext, id: unknown): EndpointDef {
 // ---------------- 取数(子进程,落 .local/mcp/<session>/) ----------------
 export interface FetchResult { envelope: Record<string, unknown>; exit_code: number | null; out_dir: string; duration_ms: number; stderr_tail: string }
 
-export function fetchEndpoint(ctx: ServiceContext, req: { endpoint: string; symbol?: string; args?: Record<string, unknown>; session?: string; timeout_ms?: number }): FetchResult {
+export async function fetchEndpoint(ctx: ServiceContext, req: { endpoint: string; symbol?: string; args?: Record<string, unknown>; session?: string; timeout_ms?: number }): Promise<FetchResult> {
   const ep = endpointDef(ctx, req.endpoint);
   const session = String(req.session ?? "default");
   if (!SESSION_RE.test(session)) throw new ServiceError("bad_session", `非法 session ${show(session)}`);
@@ -174,26 +177,105 @@ export function fetchEndpoint(ctx: ServiceContext, req: { endpoint: string; symb
   fs.mkdirSync(path.join(outDir, "fetch"), { recursive: true });
   fs.mkdirSync(path.join(outDir, "raw"), { recursive: true });
   safePath(ctx, "mcp", session, "fetch");  // 创建后再查一次(防 mkdir 途中被替换成链接)
-  const argv = [path.join(ctx.repoRoot, ".agents", "skills", "data-access", "scripts", "fetch_endpoint.py"), "--endpoint", ep.id, "--out-dir", outDir];
-  if (ep.symbol_kind !== "none") {
+  const scriptsDir = path.join(ctx.repoRoot, ".agents", "skills", "data-access", "scripts");
+  // 🔴 命令构造只有一处真相:registry.ts 的 fetchArgv(legacy → 脚本自身;其余 → fetch_endpoint.py)。
+  //    这里原先手写了第二份、漏掉 legacy 分支 —— 结果 8 个 legacy 端点经 POST /fetch 一律返回
+  //    "ModuleNotFoundError: No module named 'sources.legacy'"(编排器走 fetchArgv 所以一直是好的,
+  //    两条路径行为分叉、只有一条坏,最难发现)。同一件事别写两遍。
+  //    legacy 脚本的 base_parser 把 --symbol 设成 required(symbol_kind=none 的也一样,只校验格式后忽略),
+  //    所以这类端点必须由调用方给一个 —— 不在这里悄悄编个占位代码顶上,
+  //    那会让"没给 symbol"和"给了这个 symbol"在落盘与日志里长得一模一样。
+  const needSymbol = ep.symbol_kind !== "none" || ep.module === "legacy";
+  let symbol = "";
+  if (needSymbol) {
     if (req.symbol === undefined) throw new ServiceError("missing_symbol", `端点 ${ep.id} 需要 symbol`);
-    argv.push("--symbol", assertSymbol(req.symbol, ep.symbol_kind));
+    symbol = assertSymbol(req.symbol, ep.symbol_kind === "none" ? "cn6" : ep.symbol_kind);
   }
+  const argv = fetchArgv(ep, ep.id, { scriptsDir, symbol, runDir: outDir });
   const args = assertArgs(ep, req.args);
-  if (Object.keys(args).length) argv.push("--args", JSON.stringify(args));
+  if (Object.keys(args).length) {
+    if (ep.module === "legacy") throw new ServiceError("args_unsupported", `端点 ${ep.id} 是 legacy 脚本,不接受 args`);
+    argv.push("--args", JSON.stringify(args));
+  }
   // 取数进程:最小环境 + 该端点声明的 auth_env(只此一个)+ 用户显式的 TLS 降级开关
   const extra: Record<string, string> = {};
   if (ep.auth_env && process.env[ep.auth_env]) extra[ep.auth_env] = process.env[ep.auth_env] as string;
   if (process.env.VRA_ALLOW_INSECURE_TLS) extra.VRA_ALLOW_INSECURE_TLS = process.env.VRA_ALLOW_INSECURE_TLS;
   const timeout = Math.min(Math.max(Number(req.timeout_ms) || 180_000, 1_000), 600_000);
   const t0 = Date.now();
-  const p = spawnSync(ctx.python, argv, { cwd: ctx.repoRoot, env: fetchEnv(extra), encoding: "utf8", timeout, maxBuffer: 64 * 1024 * 1024 });
+  // 🔴 **必须是异步 spawn,不能用 spawnSync** —— spawnSync 会阻塞整个 Node 事件循环,
+  //    HTTP 服务在取数期间连别的请求都收不下:实测 3 个并发请求墙钟 ≈ 串行合计,
+  //    某个自报 132ms 的请求实际等了 1.83s(全在排队)。看板一屏要打五六个端点,这是致命的。
+  //    并发安全性已核实:取数器把信封原子写到 fetch/<script>.json,raw 文件名带时间戳+pid+随机,
+  //    且调用方拿的是 stdout 不是文件 —— 同端点并发不会互相污染。
+  const p = await runFetchProcess(ctx.python, argv, { cwd: ctx.repoRoot, env: fetchEnv(extra), timeout });
   const dur = Date.now() - t0;
-  if (p.error) throw new ServiceError("spawn_failed", `取数进程失败:${redact(p.error.message, 120)}`);
   let envelope: Record<string, unknown>;
   try { envelope = JSON.parse(p.stdout) as Record<string, unknown>; }
   catch { throw new ServiceError("bad_envelope", `取数器未输出合法 JSON(退出码 ${p.status}):${redact(p.stderr || "", 200)}`); }
   return { envelope, exit_code: p.status, out_dir: rel(ctx, outDir), duration_ms: dur, stderr_tail: redact(p.stderr || "", 300) };
+}
+
+const FETCH_MAX_BUFFER = 64 * 1024 * 1024;
+/** 超时后给 SIGTERM 留的收尾时间,过了再 SIGKILL */
+const KILL_GRACE_MS = 2_000;
+
+/**
+ * 跑取数子进程。等价于原来的 `spawnSync`,但**不阻塞事件循环**。
+ * spawnSync 的三条语义都得手工复刻,漏一条就是"看着一样、行为不同":
+ * ① `timeout` 到点杀进程 ② `maxBuffer` 超了要中止(否则一个疯狂输出的脚本能把内存吃光)
+ * ③ 起不来(ENOENT / EACCES)要报 spawn_failed —— 与旧的 `p.error` 分支同一个错误码。
+ * ⚠️ 用 `close` 而不是 `exit`:`exit` 时 stdout 可能还没读完,会拿到截断的 JSON。
+ */
+function runFetchProcess(
+  cmd: string,
+  argv: string[],
+  opts: { cwd: string; env: Record<string, string>; timeout: number },
+): Promise<{ status: number | null; stdout: string; stderr: string }> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(cmd, argv, { cwd: opts.cwd, env: opts.env, stdio: ["ignore", "pipe", "pipe"] });
+    const out: Buffer[] = [];
+    const err: Buffer[] = [];
+    let outLen = 0;
+    let errLen = 0;
+    let aborted: "timeout" | "overflow" | null = null;
+    let hardKill: NodeJS.Timeout | null = null;
+
+    const stop = (why: "timeout" | "overflow") => {
+      if (aborted) return;
+      aborted = why;
+      child.kill("SIGTERM");
+      hardKill = setTimeout(() => child.kill("SIGKILL"), KILL_GRACE_MS);
+      hardKill.unref();
+    };
+    const timer = setTimeout(() => stop("timeout"), opts.timeout);
+    timer.unref();
+
+    const take = (buf: Buffer[], chunk: Buffer, len: number): number => {
+      const next = len + chunk.length;
+      if (next > FETCH_MAX_BUFFER) { stop("overflow"); return next; }
+      buf.push(chunk);
+      return next;
+    };
+    child.stdout.on("data", (c: Buffer) => { outLen = take(out, c, outLen); });
+    child.stderr.on("data", (c: Buffer) => { errLen = take(err, c, errLen); });
+
+    const done = () => { clearTimeout(timer); if (hardKill) clearTimeout(hardKill); };
+    child.on("error", (e) => {
+      done();
+      reject(new ServiceError("spawn_failed", `取数进程失败:${redact(e.message, 120)}`));
+    });
+    child.on("close", (code) => {
+      done();
+      if (aborted === "timeout") {
+        return reject(new ServiceError("spawn_failed", `取数进程超时(${Math.round(opts.timeout / 1000)} 秒)已终止`));
+      }
+      if (aborted === "overflow") {
+        return reject(new ServiceError("spawn_failed", `取数进程输出超过 ${FETCH_MAX_BUFFER / 1024 / 1024} MB 已终止`));
+      }
+      resolve({ status: code, stdout: Buffer.concat(out).toString("utf8"), stderr: Buffer.concat(err).toString("utf8") });
+    });
+  });
 }
 
 // ---------------- 研究运行 ----------------
@@ -295,4 +377,112 @@ export function knowledgeRecall(ctx: ServiceContext, symbol: string, market: str
   safePath(ctx, "knowledge", "companies", `${mk || "XX"}_${sym}`, "latest.md");
   const k = recallKnowledge({ dataRoot: ctx.dataRoot, symbol: sym, market: mk });
   return k ? { ...k, path: rel(ctx, k.path) } : null;
+}
+
+// ---------------- 用户自有台账 ----------------
+// 存储与校验都在 Core 的 ledger.ts;这一层只做两件事:
+// ① 把 LedgerError 翻译成 ServiceError(HTTP 层只认后者,否则 500 而不是 400)
+// ② 走一次 safePath —— ledger.ts 已按白名单挡住 kind,这里是**第二道**,
+//    专门挡"用户数据区里被人塞了符号链接"这类与 kind 无关的情形。
+
+/** 台账的记录种类(界面据此渲染表单);垂类没声明台账就是空表 */
+export function ledgerKinds(_ctx: ServiceContext): Record<string, { label: string; properties: Record<string, unknown>; required: string[] }> {
+  const out: Record<string, { label: string; properties: Record<string, unknown>; required: string[] }> = {};
+  for (const [k, def] of Object.entries(ledgerKindDefs())) {
+    out[k] = { label: def.label, properties: { ...def.properties }, required: [...def.required] };
+  }
+  return out;
+}
+
+function asServiceError(e: unknown): never {
+  if (e instanceof LedgerError) throw new ServiceError(e.code, e.message);
+  throw e;
+}
+
+function ledgerGuard(ctx: ServiceContext, kind: unknown): string {
+  const k = String(kind ?? "");
+  if (!Object.prototype.hasOwnProperty.call(ledgerKindDefs(), k)) throw new ServiceError("unknown_kind", `台账没有这个种类 ${show(kind)}`);
+  safePath(ctx, "ledger", `${k}.json`);
+  return k;
+}
+
+export function ledgerList(ctx: ServiceContext, kind?: string): Record<string, LedgerRecord[]> {
+  try {
+    if (kind === undefined) {
+      // 🔴 全量读取也要逐种类过一遍 safePath。原来这里直接调 listAll ——
+      //    于是"单个种类走第二道防线、全量入口不走",而全量恰恰是界面的主入口:
+      //    ledger 目录里若被放了指向数据区外的符号链接,单查挡得住、全查挡不住。
+      //    **防线只在次要入口生效 = 没有防线。**
+      return ledgerSnapshot(ctx).records;
+    }
+    const k = ledgerGuard(ctx, kind);
+    return { [k]: listRecordsOf(ctx.dataRoot, k) };
+  } catch (e) { asServiceError(e); }
+}
+
+/**
+ * 界面的主入口:**一次读盘**同时给出记录与问题清单。
+ *
+ * 🔴 不要分两次调(先 list 再 issues)。两次之间文件可能被改 ⇒ 响应里 records 是旧版本、
+ *    issues 是新版本:界面会显示"这几条都合规",而它展示的恰恰是那几条坏的;
+ *    反过来也可能出现 issue 指向一个响应里根本不存在的 id。
+ *    **同一个响应里的两半必须来自同一次读取。**
+ */
+export function ledgerSnapshot(ctx: ServiceContext): {
+  records: Record<string, LedgerRecord[]>;
+  issues: Record<string, LedgerIssue[]>;
+} {
+  try {
+    const records: Record<string, LedgerRecord[]> = Object.create(null);
+    const issues: Record<string, LedgerIssue[]> = Object.create(null);
+    for (const k of Object.keys(ledgerKindDefs())) {
+      ledgerGuard(ctx, k); // 每个种类都过第二道 safePath(与单查同口径)
+      const r = listRecordsChecked(ctx.dataRoot, k);
+      records[k] = r.records;
+      if (r.issues.length) issues[k] = r.issues;
+    }
+    return { records, issues };
+  } catch (e) { asServiceError(e); }
+}
+
+export function ledgerUpsert(ctx: ServiceContext, req: { kind: string; record: Record<string, unknown> }): LedgerRecord {
+  const k = ledgerGuard(ctx, req.kind);
+  const rec = req.record;
+  if (!rec || typeof rec !== "object" || Array.isArray(rec)) throw new ServiceError("bad_record", "record 必须是对象");
+  try { return upsertLedgerRecord(ctx.dataRoot, k, rec as Record<string, unknown>); } catch (e) { asServiceError(e); }
+}
+
+export function ledgerRemove(ctx: ServiceContext, req: { kind: string; id: string }): { removed: boolean } {
+  const k = ledgerGuard(ctx, req.kind);
+  try { return { removed: removeLedgerRecord(ctx.dataRoot, k, String(req.id ?? "")) }; } catch (e) { asServiceError(e); }
+}
+
+// ---------------- 自由对话 ----------------
+// 薄封装:只做错误翻译(HTTP 层只认 ServiceError,否则 500 而不是 400)。
+// 沙箱 / 不联网 / 合规 gate 三条硬约束都在 chat.ts 里,这一层不许放宽。
+
+export async function chatSend(ctx: ServiceContext, req: { session?: string; message: string }): Promise<ChatTurnResult> {
+  try {
+    return await chatSendCore({ repoRoot: ctx.repoRoot, dataRoot: ctx.dataRoot, python: ctx.python }, req);
+  } catch (e) {
+    if (e instanceof ChatError) throw new ServiceError(e.code, e.message);
+    throw e;
+  }
+}
+
+// ---------------- 资料导入 ----------------
+// 薄封装:只做错误翻译。转写只产**草稿**,落库仍走正常的台账写入(同一套校验与锁)。
+
+export { MAX_TOTAL_BYTES as IMPORT_MAX_TOTAL_BYTES };
+
+export async function ingestFiles(ctx: ServiceContext, req: { kind: string; files: IngestFileInput[]; note?: string }): Promise<IngestResult> {
+  // 与台账同一把尺子:kind 先过 guard(白名单 + safePath),再进转写
+  ledgerGuard(ctx, req.kind);
+  safePath(ctx, "import");
+  try {
+    return await ingestFilesCore({ repoRoot: ctx.repoRoot, dataRoot: ctx.dataRoot, python: ctx.python }, req);
+  } catch (e) {
+    if (e instanceof IngestError) throw new ServiceError(e.code, e.message);
+    throw e;
+  }
 }

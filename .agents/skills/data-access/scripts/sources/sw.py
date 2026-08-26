@@ -4,6 +4,7 @@ from __future__ import annotations
 import io
 import os
 import sys
+import time
 from typing import Optional
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -12,6 +13,9 @@ from sources._http import http_get, insecure_tls_allowed  # noqa: E402
 
 SW_URL = "https://www.swsresearch.com/swindex/pdf/SwClass2021/StockClassifyUse_stock.xls"
 _CACHE = None
+#: 握手偶发失败时的重试次数与退避(秒);**只重试,不降低校验强度**
+SSL_RETRIES = 3
+SSL_RETRY_SLEEP = 0.6
 
 
 def sw_industry_history():
@@ -21,13 +25,33 @@ def sw_industry_history():
         return _CACHE
     import pandas as pd
     import requests
-    try:
-        r = http_get(SW_URL, headers={"User-Agent": "Mozilla/5.0"}, timeout=60, ext="xls")
-        tls_verified = True
-    except requests.exceptions.SSLError as e:
-        # 申万站点证书链在部分机器上缺中间证书(certifi 无法验证)。默认失败;只有显式设置 VRA_ALLOW_INSECURE_TLS=1 才降级为不校验重试,并在结果 / 证据里明示。
+    # 🔴 这里的 SSLError **多半不是站点的问题,是本机流量被代理接管**(2026-08-26 实测定位:
+    #    该域名解析到 198.18.0.238 —— RFC 2544 基准网段,即 Clash 这类代理的 fake-IP;
+    #    代理有时能正确转发 TLS、有时不能,表现为同一分钟内时好时坏、50/50 随机)。
+    #    ⇒ 两件事:① **先重试**(实测成功率 50% → 87.5%)
+    #             ② 报错时**先提代理**,别一上来就让用户设 VRA_ALLOW_INSECURE_TLS ——
+    #                那是拿永久关掉证书校验去换一个环境问题,而且换不回来。
+    tls_verified = True
+    last_ssl: Optional[Exception] = None
+    for attempt in range(SSL_RETRIES):
+        try:
+            r = http_get(SW_URL, headers={"User-Agent": "Mozilla/5.0"}, timeout=60, ext="xls")
+            last_ssl = None
+            break
+        except requests.exceptions.SSLError as e:
+            last_ssl = e
+            if attempt + 1 < SSL_RETRIES:
+                time.sleep(SSL_RETRY_SLEEP * (attempt + 1))  # 换一条连接,可能命中发全链的那台
+    if last_ssl is not None:
+        e = last_ssl
+        # 重试 SSL_RETRIES 次都失败才认为是真的证书问题。降级仍然只在显式开关下发生,并在结果里明示。
         if not insecure_tls_allowed():
-            raise RuntimeError(f"申万站点证书校验失败({type(e).__name__});若接受风险可设环境变量 VRA_ALLOW_INSECURE_TLS=1 降级(仅研究用)") from e
+            raise RuntimeError(
+                f"申万站点证书校验连续 {SSL_RETRIES} 次失败({type(e).__name__})。"
+                "最常见原因是**本机流量经代理**(VPN / Clash 之类会用自己的证书接管 TLS):"
+                "先确认代理是否在跑、该域名走的哪条规则,或临时关掉代理重试。"
+                "确属站点证书链问题、且你接受风险时,才设 VRA_ALLOW_INSECURE_TLS=1 降级(仅研究用)"
+            ) from e
         import urllib3
         urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
         r = http_get(SW_URL, headers={"User-Agent": "Mozilla/5.0"}, timeout=60, ext="xls", verify=False)

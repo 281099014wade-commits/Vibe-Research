@@ -9,6 +9,7 @@
  * (键集必须与 stages 完全一致)—— 这是故意的,别去放宽那个校验。
  */
 import type { Plugin } from "../plugin.ts";
+import { FINANCE_LEDGER_KINDS } from "./ledger_kinds.ts";
 import { FINANCE_LEXICON } from "./lexicon.ts";
 import { financeQuoteDecision } from "./quote_freshness.ts";
 import { financeBaselinePeriod } from "./fiscal_year.ts";
@@ -243,6 +244,9 @@ export const FINANCE_PLUGIN: Plugin = {
       { title: "6. 对上次档案的裁决(knowledge_conflicts)", tail: true, omitIfEmpty: true, blocks: [{ kind: "knowledgeConflicts" }] },
     ],
   },
+
+  /** 用户自有台账的记录种类(Core 只管存储与校验,种类在 ledger_kinds.ts) */
+  ledger: { kinds: FINANCE_LEDGER_KINDS },
 
   lexicon: FINANCE_LEXICON,
 };
