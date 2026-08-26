@@ -39,6 +39,16 @@ export interface Quote {
   name: string; price: number; last_close: number; change_pct: number;
   pe_ttm: number; pb: number; mcap_yi: number; turnover_pct: number;
   limit_up: number; limit_down: number;
+  /**
+   * 🔴 **单位写进字段名**。行情端点给的是「亿元 / 万元」，而页面的 `yi()` 吃的是「元」——
+   *    两边都叫 `amount` 的话，少乘一次 1e4 就会把 186 亿显示成 0.02 亿，而且不会报错。
+   */
+  /**
+   * 🔴 **可为 null**，不能用 `n0` 兜成 0。`n0` 把"端点没给这一项"变成数字 0，
+   *    页面照样渲染成「0.00 亿」—— 那是**把没取到显示成一个具体的数**，比空着更糟。
+   */
+  float_mcap_yi: number | null;   // 流通市值，亿元
+  amount_yuan: number | null;     // 成交额，元（端点给万元，这里已 ×1e4）
 }
 
 export interface Valuation {
@@ -268,11 +278,13 @@ export interface HkCashflow {
 
 /* ==================== 映射:上游语义接口 → 我们的取数端点 ==================== */
 
-const env = async (endpoint: string, opts: { symbol?: string; args?: Record<string, unknown> } = {}): Promise<Envelope> =>
+const env = async (endpoint: string, opts: { symbol?: string; args?: Record<string, unknown>; refresh?: boolean } = {}): Promise<Envelope> =>
   (await backend.fetch(endpoint, opts)).envelope;
 
 /** 上游把"元"当数字用,我们的证据带单位。**只在上游类型写死 number 的地方**用它兜底为 0。 */
 const n0 = num0;
+/** 换算单位。**null 进 null 出** —— 直接写 `x * k` 会把"没有"变成 0，页面就显示成「0.00 亿」 */
+const mul = (v: number | null, k: number): number | null => (v === null ? null : v * k);
 
 /* ---------- 行情 / 估值 ---------- */
 
@@ -291,6 +303,8 @@ async function quoteMap(codes: string[]): Promise<Record<string, Quote>> {
       turnover_pct: n0(r.fields.turnover_rate),
       limit_up: n0(r.fields.limit_up_price),
       limit_down: n0(r.fields.limit_down_price),
+      float_mcap_yi: num(r.fields.float_market_cap),                        // 端点单位：亿元
+      amount_yuan: mul(num(r.fields.turnover_amount), 1e4),                 // 端点单位：万元 → 元
     };
   }
   return out;
@@ -460,8 +474,8 @@ async function financialsOf(code: string): Promise<Financials> {
   };
 }
 
-async function announcementsOf(code: string): Promise<Announcement[]> {
-  const e = await env("cninfo_announcements", { symbol: code });
+async function announcementsOf(code: string, refresh = false): Promise<Announcement[]> {
+  const e = await env("cninfo_announcements", { symbol: code, refresh });
   return rows(e).map((r) => {
     const kv = noteKV(r.note);
     return {
@@ -489,8 +503,8 @@ async function reportsOf(code: string): Promise<Report[]> {
   });
 }
 
-async function newsOf(code: string): Promise<NewsItem[]> {
-  const e = await env("em_stock_news", { symbol: code });
+async function newsOf(code: string, refresh = false): Promise<NewsItem[]> {
+  const e = await env("em_stock_news", { symbol: code, refresh });
   return rows(e).map((r) => {
     const kv = noteKV(r.note);
     const ev = r.fields.news_title;
@@ -682,13 +696,25 @@ async function emotionOf(): Promise<ShortTermEmotion> {
   // ⚠️ 只补要展示的那几只,不为看不见的行拖一次大请求。
   const shown = base.filter((x) => x.boards >= 2).slice(0, 40);
   const q = shown.length ? await quoteMap(shown.map((x) => x.code)).catch(() => ({}) as Record<string, Quote>) : {};
-  const stocks: LianbanStock[] = base.map((x) => ({
-    ...x,
-    price: q[x.code]?.price ?? 0,
-    // 涨停池没有这两项。**给 null 让它显示"—"**,别拿 0 冒充
-    amount: null,
-    float_cap: null,
-  }));
+  const stocks: LianbanStock[] = base.map((x) => {
+    const hit = q[x.code];
+    return {
+      ...x,
+      price: hit?.price ?? 0,
+      /**
+       * 涨停池本身**没有**成交额与流通市值（它只给涨幅 / 板数 / 封板资金 / 换手），
+       * 所以从上面那次批量行情里取 —— 这两列以前写死 null，结果是"列在、永远是横杠"。
+       * ⚠️ 单位：页面的 `yi()` 吃「元」，而行情给的是「亿元」⇒ 这里 ×1e8。
+       * ⚠️ 没取到行情的（超出补行情范围的那些）仍然给 null：**别拿 0 冒充没有**。
+       */
+      amount: hit?.amount_yuan ?? null,
+      float_cap: mul(hit?.float_mcap_yi ?? null, 1e8),
+    };
+  });
+
+  // 晋级率要用的两组代码（昨日涨停池 / 今日涨停池）
+  const yztCodes = new Set(yzt ? rows(yzt).map((r) => r.key).filter((k) => /^\d{6}$/.test(k)) : []);
+  const todayCodes = stocks.map((x) => x.code);
 
   const ztCount = num(scalar(zt, "limit_up_pool_count")) ?? stocks.length;
   const zbCount = zb ? num(scalar(zb, "break_board_pool_count")) : null;
@@ -720,8 +746,16 @@ async function emotionOf(): Promise<ShortTermEmotion> {
     // 🔴 给**比值(0-1)**不是百分数 —— 页面自己 ×100。给百分数会显示成 7101%
     seal_rate: denom ? Math.round((ztCount / denom) * 1e4) / 1e4 : null,
     break_rate: denom && zbCount !== null ? Math.round((zbCount / denom) * 1e4) / 1e4 : null,
-    // 晋级率要"昨日连板今日又涨停"的配对,两个池给不出这个交集 —— 不猜
-    promotion_rate: null,
+    /**
+     * 晋级率 = 昨日涨停池 ∩ 今日涨停池 ÷ 昨日涨停池。
+     * 🔴 以前写死 null（注释说"两个池给不出这个交集"）—— **那是看错了**：两个池都是按代码分行的，
+     *    交集直接算得出来。写死 null 的结果是界面上一个永远显示"—"的指标。
+     * ⚠️ 口径就是这块牌子上写的"昨涨停今又停"，不是分层的首板晋级率。
+     * ⚠️ 昨日池取不到时给 null（真的没有），不拿 0 冒充。
+     */
+    promotion_rate: yztCodes.size
+      ? Math.round((todayCodes.filter((c) => yztCodes.has(c)).length / yztCodes.size) * 1e4) / 1e4
+      : null,
     yzt_count: yztCount ?? 0,
   };
 }
@@ -730,6 +764,12 @@ async function turnoverTopOf(): Promise<TurnoverTop> {
   const e = await env("em_turnover_rank");
   // note:`中际旭创(300308)·通信设备;成交额榜第 1 名(全市场 5904 只)`
   const NOTE = /^(.+?)\((\d{6})\)·([^;]*)/;
+  // 榜单端点只给 价格 / 涨跌 / 成交额 / 名次 —— **总市值要另外取一次批量行情**。
+  // 以前这一列写死 null，于是表头有「总市值」而每一行都是横杠。
+  const codes = rows(e)
+    .map((r) => NOTE.exec(r.note)?.[2] ?? r.key.replace(/^stock\|/, ""))
+    .filter((c) => /^\d{6}$/.test(c));
+  const q = codes.length ? await quoteMap(codes).catch(() => ({}) as Record<string, Quote>) : {};
   const stocks: TurnoverStock[] = rows(e)
     .map((r) => {
       const m = NOTE.exec(r.note);
@@ -742,8 +782,9 @@ async function turnoverTopOf(): Promise<TurnoverTop> {
         pct: num(r.fields.change_pct),
         // 🔴 给**元**原值 —— 页面自己换算成亿(`yi()`)。这里先除一遍,显示出来就是 0 亿
         amount: amt,
-        mcap: null,
-        float_cap: null,
+        // ⚠️ 行情给的是亿元，`yi()` 吃元 ⇒ ×1e8；取不到就是 null(显示"—")，不拿 0 冒充
+        mcap: m?.[2] && q[m[2]] ? q[m[2]]!.mcap_yi * 1e8 : null,
+        float_cap: mul(m?.[2] ? q[m[2]]?.float_mcap_yi ?? null : null, 1e8),
         industry: m?.[3] ?? "",
       };
     })
@@ -818,70 +859,71 @@ async function radarOf(refresh = false): Promise<RadarData> {
 
 async function gpuRentOf(refresh = false): Promise<GpuRentData> {
   const e = (await backend.fetch("gpu_rent_thermometer", { refresh })).envelope;
+  /**
+   * 现货卡 = 曲线的最后一个点（取数层派生，见 industry._spot_from_history）⇒
+   * 卡片上的数字与曲线末端**严格一致**。
+   * 🔴 **不能只留有中位价的那些行**：某张卡暂时没有序列时它只有 `gpu_available_count`，
+   *    过滤掉的话那张卡的卡片会整个消失 —— 用户看到的是"少了一张卡"，而不是"这张卡暂时没数据"。
+   */
+  const numOrNull = (v: string | undefined) => {
+    const n = Number(v);
+    return v === undefined || v === "" || v === "None" || !Number.isFinite(n) ? null : n;
+  };
   const spot = rows(e)
-    .filter((r) => r.fields.gpu_spot_median_usd_per_gpu_hr)
+    .filter((r) => r.fields.gpu_spot_median_usd_per_gpu_hr || r.fields.gpu_available_count)
     .map((r) => {
       const kv = noteKV(r.note);
       const median = num(r.fields.gpu_spot_median_usd_per_gpu_hr);
       return {
         gpu: r.key,
         ...(median === null ? { unavailable: true } : { median }),
-        ...(kv.n_offers ? { total_gpus: Number(kv.n_offers) } : {}),
+        available_gpus: numOrNull(kv.available_gpus),
+        total_gpus: numOrNull(kv.total_gpus),
+        asof_ts: numOrNull(kv.asof_ts) ?? undefined,
         note: r.note,
       } as GpuSpot;
     });
   /**
-   * 历史曲线来自**温度计历史序列**(跨运行累积)。
-   * ⚠️ 序列只在完整研究运行时追加,手动点看板不写 ⇒ 点很少是正常的。
-   *    取不到时给 `unavailable + note` 说明原因,**不给一条空曲线冒充"没有波动"**。
+   * 近一年逐日曲线 —— **取数层直接给**（500.farm 对 Vast 可租挂单的逐日中位统计，
+   * 与开源版同一个源、同一条查询）。
+   *
+   * 🔴 以前这里画的是**本机温度计历史序列**：那条序列只在完整研究运行时才追加，
+   *    新装的机器上就是几个点、跨度不到一天 —— 顶着"近一年走势"的标题画出来，
+   *    是让标题替数据打包票。现在曲线有自己的真实来源，序列继续留着做跨运行对账，
+   *    但不再拿它冒充一年。
+   * ⚠️ 三张卡各自成败：某一张拿不到就只少一条线，并把它自己的原因带出来。
    */
-  let spanNote = "";
-  const history = await backend
-    .series("gpu_rent_thermometer")
-    .then((r) => {
-      const byGpu = new Map<string, [number, number][]>();
-      for (const o of r.observations) {
-        if (o.field !== "gpu_spot_median_usd_per_gpu_hr" || typeof o.value !== "number") continue;
-        const ts = Date.parse(o.as_of || o.period);
-        if (!Number.isFinite(ts)) continue;
-        const arr = byGpu.get(o.record_key) ?? [];
-        arr.push([ts, o.value]);
-        byGpu.set(o.record_key, arr);
-      }
-      const gpus: GpuHistSeries[] = [...byGpu.entries()].map(([gpu, pts]) => {
-        const points = pts.sort((a, b) => a[0] - b[0]);
-        return { gpu, n_points: points.length, points, latest: points[points.length - 1]?.[1] };
-      });
-      const days = gpus.length
-        ? Math.max(...gpus.map((g) => {
-            const p = g.points ?? [];
-            return p.length > 1 ? Math.round((p[p.length - 1]![0] - p[0]![0]) / 864e5) : 0;
-          }))
-        : 0;
-      /**
-       * 🔴 图的标题写的是"近一年走势",而序列**实际可能只有几次观测、跨度不到一天**。
-       *    只画出来不说跨度 = 让一个标题替数据打包票。⇒ 把真实条数与跨度写进源标注,
-       *    它就在标题正下方,读者一眼能看见"这条线是几个点画的"。
-       */
-      const total = gpus.reduce((a, g) => a + (g.n_points ?? 0), 0);
-      spanNote = `${total} 次观测 · 覆盖 ${days === 0 ? "不到 1 天" : `${days} 天`}`;
-      return gpus.length
-        ? { gpus, days }
-        : { gpus: [{ gpu: "B200", unavailable: true, note: r.exists
-            ? "序列里还没有可用观测(只在完整研究运行时追加)"
-            : "本机还没有这条序列 —— 跑一次完整研究后才会开始累积" } as GpuHistSeries], days: 0 };
-    })
-    .catch((err: unknown) => ({
-      gpus: [{ gpu: "B200", unavailable: true, err: err instanceof Error ? err.message : String(err) } as GpuHistSeries],
-      days: 0,
-    }));
+  const rawHist = (e.extra?.history ?? {}) as {
+    gpus?: GpuHistSeries[]; days?: number; source?: string; errors?: string[];
+  };
+  const histGpus = Array.isArray(rawHist.gpus) ? rawHist.gpus : [];
+  const usable = histGpus.filter((g) => (g.points?.length ?? 0) > 0);
+  const history = usable.length
+    ? { gpus: histGpus, days: rawHist.days ?? 0 }
+    : {
+        // 一条线都没有：**说清楚为什么**，不给一条空曲线冒充"没有波动"
+        gpus: [{
+          gpu: "B200",
+          unavailable: true,
+          note: rawHist.errors?.length ? rawHist.errors.join("；") : "统计站这次没有返回可用序列",
+        } as GpuHistSeries],
+        days: 0,
+      };
+  const spanDays = Math.max(
+    0,
+    ...usable.map((g) => {
+      const pts = g.points ?? [];
+      return pts.length > 1 ? Math.round((pts[pts.length - 1]![0] - pts[0]![0]) / 86400) : 0;
+    }),
+  );
+  const spanNote = usable.length ? `${usable.length} 张卡 · 覆盖 ${spanDays} 天` : "";
 
   return {
     generated_at: e.fetched_at,
     // 🔴 读法直接照抄取数层的护栏句 —— 不改写、不省略
     how_to_read: [...new Set(e.evidence.map((x) => (x.note ?? "").split("读法:")[1]).filter(Boolean) as string[])],
-    spot_source: "Vast 撮合市场(现货中位)",
-    history_source: `本机温度计历史序列${spanNote ? ` · ${spanNote}` : ""}(只在完整研究运行时累积)`,
+    spot_source: (e.extra?.spot_source as string | undefined) ?? "现货 = 走势曲线的最新采样点",
+    history_source: `${rawHist.source ?? "统计站逐日中位"}${spanNote ? ` · ${spanNote}` : ""}`,
     forward_source: "Kalshi 远期合约",
     spot: { gpus: spot },
     history,
@@ -958,8 +1000,8 @@ async function investorQaOf(code: string): Promise<QaRow[]> {
  * 🔴 这是**市场当前定价**，不是预测、更不是我们的判断。取数层的「读法」护栏原样带出，
  *    界面必须与数字同屏显示 —— 只给一个百分比而不给读法，等于替上游打包票。
  */
-async function macroProbabilityOf(): Promise<MacroProbability> {
-  const e = await env("macro_probability");
+async function macroProbabilityOf(refresh = false): Promise<MacroProbability> {
+  const e = await env("macro_probability", { refresh });
   // note: `[话题] 来源 合约「标题」(腿)的市场定价概率(口径:…);结算日 YYYY-MM-DD(…);24h 成交量 N;读法:…`
   const NOTE = /^\[([^\]]+)\]\s*(\S+)\s*合约「([^」]*)」\(([^)]*)\)/;
   const VOL = /24h\s*成交量\s*([\d.]+)/;

@@ -4,9 +4,11 @@ import {
   Activity, Radar, LayoutGrid, Wallet, Settings, Search, NotebookPen,
   Moon, Sun, ChevronsLeft, ChevronsRight, ChevronDown, LineChart, Github, UserRound,
   Cog, Cpu, Star, FileText, Swords, Thermometer, Gauge,
-  Rss, Newspaper, TrendingUp,
+  Rss, Newspaper, TrendingUp, Sparkles,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { AiPageProvider } from "../../../../core/ai/pageContext";
+import { FinanceAiConsole, FinanceAiDock } from "@/components/ui/FinanceAiDock";
 import { useDarkMode } from "@/hooks/useDarkMode";
 import { storageGet, storageSet } from "@/lib/storage";
 
@@ -16,9 +18,10 @@ import { version as PKG_VERSION } from "../../../../../package.json";
 // 版本号只从 package.json 读，不再各处写死（发 v0.3.0 时三处忘改停在 v0.2.2，#20）
 const APP_VERSION = `v${PKG_VERSION}`;
 const REPO_URL = "https://github.com/simonlin1212/Vibe-Research";
+/** 出品方站点（还没公布，先挂上） */
+const SITE_URL = "https://phoenixtree.ai";
 // 作者联系方式
 const X_URL = "https://x.com/linsizhen";
-const MAIL_URL = "mailto:simonlin0423@gmail.com";
 
 const NAV = [
   { to: "/daily-review", icon: Activity, label: "每日复盘" },
@@ -66,6 +69,14 @@ export function Layout() {
   const { pathname } = useLocation();
   const { dark, toggle } = useDarkMode();
   const [collapsed, setCollapsed] = useState(() => storageGet("vr-sidebar") === "collapsed");
+  // 底部 AI 控制台开着没。记住选择：它是"工作台的一部分"，不是弹一下就关的东西
+  const [consoleOpen, setConsoleOpen] = useState(() => storageGet("vr-ai-console") === "open");
+  const toggleConsole = () => {
+    setConsoleOpen((v) => {
+      storageSet("vr-ai-console", v ? "closed" : "open");
+      return !v;
+    });
+  };
   // 各导航组子栏目的展开状态（默认展开；按组记住用户的选择）
   const [openGroups, setOpenGroups] = useState<Record<string, boolean>>(() =>
     Object.fromEntries(Object.entries(NAV_GROUPS).map(([path, g]) => [path, storageGet(g.storageKey) !== "closed"])));
@@ -83,6 +94,7 @@ export function Layout() {
   }, [collapsed]);
 
   return (
+    <AiPageProvider>
     <div className="flex h-screen">
       {/* Sidebar */}
       <aside className={cn(
@@ -166,6 +178,29 @@ export function Layout() {
           })}
         </nav>
 
+        {/* 🔴 AI 入口 —— **刻意与上面那些导航项长得不一样**：它不是"再一个页面"，
+            而是把底部控制台推上来的开关。实心橙 + 发光，收起时也保留图标。 */}
+        <div className={cn(collapsed ? "px-1.5 pb-1.5" : "px-2.5 pb-2.5")}>
+          <button
+            onClick={toggleConsole}
+            title={consoleOpen ? "收起 Agent" : "打开 Agent"}
+            aria-pressed={consoleOpen}
+            className={cn(
+              "flex w-full items-center rounded-xl font-semibold shadow-glow transition-all",
+              collapsed ? "justify-center p-2" : "gap-2 px-3 py-2.5 text-sm",
+              consoleOpen
+                ? "bg-primary text-white ring-2 ring-primary/60"
+                : "bg-primary/90 text-white hover:bg-primary",
+            )}
+          >
+            <Sparkles className="h-4 w-4 shrink-0" />
+            {!collapsed && <span>Agent</span>}
+            {!collapsed && (
+              <span className="ml-auto text-[10px] font-normal opacity-80">{consoleOpen ? "收起" : "对话"}</span>
+            )}
+          </button>
+        </div>
+
         {/* Footer */}
         <div className={cn("border-t border-border/50", collapsed ? "flex flex-col items-center gap-2 p-2" : "space-y-2 p-3")}>
           {collapsed ? (
@@ -199,12 +234,16 @@ export function Layout() {
                   </button>
                 </div>
               </div>
-              <div className="flex items-center gap-1.5 text-[11px] text-primary/80">
-                <span className="text-muted-foreground/60">联系作者</span>
-                <a href={X_URL} target="_blank" rel="noreferrer" className="transition-colors hover:text-primary">X</a>
-                <span className="text-muted-foreground/40">·</span>
-                <a href={MAIL_URL} className="transition-colors hover:text-primary">Email</a>
-              </div>
+              {/* 出品方。站点还没公布，但地址是我们自己的 ⇒ 现在就挂上。
+                  ⚠️ 外链一律 target=_blank + rel="noreferrer"：少了 rel，新开的页面能拿到 window.opener。 */}
+              <a
+                href={SITE_URL}
+                target="_blank"
+                rel="noreferrer"
+                className="block truncate text-[11px] font-semibold tracking-wide text-primary/90 transition-colors hover:text-primary"
+              >
+                {SITE_URL}
+              </a>
               <p className="text-[11px] leading-relaxed text-muted-foreground/60">
                 {APP_VERSION} · 不荐股 · 不预测 · 无倾向
               </p>
@@ -213,12 +252,23 @@ export function Layout() {
         </div>
       </aside>
 
-      {/* Main */}
-      <main className="flex-1 overflow-auto">
-        <div className="mx-auto max-w-6xl px-6 py-6">
-          <Outlet />
-        </div>
-      </main>
+      {/* Main —— 🔴 上下两块：内容在上、AI 控制台在下。
+          控制台打开时是把内容**挤上去**（flex 收缩），不是盖在上面：
+          这块面板的用处就是"一边看着页面一边聊"，浮层会把正在看的表格盖住。 */}
+      <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
+        <main className="flex-1 overflow-auto">
+          {/* 🔴 右上角那个固定的 AI 按钮会压在这一片上，所以留出它的宽度 ——
+              不留的话，窄窗口下它会盖住页面自己的操作按钮（刷新之类），而宽窗口下看不出问题。 */}
+          <div className="mx-auto max-w-6xl px-6 py-6 pr-24">
+            <Outlet />
+          </div>
+        </main>
+        <FinanceAiConsole open={consoleOpen} onClose={toggleConsole} />
+      </div>
+
+      {/* 每一页都有的 AI 入口：位置固定，聊的是当前页登记的上下文 */}
+      <FinanceAiDock />
     </div>
+    </AiPageProvider>
   );
 }

@@ -1,13 +1,15 @@
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import {
   Thermometer, RefreshCw, Loader2, AlertCircle, Info, Gauge, CalendarClock, History, LineChart,
 } from "lucide-react";
 import { PageHeader } from "@/components/ui/PageHeader";
+import { useAiPage } from "../../../core/ai/pageContext";
+import { useArchiveThenRefresh } from "../../../core/data/useArchiveThenRefresh";
 import { GlassCard } from "@/components/ui/GlassCard";
 import { Disclaimer } from "@/components/ui/Disclaimer";
 import { EChart } from "@/components/ui/EChart";
-import { api, ApiError, type GpuRentData, type GpuSpot, type ForwardMonth } from "@/lib/api";
+import { api, type GpuRentData, type GpuSpot, type ForwardMonth } from "@/lib/api";
 import { cn } from "@/lib/utils";
 
 // 产业信号：每期从公开零鉴权数据源移植一个「一句话信号」小栏目，逐期在此添加。
@@ -146,21 +148,12 @@ function ForwardMonthPanel({ m }: { m: ForwardMonth }) {
 }
 
 function GpuRentPanel() {
-  const [data, setData] = useState<GpuRentData | null>(null);
-  const [err, setErr] = useState<string | null>(null);
-  const [refreshing, setRefreshing] = useState(false);
   const [activeMonth, setActiveMonth] = useState(0);
 
-  useEffect(() => {
-    api.gpuRent().then(setData).catch((e) => setErr(e instanceof ApiError ? e.message : "加载失败"));
-  }, []);
-
-  const refresh = async () => {
-    setRefreshing(true); setErr(null);
-    try { setData(await api.gpuRentRefresh()); setActiveMonth(0); }
-    catch (e) { setErr(e instanceof ApiError ? e.message : "刷新失败"); }
-    finally { setRefreshing(false); }
-  };
+  // 打开先给存档、后台再刷（见 core/data/useArchiveThenRefresh）：
+  // 这一页要拉一年曲线 + 三张卡的挂单数 + 十几个远期合约，干等好几十秒没有必要。
+  const { data, err, loading, refreshing, staleNote, refresh } =
+    useArchiveThenRefresh<GpuRentData>((r) => (r ? api.gpuRentRefresh() : api.gpuRent()), []);
 
   const hasData = !!data?.generated_at;
   const fw = data?.forward;
@@ -263,8 +256,16 @@ function GpuRentPanel() {
   return (
     <div>
       <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-        <span className="text-xs text-muted-foreground">
-          {hasData ? `更新于 ${data!.generated_at}` : "历史 / 现货 / 远期三条腿，都来自零鉴权公开接口"}
+        <span className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
+          <span>{hasData ? `更新于 ${data!.generated_at}` : "历史 / 现货 / 远期三条腿，都来自零鉴权公开接口"}</span>
+          {/* 🔴 先给存档、后台刷 ⇒ 用户必须看得出他现在看的是哪一份 */}
+          {refreshing && hasData && (
+            <span className="inline-flex items-center gap-1 rounded-full bg-primary/10 px-2 py-0.5 text-[11px] text-primary">
+              <Loader2 className="h-3 w-3 animate-spin" /> 刷新中（下面是上次的存档）
+            </span>
+          )}
+          {loading && <span className="text-[11px]">正在取…（这一页还没有存档）</span>}
+          {staleNote && <span className="text-[11px] text-warning">{staleNote}</span>}
         </span>
         <button onClick={refresh} disabled={refreshing}
           className="inline-flex items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-sm text-muted-foreground hover:text-foreground disabled:opacity-50">
@@ -386,6 +387,13 @@ export function Signals() {
   const navigate = useNavigate();
   const tab = TABS.some((t) => t.key === tabParam) ? tabParam! : TABS[0]!.key;
   const cur = TABS.find((t) => t.key === tab)!;
+
+  useAiPage({
+    key: `signals:${tab}`,
+    title: `产业信号 · ${cur.label}`,
+    context: `产业信号 · 当前小栏目「${cur.label}」：${cur.desc}。可选小栏目：${TABS.map((t) => t.label).join("、")}。`,
+    suggestions: ["这个信号怎么读", "它领先还是滞后", "什么情况下算转向"],
+  });
 
   return (
     <div>

@@ -4,8 +4,8 @@ import {
   Wallet, Trophy, CalendarClock, Boxes, MessageSquare,
 } from "lucide-react";
 import { PageHeader } from "@/components/ui/PageHeader";
+import { useAiPage } from "../../../core/ai/pageContext";
 import { GlassCard } from "@/components/ui/GlassCard";
-import { AskAiButton } from "@/components/ui/AskAiButton";
 import { EarningsSnapshot } from "@/components/ui/EarningsSnapshot";
 import { Disclaimer } from "@/components/ui/Disclaimer";
 import {
@@ -195,24 +195,24 @@ export function StockData() {
         : "")
     : "";
 
+  // 本页不换路由就能换标的，所以 key 里要带代码，否则两只票的对话会串台。
+  // ⚠️ 用**已解析结果**的代码，不是输入框里的 code —— 后者一边打字一边变，
+  //    而上下文仍描述上一只票，会把旧对话存到新代码名下。
+  const resolved = gstock ? `g:${gstock.code}` : val?.code ?? "";
+  useAiPage(val || gstock ? {
+    key: `stock:${resolved}`,
+    title: `个股研究 · ${resolved}`,
+    context: gstock ? gAiContext : aiContext,
+    suggestions: gstock
+      ? ["这家公司基本面怎么样", "盈利能力如何", "有什么风险"]
+      : ["这个估值贵不贵", "机构一致预期怎么看", "近期研报的分歧点", "有什么风险"],
+  } : null);
+
   return (
     <div>
       <PageHeader
         title="个股研究"
         subtitle="行情 · 估值 · 研报 · 新闻 —— 客观数据配齐，判断交给你的 AI"
-        actions={(val || gstock) && (
-          <AskAiButton
-            context={gstock ? gAiContext : aiContext}
-            // 本页不换路由就能换标的，必须按代码分开存对话，否则会串台。
-            // ⚠️ 用**已解析结果**的代码，不能用输入框的 code——后者一边打字一边变，
-            // 而 val/gstock 和 AI 上下文仍描述上一只票，会把旧上下文存到新代码名下。
-            scopeKey={gstock ? `g:${gstock.code}` : val?.code}
-            label="让 AI 读这些数据"
-            suggestions={gstock
-              ? ["这家公司基本面怎么样", "盈利能力如何", "有什么风险"]
-              : ["这个估值贵不贵", "机构一致预期怎么看", "近期研报的分歧点", "有什么风险"]}
-          />
-        )}
       />
 
       {/* 查询框 */}

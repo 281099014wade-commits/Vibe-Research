@@ -3,6 +3,7 @@ import { Trash2, ChevronDown, ChevronRight, NotebookPen, ScanSearch, Save } from
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { PageHeader } from "@/components/ui/PageHeader";
+import { useAiPage } from "../../../core/ai/pageContext";
 import { GlassCard } from "@/components/ui/GlassCard";
 import { Disclaimer } from "@/components/ui/Disclaimer";
 import { loadNotes, deleteNote, clearNotes, addNote, type Note } from "@/lib/notes";
@@ -58,6 +59,16 @@ export function Notes() {
   }
 
   const fmt = (ts: number) => new Date(ts).toLocaleString("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" });
+
+  useAiPage({
+    key: "notes",
+    title: "研究记录",
+    context: notes.length
+      ? `研究记录（本地，共 ${notes.length} 条）：\n` +
+        notes.slice(0, 40).map((n) => `- [${n.kind}] ${n.title}`).join("\n")
+      : "研究记录：还没有攒下任何一条。",
+    suggestions: ["帮我把这些记录归个类", "我最近在关注什么", "哪些结论该复查了"],
+  });
 
   return (
     <div>

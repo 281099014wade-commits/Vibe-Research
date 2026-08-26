@@ -124,10 +124,17 @@ export const backend = {
   ledgerDelete: (kind: string, id: string) =>
     call<{ removed: boolean }>(`/ledger/${encodeURIComponent(kind)}/delete`, { method: "POST", body: JSON.stringify({ id }) }),
 
-  chat: (message: string, session = "default") =>
+  /**
+   * 一轮对话。
+   * ⚠️ `session` **必须按页面分开传**：后端按 session 维护线程，而前端只发最后一句 ——
+   *    全站共用 "default" 的话，后端那条线程会把所有页面的对话串成一段，
+   *    而界面上每页各自干净，这种不一致从界面上完全看不出来。
+   */
+  chat: (message: string, session = "default", signal?: AbortSignal) =>
     call<{ session: string; reply: string; redacted: number; duration_ms: number }>("/chat", {
       method: "POST",
       body: JSON.stringify({ session, message }),
+      signal,
     }),
 
   debateStart: (symbol: string) => call<DebateState>("/debate", { method: "POST", body: JSON.stringify({ symbol }) }),
@@ -304,6 +311,10 @@ const KV_KEYS = [
   // ⚠️ 白名单漏一个键,前一个键的值就会把它连同后面的内容一起吞掉
   //    (漏 industry 时 source 取出来是 "MIT Tech Review AI;industry=ai")
   "industry", "n_offers", "gpu", "depreciation_line_usd",
+  // 🔴 新加的键**必须登记在这儿**：白名单外的键会被安静地丢掉，界面上表现为
+  //    "那一行就是不显示"，而代码里明明取了 —— 这次现货卡的"可租 X / 共 Y 张"
+  //    与观测时间就是这么消失的。
+  "asof_ts", "available_gpus", "total_gpus",
 ] as const;
 /**
  * 🔴 **取哪些键靠白名单,但"值到哪结束"不能靠白名单。**

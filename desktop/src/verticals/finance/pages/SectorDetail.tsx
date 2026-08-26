@@ -1,14 +1,25 @@
 import { useParams, Link } from "react-router-dom";
 import { ArrowLeft, Plus, Wrench } from "lucide-react";
 import { PageHeader } from "@/components/ui/PageHeader";
+import { useAiPage } from "../../../core/ai/pageContext";
 import { GlassCard } from "@/components/ui/GlassCard";
-import { AskAiButton } from "@/components/ui/AskAiButton";
 import { Disclaimer } from "@/components/ui/Disclaimer";
 import sectorsData from "@/data/sectors.json";
 
 export function SectorDetail() {
   const { key } = useParams();
   const sector = sectorsData.sectors.find((s) => s.key === key);
+
+  // 🔴 必须在下面那个 early return **之前**调：条件调用 hook 会让
+  //    "找不到板块"和"找到了"两种渲染的 hook 数量不一致，React 直接报错。
+  useAiPage(sector ? {
+    key: `sector:${sector.key}`,
+    title: sector.label,
+    context:
+      `板块：${sector.label}\n定位：${sector.tagline}\n产业链环节：` +
+      (sector.nodes.length ? sector.nodes.join("、") : "（环节梳理中）"),
+    suggestions: ["按七维框架拆解", "这个板块的产业链地图", "哪个环节卡脖子", "有什么风险信号"],
+  } : null);
 
   if (!sector) {
     return (
@@ -17,10 +28,6 @@ export function SectorDetail() {
       </div>
     );
   }
-
-  const aiContext =
-    `板块：${sector.label}\n定位：${sector.tagline}\n产业链环节：` +
-    (sector.nodes.length ? sector.nodes.join("、") : "（环节梳理中）");
 
   return (
     <div>
@@ -31,13 +38,6 @@ export function SectorDetail() {
       <PageHeader
         title={sector.label}
         subtitle={sector.tagline}
-        actions={
-          <AskAiButton
-            context={aiContext}
-            label="让 AI 拆这个板块"
-            suggestions={["按七维框架拆解", "这个板块的产业链地图", "哪个环节卡脖子", "有什么风险信号"]}
-          />
-        }
       />
 
       {sector.verified ? (

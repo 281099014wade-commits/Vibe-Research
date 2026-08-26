@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Upload, FileText, Trash2, Download, Loader2, FolderOpen } from "lucide-react";
 import { PageHeader } from "@/components/ui/PageHeader";
+import { useAiPage } from "../../../core/ai/pageContext";
 import { GlassCard } from "@/components/ui/GlassCard";
 import { Disclaimer } from "@/components/ui/Disclaimer";
 import { api, ApiError, downloadReport, type MyReport } from "@/lib/api";
@@ -80,6 +81,16 @@ export function MyReports() {
       a[0] === "未分类" ? 1 : b[0] === "未分类" ? -1 : b[1].length - a[1].length,
     );
   }, [reports]);
+
+  useAiPage({
+    key: "my-reports",
+    title: "我的研报",
+    context: reports.length
+      ? `我的研报（本地归档，共 ${reports.length} 份）：\n` +
+        reports.slice(0, 60).map((r) => `- ${r.name}｜行业 ${r.industry || "未分类"}`).join("\n")
+      : "我的研报：还没有归档任何文件。",
+    suggestions: ["我归档的研报覆盖了哪些方向", "还缺哪一类", "帮我排个阅读顺序"],
+  });
 
   return (
     <div>

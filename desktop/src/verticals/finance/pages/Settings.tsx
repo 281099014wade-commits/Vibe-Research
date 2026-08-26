@@ -1,6 +1,7 @@
 import { KeyRound, ShieldCheck, Check, X, Terminal } from "lucide-react";
 import { useEffect, useState } from "react";
 import { PageHeader } from "@/components/ui/PageHeader";
+import { useAiPage } from "../../../core/ai/pageContext";
 import { GlassCard } from "@/components/ui/GlassCard";
 import { Disclaimer } from "@/components/ui/Disclaimer";
 import { backend, type ProductInfo } from "@/lib/backend";
@@ -32,6 +33,18 @@ export function Settings() {
   useEffect(() => {
     backend.product().then(setInfo).catch((e: unknown) => setErr(e instanceof Error ? e.message : String(e)));
   }, []);
+
+  useAiPage({
+    key: "settings",
+    title: "接入 AI",
+    // ⚠️ 只放**只读投影**里的东西：密钥本来就不在浏览器里，这里也一个字都不要碰
+    context: info
+      ? `当前模型配置（只读）：provider ${info.provider.name}｜模板 ${info.provider.profile ?? "—"}｜` +
+        `协议 ${info.provider.wire_api}｜鉴权 ${info.provider.auth}｜密钥变量 ${info.provider.env_key} ` +
+        `${info.provider.key_present ? "已设置" : "未设置"}｜默认模型 ${String(info.defaults.model ?? "—")}｜产品版本 ${info.version}`
+      : "接入 AI：还没读到后端配置。",
+    suggestions: ["我现在接的是什么模型", "换一个模型要改哪些地方", "这一页为什么没有粘贴密钥的地方"],
+  });
 
   return (
     <div>

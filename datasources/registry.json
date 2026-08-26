@@ -2404,18 +2404,18 @@
     },
     {
       "id": "gpu_rent_thermometer",
-      "title": "产业温度计 · GPU 租金(Vast 现货中位 + Kalshi 远期概率):算力缺不缺的一根线",
+      "title": "产业温度计 · GPU 租金(近一年逐日中位 + 现货 + Kalshi 远期概率):算力缺不缺的一根线",
       "layer": "13 产业温度计",
       "market": [
         "CN"
       ],
-      "source": "vast+kalshi",
-      "compliance": "public-api-free(console.vast.ai bundles + api.elections.kalshi.com trade-api v2,无 key)",
+      "source": "500farm+kalshi",
+      "compliance": "public-api-free(500.farm Prometheus 代理 + api.elections.kalshi.com trade-api v2,无 key)",
       "module": "industry",
       "function": "gpu_rent_thermometer",
       "mapper": "gpu_rent_thermometer_map",
       "mapper_module": "mappers_industry",
-      "endpoint_label": "console.vast.ai/api/v0/bundles + kalshi markets KXB200MS",
+      "endpoint_label": "500.farm/vastai grafana proxy query_range + kalshi markets KXB200MS",
       "symbol_kind": "none",
       "symbol_param": "code",
       "stages": {
@@ -2425,10 +2425,8 @@
         "ai_compute"
       ],
       "enabled": true,
-      "args": {
-        "gpus": "B200,H100"
-      },
-      "notes": "Vast 带浏览器 UA 会 403(显式传 Python-urllib UA);H100 无在租报价是市场状态;Kalshi 三分判定(格式变 / 未开盘 / 有报价);$3 是折旧参考线不是保本线;证据 market=US / symbol=GPU 型号;history_fields=现货中位 / 远期概率 / 最低档进序列(报价档数是噪音不做历史;远期 record_key 自带合约月不跨月比)",
+      "args": {},
+      "notes": "曲线 = 500.farm 对 Vast 可租挂单的逐日中位(按机型档位分组统计后聚合,**不是**逐张挂单精确中位);🔴 现货 = 曲线的最新采样点,同源同算法 ⇒ 卡片数字与曲线末端严格一致(旧版现货走 Vast bundles,与曲线对不上且只有两张卡);型号名用统计站 label 原文(H100 SXM / A100 SXM4,写错只会安静返回空序列);Prometheus 空窗会给 NaN/Inf,必须丢弃(进 JSON 会让整条端点失败);挂单卡数是规模读数不是信号本体,拿不到给 None 不算失败;Kalshi 三分判定(格式变 / 未开盘 / 有报价);$3 是折旧参考线不是保本线;证据 market=US / symbol=GPU 型号;曲线走 extra(序列不是证据)",
       "history_fields": [
         "gpu_spot_median_usd_per_gpu_hr",
         "gpu_forward_p_below_lowest_strike",

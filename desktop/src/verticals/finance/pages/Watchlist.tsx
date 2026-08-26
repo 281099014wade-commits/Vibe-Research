@@ -1,9 +1,9 @@
 import { useMemo, useState } from "react";
 import { Plus, X, RefreshCw, Star } from "lucide-react";
 import { PageHeader } from "@/components/ui/PageHeader";
+import { useAiPage } from "../../../core/ai/pageContext";
 import { GlassCard } from "@/components/ui/GlassCard";
 import { Disclaimer } from "@/components/ui/Disclaimer";
-import { AskAiButton } from "@/components/ui/AskAiButton";
 import { loadWatch, saveWatch, addCodes } from "@/lib/watchlist";
 import { useLiveQuotes, isTradingHours } from "@/hooks/useLiveQuotes";
 import { cn } from "@/lib/utils";
@@ -82,6 +82,13 @@ export function Watchlist() {
     [codes, quotes],
   );
 
+  useAiPage({
+    key: "watchlist",
+    title: "自选股",
+    context: aiContext,
+    suggestions: ["这几只里哪些估值偏高", "帮我按赛道分组看看", "各自最大的风险点是什么"],
+  });
+
   return (
     <div>
       <PageHeader
@@ -112,13 +119,6 @@ export function Watchlist() {
               </span>
               实时行情
             </button>
-            {codes.length > 0 && (
-              <AskAiButton
-                context={aiContext}
-                label="让 AI 读自选"
-                suggestions={["这几只里哪些估值偏高", "帮我按赛道分组看看", "各自最大的风险点是什么"]}
-              />
-            )}
           </div>
         }
       />

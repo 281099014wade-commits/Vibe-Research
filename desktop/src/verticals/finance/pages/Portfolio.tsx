@@ -1,8 +1,8 @@
 import { useState, useEffect, useCallback } from "react";
 import { Plus, ShieldCheck, RefreshCw, Loader2, Trash2, AlertCircle } from "lucide-react";
 import { PageHeader } from "@/components/ui/PageHeader";
+import { useAiPage } from "../../../core/ai/pageContext";
 import { GlassCard } from "@/components/ui/GlassCard";
-import { AskAiButton } from "@/components/ui/AskAiButton";
 import { Disclaimer } from "@/components/ui/Disclaimer";
 import { api, ApiError, type PortfolioData } from "@/lib/api";
 import { cn } from "@/lib/utils";
@@ -95,6 +95,13 @@ export function Portfolio() {
       `\n汇总：市值${totals.market_value} 总浮盈${totals.pnl}(${totals.pnl_pct}%)`
     : "我的持仓：暂无记录。";
 
+  useAiPage({
+    key: "portfolio",
+    title: "我的持仓",
+    context: aiContext,
+    suggestions: ["我的持仓集中在哪些方向", "结构上有什么风险", "帮我梳理一下"],
+  });
+
   return (
     <div>
       <PageHeader
@@ -102,10 +109,6 @@ export function Portfolio() {
         subtitle="自己录、存在本地，实时看浮动盈亏"
         actions={
           <div className="flex items-center gap-2">
-            {holdings.length > 0 && (
-              <AskAiButton context={aiContext} label="让 AI 看我的持仓"
-                suggestions={["我的持仓集中在哪些方向", "结构上有什么风险", "帮我梳理一下"]} />
-            )}
             <button onClick={() => load(true)} disabled={refreshing}
               className="inline-flex items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-sm text-muted-foreground hover:text-foreground disabled:opacity-50">
               {refreshing ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}

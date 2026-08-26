@@ -80,46 +80,84 @@ def test_tw_monthly_revenue_all_fail_and_stale(monkeypatch):
         industry.tw_monthly_revenue("2383", now=NOW)
 
 
+# ---------- 500.farm(Prometheus 代理)响应构造器 ----------
+def _farm(values):
+    """values = [[unix秒, "价格字符串"], ...];传 [] 表示"统计站没有这个型号的序列"。"""
+    return {"data": {"result": ([{"values": values}] if values else [])}}
+
+
+def _farm_count_body(available, total):
+    return {"data": {"result": [{"metric": {"rented": "no"}, "value": [0, str(available)]},
+                                {"metric": {"rented": "any"}, "value": [0, str(total)]}]}}
+
+
 def test_gpu_rent_three_way_and_mapper(monkeypatch):
-    offers = {"offers": [{"dph_total": 13.0, "num_gpus": 2}, {"dph_total": 7.0, "num_gpus": 1}, {"dph_total": 20.0, "num_gpus": 4}]}
+    """现货 = 曲线最后一点(同源同算法)+ 远期三分判定 + mapper 证据形状。"""
     kalshi = {"markets": [{"ticker": "KXB200MS-26SEP-3", "yes_bid": 60, "yes_ask": 70}, {"ticker": "KXB200MS-26SEP-5", "last_price": 20}, {"ticker": "KXB200MS-26SEP-X"}]}
     calls = []
 
     def fake_get(url, params=None, headers=None, timeout=None, ext=None, **kw):
-        calls.append((url[:40], headers))
-        if "vast.ai" in url:
+        calls.append((url[:60], headers))
+        if "500.farm" in url:
+            if "gpu_count" in url:
+                return R(200, _farm_count_body(120, 400), raw="raw/count.json")
+            if "A100" in url:
+                return R(200, _farm([]), raw="raw/a100.json")          # 统计站无该型号序列
             if "H100" in url:
-                return R(200, {"offers": []}, raw="raw/vast_h100.json")
-            return R(200, offers, raw="raw/vast_b200.json")
+                return R(200, _farm([[1000, "2.5"], [86400, "2.66"]]), raw="raw/h100.json")
+            return R(200, _farm([[1000, "6.0"], [86400, "NaN"], [172800, "6.4"]]), raw="raw/b200.json")
         return R(200, kalshi, raw="raw/kalshi.json")
 
     monkeypatch.setattr(industry, "http_get", fake_get)
-    g = industry.gpu_rent_thermometer("B200,H100", now=NOW)
-    assert calls[0][1]["User-Agent"].startswith("Python-urllib"), "Vast 必须用 urllib UA(浏览器 UA 会 403)"
-    b = g["spot"][0]
-    assert b["median_usd_per_gpu_hr"] == 6.5 and b["n_offers"] == 3 and b["min"] == 5.0 and b["max"] == 7.0 and b["below_depreciation_line"] is False
-    assert g["spot"][1]["unavailable"] is True
+    g = industry.gpu_rent_thermometer(now=NOW)
+
+    # 曲线：NaN 被丢掉（它一旦进 JSON,下游序列化会整条端点失败）
+    b_hist = g["history"][0]
+    assert b_hist["gpu"] == "B200" and b_hist["n_points"] == 2 and b_hist["dropped"] == 1
+    assert b_hist["points"][-1] == [172800, 6.4]
+
+    # 🔴 现货必须**等于**曲线最后一点 —— 这是这个端点的核心不变量
+    b_spot = g["spot"][0]
+    assert b_spot["median_usd_per_gpu_hr"] == b_hist["latest"] == 6.4
+    assert b_spot["asof_ts"] == 172800 and b_spot["available_gpus"] == 120 and b_spot["total_gpus"] == 400
+    assert b_spot["below_depreciation_line"] is False
+    assert g["spot"][1]["median_usd_per_gpu_hr"] == 2.66
+    # 无序列的那张卡：unavailable(市场状态),不是 error
+    assert g["spot"][2]["unavailable"] is True and "error" not in g["spot"][2]
+
     f = g["forward"]
     assert f["n_rungs"] == 2 and f["lowest_strike"] == 3.0 and f["p_below_lowest"] == 0.35
-    m = mappers_industry.gpu_rent_thermometer_map(g, {"script": "gpu_rent_thermometer", "symbol": "MARKET", "market": "CN", "source": "vast+kalshi", "endpoint": "x", "as_of": None, "raw_ref": None, "args": {}})
+
+    m = mappers_industry.gpu_rent_thermometer_map(g, _ctx())
     assert m["status"] == "ok"
     fields = {(e["field"], e["symbol"]): e for e in m["evidence"]}
     spot = fields[("gpu_spot_median_usd_per_gpu_hr", "B200")]
-    assert spot["market"] == "US" and spot["currency"] == "USD" and spot["unit"] == "美元/卡时" and spot["value"] == 6.5 and spot["raw_ref"] == "raw/vast_b200.json" and "折旧参考线" in spot["note"]
-    assert fields[("gpu_spot_offer_count", "H100")]["value"] == 0
-    assert fields[("gpu_forward_p_below_lowest_strike", "B200")]["value"] == 0.35 and fields[("gpu_forward_lowest_strike_usd", "B200")]["currency"] == "USD"
+    assert spot["market"] == "US" and spot["currency"] == "USD" and spot["unit"] == "美元/卡时" and spot["value"] == 6.4
+    assert spot["raw_ref"] == "raw/b200.json" and "折旧参考线" in spot["note"] and "asof_ts=172800" in spot["note"]
+    assert fields[("gpu_available_count", "A100 SXM4")]["value"] == 0
+    assert fields[("gpu_forward_p_below_lowest_strike", "B200")]["value"] == 0.35
+    # 曲线走 extra(它是序列不是证据),且带上来源与天数
+    hx = m["extra"]["history"]
+    assert len(hx["gpus"]) == 3 and hx["days"] == industry.FARM_DAYS and "500.farm" in (hx["source"] or "")
 
 
 def test_gpu_rent_failure_modes(monkeypatch):
-    # offers 有内容却无 dph_total → 真故障;Kalshi ticker 全不可解析 → 真故障;两边全失败 → 抛
-    monkeypatch.setattr(industry, "http_get", lambda url, **k: R(200, {"offers": [{"foo": 1}]}) if "vast" in url else R(200, {"markets": [{"ticker": "WEIRD"}]}))
+    # 曲线全失败 + Kalshi ticker 全不可解析 → 抛(两边都没东西才算真失败)
+    monkeypatch.setattr(industry, "http_get", lambda url, **k: R(500, "boom") if "500.farm" in url else R(200, {"markets": [{"ticker": "WEIRD"}]}))
     with pytest.raises(industry.IndustryError, match="全部失败"):
-        industry.gpu_rent_thermometer("B200", now=NOW)
-    # 现货 429 但远期正常 → 不抛,mapper partial 出声
-    monkeypatch.setattr(industry, "http_get", lambda url, **k: R(429, "rate limited") if "vast" in url else R(200, {"markets": [{"ticker": "KXB200MS-26SEP-3", "last_price": 50}]}))
-    g = industry.gpu_rent_thermometer("B200", now=NOW)
-    m = mappers_industry.gpu_rent_thermometer_map(g, {"script": "x", "symbol": "MARKET", "market": "CN", "source": "v", "endpoint": "x", "as_of": None, "raw_ref": None, "args": {}})
-    assert m["status"] == "partial" and "429" in m["degraded"] and any(e["field"] == "gpu_forward_p_below_lowest_strike" for e in m["evidence"])
+        industry.gpu_rent_thermometer(now=NOW)
+    # 曲线 429 但远期正常 → 不抛,mapper partial **出声**
+    monkeypatch.setattr(industry, "http_get", lambda url, **k: R(429, "rate limited") if "500.farm" in url else R(200, {"markets": [{"ticker": "KXB200MS-26SEP-3", "last_price": 50}]}))
+    g = industry.gpu_rent_thermometer(now=NOW)
+    m = mappers_industry.gpu_rent_thermometer_map(g, _ctx())
+    assert m["status"] == "partial" and "429" in m["degraded"]
+    assert any(e["field"] == "gpu_forward_p_below_lowest_strike" for e in m["evidence"])
+    # 🔴 曲线的失败原因要带到 extra 里 —— 界面上少一条线,总得有地方说为什么
+    assert m["extra"]["history"]["errors"] and "429" in m["extra"]["history"]["errors"][0]
+    # 返回了序列但一个点都解析不出 = 上游契约变了,是 error 不是 unavailable
+    monkeypatch.setattr(industry, "http_get", lambda url, **k: R(200, _farm([[1, "NaN"], [2, "Inf"]])) if "500.farm" in url else R(200, {"markets": []}))
+    g2 = industry.gpu_rent_thermometer(now=NOW)
+    assert "无一个点可解析" in g2["history"][0]["error"] and "error" in g2["spot"][0]
 
 
 def test_registry_endpoints_and_tag_table():
@@ -201,57 +239,64 @@ def test_differential_binds_both_raws_and_all_numeric_notes_have_guard(monkeypat
             assert "读法:" in e["note"], e["field"]
 
 
-def test_vast_true_median_contract_errors_and_isolation(monkeypatch):
+def test_farm_spot_derivation_contract_errors_and_isolation(monkeypatch):
+    """单卡异常只影响那一张;挂单卡数拿不到不算失败;合约月不跨月混排。"""
     def fake(url, params=None, headers=None, timeout=None, ext=None, **kw):
-        if "vast.ai" in url:
+        if "500.farm" in url:
+            if "gpu_count" in url:
+                raise ConnectionError("count down")      # 规模读数拿不到 → None,不算失败
             if "H100" in url:
                 raise ConnectionError("boom")
-            return R(200, {"offers": [{"dph_total": 2.0, "num_gpus": 1}, {"dph_total": 10.0, "num_gpus": 1}]})
+            if "A100" in url:
+                return R(200, _farm([[5, "0.74"]]))
+            return R(200, _farm([[5, "6.0"], [10, "6.4"]]))
         return R(200, {"markets": [{"ticker": "KXB200MS-26OCT-2", "last_price": 40}, {"ticker": "KXB200MS-26SEP-3", "yes_bid": 60, "yes_ask": 70}, {"ticker": "KXB200MS-26SEP-5", "last_price": 20}]})
+
     monkeypatch.setattr(industry, "http_get", fake)
-    g = industry.gpu_rent_thermometer("B200,H100", now=NOW)
-    assert g["spot"][0]["median_usd_per_gpu_hr"] == 6.0, "偶数样本取真中位数"
+    g = industry.gpu_rent_thermometer(now=NOW)
+    assert g["spot"][0]["median_usd_per_gpu_hr"] == 6.4
+    # 挂单卡数拿不到：字段是 None，但这张卡照样有价（它是配角，不能拖垮主角）
+    assert g["spot"][0]["available_gpus"] is None and g["spot"][0]["total_gpus"] is None
     assert "ConnectionError" in g["spot"][1]["error"], "单卡异常隔离成 error 项"
+    assert g["spot"][2]["median_usd_per_gpu_hr"] == 0.74, "别的卡不受影响"
     f = g["forward"]
+
     assert f["contract_month"] == "2026-09" and f["n_rungs"] == 2 and f["lowest_strike"] == 3.0 and f["other_months"] == ["2026-10"], "只用最近合约月,不跨月混排"
     m = mappers_industry.gpu_rent_thermometer_map(g, _ctx())
     assert m["status"] == "partial" and "ConnectionError" in m["degraded"]
     fw = [e for e in m["evidence"] if e["field"] == "gpu_forward_p_below_lowest_strike"][0]
     assert fw["period"] == "2026-09-01..2026-09-30" and "contract_month=2026-09" in fw["note"] and "折旧参考线" in fw["note"]
     assert all("读法:" in e["note"] for e in m["evidence"])
-    # 顶层字段缺失 = 契约错,不是"无报价"
-    monkeypatch.setattr(industry, "http_get", lambda url, **k: R(200, {}) if "vast" in url else R(200, {"markets": [{"ticker": "KXB200MS-26SEP-3", "last_price": 50}]}))
-    g2 = industry.gpu_rent_thermometer("B200", now=NOW)
-    assert "缺少 offers" in g2["spot"][0]["error"]
-    monkeypatch.setattr(industry, "http_get", lambda url, **k: R(200, {"offers": []}) if "vast" in url else R(200, {}))
-    g3 = industry.gpu_rent_thermometer("B200", now=NOW)
+    # 统计站返回空序列 = 市场状态(unavailable),不是故障;Kalshi 顶层字段缺失 = 契约错
+    monkeypatch.setattr(industry, "http_get", lambda url, **k: R(200, _farm([])) if "500.farm" in url else R(200, {}))
+    g3 = industry.gpu_rent_thermometer(now=NOW)
     assert g3["spot"][0]["unavailable"] is True and "缺少 markets" in g3["forward"]["error"]
-    # Kalshi 抛异常 + Vast 成功 → 不抛,partial
+    # Kalshi 抛异常 + 曲线正常 → 不抛,partial
     def fake2(url, **k):
         if "kalshi" in url:
             raise TimeoutError("slow")
-        return R(200, {"offers": [{"dph_total": 7.0, "num_gpus": 1}]})
+        return R(200, _farm([[1, "7.0"]]))
     monkeypatch.setattr(industry, "http_get", fake2)
-    g4 = industry.gpu_rent_thermometer("B200", now=NOW)
+    g4 = industry.gpu_rent_thermometer(now=NOW)
     assert "TimeoutError" in g4["forward"]["error"] and mappers_industry.gpu_rent_thermometer_map(g4, _ctx())["status"] == "partial"
 
 
 # ---------- Codex industry-r2 补的用例 ----------
-def test_r2_offer_row_isolation_contract_month_fullmatch_and_tz(monkeypatch):
-    # 单条 num_gpus="unknown" 不击穿整张卡;全坏才是契约错
-    monkeypatch.setattr(industry, "http_get", lambda url, **k: R(200, {"offers": [{"dph_total": 10.0, "num_gpus": "unknown"}, {"dph_total": 8.0, "num_gpus": 2}]}) if "vast" in url else R(200, {"markets": []}))
-    g = industry.gpu_rent_thermometer("B200", now=NOW)
-    assert g["spot"][0]["median_usd_per_gpu_hr"] == 4.0 and g["spot"][0]["bad_offers"] == 1 and g["spot"][0]["n_offers"] == 1
-    monkeypatch.setattr(industry, "http_get", lambda url, **k: R(200, {"offers": [{"dph_total": 10.0, "num_gpus": "unknown"}]}) if "vast" in url else R(200, {"markets": []}))
-    g2 = industry.gpu_rent_thermometer("B200", now=NOW)
-    assert "无一可解析" in g2["spot"][0]["error"]
+def test_r2_point_isolation_contract_month_fullmatch_and_tz(monkeypatch):
+    # 单个坏点不击穿整条曲线;全坏才是契约错
+    monkeypatch.setattr(industry, "http_get", lambda url, **k: R(200, _farm([[1, "bad"], [2, "8.0"]])) if "500.farm" in url else R(200, {"markets": []}))
+    g = industry.gpu_rent_thermometer(now=NOW)
+    assert g["history"][0]["n_points"] == 1 and g["history"][0]["dropped"] == 1 and g["spot"][0]["median_usd_per_gpu_hr"] == 8.0
+    monkeypatch.setattr(industry, "http_get", lambda url, **k: R(200, _farm([[1, "bad"]])) if "500.farm" in url else R(200, {"markets": []}))
+    g2 = industry.gpu_rent_thermometer(now=NOW)
+    assert "无一个点可解析" in g2["history"][0]["error"]
     # 合约月严格整体匹配
     assert industry._contract_month("26SEP") == "2026-09" and industry._contract_month("26SEPT") is None and industry._contract_month("26SEPXYZ") is None and industry._contract_month("") is None
     # GPU 快照日期按 UTC+8:UTC 08-23 17:00 = 本地 08-24
-    monkeypatch.setattr(industry, "http_get", lambda url, **k: R(200, {"offers": [{"dph_total": 7.0, "num_gpus": 1}]}) if "vast" in url else R(200, {"markets": []}))
-    g3 = industry.gpu_rent_thermometer("B200", now=datetime(2026, 8, 23, 17, 0, tzinfo=timezone.utc))
+    monkeypatch.setattr(industry, "http_get", lambda url, **k: R(200, _farm([[1, "7.0"]])) if "500.farm" in url else R(200, {"markets": []}))
+    g3 = industry.gpu_rent_thermometer(now=datetime(2026, 8, 23, 17, 0, tzinfo=timezone.utc))
     assert g3["checked_at"] == "2026-08-24" and g3["checked_tz"] == "Asia/Shanghai"
     assert mappers_industry.gpu_rent_thermometer_map(g3, _ctx())["extra"]["checked_tz"] == "Asia/Shanghai"
     # naive datetime 当 UTC
-    g4 = industry.gpu_rent_thermometer("B200", now=datetime(2026, 8, 23, 17, 0))
+    g4 = industry.gpu_rent_thermometer(now=datetime(2026, 8, 23, 17, 0))
     assert g4["checked_at"] == "2026-08-24"

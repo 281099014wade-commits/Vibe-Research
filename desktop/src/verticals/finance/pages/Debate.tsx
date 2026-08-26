@@ -3,6 +3,7 @@ import { Swords, Play, Square, Save, CheckCircle2, Circle, AlertTriangle } from 
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { PageHeader } from "@/components/ui/PageHeader";
+import { useAiPage } from "../../../core/ai/pageContext";
 import { GlassCard } from "@/components/ui/GlassCard";
 import { Disclaimer } from "@/components/ui/Disclaimer";
 import { debateStream, type DebateStage } from "@/lib/agents";
@@ -89,6 +90,15 @@ export function Debate() {
   }
 
   const finished = stages.length > 0 && stages.every((s) => s.done);
+
+  useAiPage({
+    key: `debate:${code || "none"}`,
+    title: code ? `多空辩论 · ${code}` : "多空辩论",
+    context: stages.length
+      ? `多空辩论 · 标的 ${code}\n` + stages.map((s) => `【${s.label}】${s.done ? s.content : "（还在跑）"}`).join("\n\n")
+      : "多空辩论：还没跑过。这一页会用同一份客观资料让多方与空方各自立论、互相质疑，最后由中立主持归纳分歧点与验证清单。",
+    suggestions: ["双方最大的分歧在哪", "哪一方的论据更硬", "验证清单该怎么排优先级"],
+  });
 
   return (
     <div>

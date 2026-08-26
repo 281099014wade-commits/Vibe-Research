@@ -1,9 +1,11 @@
-import { useState, useEffect, useCallback } from "react";
+import { useCallback, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { TrendingUp, FileText, Newspaper, Rss, RefreshCw, Loader2, ExternalLink, AlertCircle, Sparkles, Lightbulb, Star } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { PageHeader } from "@/components/ui/PageHeader";
+import { useAiPage } from "../../../core/ai/pageContext";
+import { useArchiveThenRefresh } from "../../../core/data/useArchiveThenRefresh";
 import { GlassCard } from "@/components/ui/GlassCard";
 import { Disclaimer } from "@/components/ui/Disclaimer";
 import { SaveNoteButton } from "@/components/ui/SaveNoteButton";
@@ -23,23 +25,14 @@ const TABS = [
 interface Digest { loading?: boolean; text?: string; err?: string; needKey?: boolean }
 
 function InvestmentNewsPanel() {
-  const [data, setData] = useState<RadarData | null>(null);
-  const [err, setErr] = useState<string | null>(null);
   const [active, setActive] = useState("ai");
-  const [refreshing, setRefreshing] = useState(false);
   const [digests, setDigests] = useState<Record<string, Digest>>({});
   const [bulk, setBulk] = useState<{ running: boolean; done: number; total: number }>({ running: false, done: 0, total: 0 });
 
-  useEffect(() => {
-    api.radar().then(setData).catch((e) => setErr(e instanceof ApiError ? e.message : "加载失败"));
-  }, []);
-
-  const refresh = async () => {
-    setRefreshing(true); setErr(null);
-    try { setData(await api.radarRefresh()); }
-    catch (e) { setErr(e instanceof ApiError ? e.message : "刷新失败"); }
-    finally { setRefreshing(false); }
-  };
+  // 打开先给存档、后台再刷（见 core/data/useArchiveThenRefresh）——
+  // 抓一轮资讯要好几十秒，让人对着转圈等是最没必要的那种等待。
+  const { data, err, loading, refreshing, staleNote, refresh } =
+    useArchiveThenRefresh<RadarData>((r) => (r ? api.radarRefresh() : api.radar()), []);
 
   const industries: Industry[] = data?.industries || [];
   const cur = industries.find((i) => i.key === active) || industries[0];
@@ -79,8 +72,19 @@ function InvestmentNewsPanel() {
   return (
     <div>
       <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-        <span className="text-xs text-muted-foreground">
-          {hasData ? `${data!.stats.total_sources} 个公开源 · 近 ${data!.recent_days} 天 · 更新于 ${data!.generated_at}` : "12 赛道 · 106 个公开源"}
+        <span className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
+          <span>
+            {hasData ? `${data!.stats.total_sources} 个公开源 · 近 ${data!.recent_days} 天 · 更新于 ${data!.generated_at}` : "12 赛道 · 106 个公开源"}
+          </span>
+          {/* 🔴 先给存档、后台刷 ⇒ 用户必须看得出他现在看的是**哪一份**：
+              刷新中 = 下面是存档、新的在路上；刷新没成功 = 下面仍是存档，别让他以为是最新的。 */}
+          {refreshing && hasData && (
+            <span className="inline-flex items-center gap-1 rounded-full bg-primary/10 px-2 py-0.5 text-[11px] text-primary">
+              <Loader2 className="h-3 w-3 animate-spin" /> 刷新中（下面是上次的存档）
+            </span>
+          )}
+          {loading && <span className="text-[11px]">正在取…（这一页还没有存档）</span>}
+          {staleNote && <span className="text-[11px] text-warning">{staleNote}</span>}
         </span>
         <div className="flex items-center gap-2">
           {hasData && (
@@ -188,15 +192,14 @@ const MAX_ROWS = 60;
 
 function WatchlistFeed({ kind }: { kind: "filings" | "news" }) {
   const [codes, setCodes] = useState<string[]>(loadWatch);
-  const [rows, setRows] = useState<FeedRow[]>([]);
-  const [loading, setLoading] = useState(false);
-  const [err, setErr] = useState<string | null>(null);
   const [depNote, setDepNote] = useState<string | null>(null);
 
-  const load = useCallback(async (cs: string[]) => {
-    if (!cs.length) { setRows([]); return; }
-    setLoading(true); setErr(null); setDepNote(null);
-    try {
+  // 打开先给存档、后台再刷：这里要按关注列表逐个拉，条数一多就是好几秒
+  const load = useCallback(async (doRefresh: boolean): Promise<FeedRow[]> => {
+    const cs = codes;
+    if (!cs.length) return [];
+    setDepNote(null);
+    {
       // 股名（一次批量），失败则退回显示代码
       const nameOf: Record<string, string> = {};
       try {
@@ -207,7 +210,7 @@ function WatchlistFeed({ kind }: { kind: "filings" | "news" }) {
       const out: FeedRow[] = [];
       if (kind === "filings") {
         const res = await Promise.all(
-          cs.map((c) => api.announcements(c).then((a) => ({ c, a })).catch(() => ({ c, a: [] as Announcement[] }))),
+          cs.map((c) => api.announcements(c, doRefresh).then((a) => ({ c, a })).catch(() => ({ c, a: [] as Announcement[] }))),
         );
         for (const { c, a } of res)
           for (const x of a)
@@ -216,7 +219,7 @@ function WatchlistFeed({ kind }: { kind: "filings" | "news" }) {
         let dep: string | null = null;
         const res = await Promise.all(
           cs.map((c) =>
-            api.news(c).then((n) => ({ c, n })).catch((e) => {
+            api.news(c, doRefresh).then((n) => ({ c, n })).catch((e) => {
               if (e instanceof ApiError && e.status === 501) dep = e.message;
               return { c, n: [] as NewsItem[] };
             }),
@@ -235,17 +238,20 @@ function WatchlistFeed({ kind }: { kind: "filings" | "news" }) {
         return Number.isNaN(t) ? 0 : t;
       };
       out.sort((p, q) => ts(q.when) - ts(p.when));
-      setRows(out.slice(0, MAX_ROWS));
-    } catch (e) {
-      setErr(e instanceof ApiError ? e.message : "加载失败");
-    } finally {
-      setLoading(false);
+      return out.slice(0, MAX_ROWS);
     }
-  }, [kind]);
+  }, [kind, codes]);
 
-  useEffect(() => { const cs = loadWatch(); setCodes(cs); load(cs); }, [load]);
+  const { data, err, loading, refreshing, staleNote, refresh: rerun } =
+    useArchiveThenRefresh<FeedRow[]>(load, [kind, codes.join(",")]);
+  const rows = data ?? [];
 
-  const refresh = () => { const cs = loadWatch(); setCodes(cs); load(cs); };
+  // 刷新时顺便把关注列表重新读一遍（用户可能刚在别的页面加了自选）
+  const refresh = () => {
+    const cs = loadWatch();
+    if (cs.join(",") !== codes.join(",")) setCodes(cs);   // 变了 → deps 变 → 自动重来
+    else rerun();
+  };
 
   if (!codes.length) {
     return (
@@ -260,11 +266,19 @@ function WatchlistFeed({ kind }: { kind: "filings" | "news" }) {
       <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
         <span className="flex items-center gap-1.5 text-xs text-muted-foreground">
           <Star className="h-3.5 w-3.5 text-primary/70" /> 关注 {codes.length} 只 · 共 {rows.length} 条{kind === "filings" ? "公告" : "新闻"}（近期）
+          {/* 🔴 先给存档、后台刷 ⇒ 得让人看得出现在这一屏是哪一份 */}
+          {refreshing && rows.length > 0 && (
+            <span className="inline-flex items-center gap-1 rounded-full bg-primary/10 px-2 py-0.5 text-[11px] text-primary">
+              <Loader2 className="h-3 w-3 animate-spin" /> 刷新中（下面是上次的存档）
+            </span>
+          )}
+          {loading && <span className="text-[11px]">正在取…（这一页还没有存档）</span>}
+          {staleNote && <span className="text-[11px] text-warning">{staleNote}</span>}
         </span>
-        <button onClick={refresh} disabled={loading}
+        <button onClick={refresh} disabled={loading || refreshing}
           className="inline-flex items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-sm text-muted-foreground hover:text-foreground disabled:opacity-50">
-          {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
-          {loading ? "拉取中…" : "刷新"}
+          {refreshing ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
+          {refreshing ? "拉取中…" : "刷新"}
         </button>
       </div>
 
@@ -304,6 +318,13 @@ export function Intel() {
   const navigate = useNavigate();
   const tab = TABS.some((t) => t.key === tabParam) ? tabParam! : TABS[0]!.key;
   const cur = TABS.find((t) => t.key === tab)!;
+
+  useAiPage({
+    key: `intel:${tab}`,
+    title: `资讯雷达 · ${cur.label}`,
+    context: `资讯雷达 · 当前栏目「${cur.label}」。可选栏目：${TABS.map((t) => t.label).join("、")}。`,
+    suggestions: ["这个栏目适合看什么", "帮我把要点提炼一下", "有哪些值得追的线索"],
+  });
 
   return (
     <div>
@@ -360,17 +381,10 @@ export function Intel() {
  *    ③ 只取到一部分时明说 partial —— 否则用户以为"就这么几条"
  */
 function EventsPanel() {
-  const [data, setData] = useState<MacroProbability | null>(null);
-  const [err, setErr] = useState<string | null>(null);
-  const [done, setDone] = useState(false);
-  useEffect(() => {
-    api.macroProbability()
-      .then(setData)
-      .catch((e) => setErr(e instanceof ApiError ? e.message : String(e)))
-      .finally(() => setDone(true));
-  }, []);
+  const { data, err, loading, refreshing, staleNote, refresh } =
+    useArchiveThenRefresh<MacroProbability>((r) => api.macroProbability(r), []);
 
-  if (!done) return <p className="mt-4 text-sm text-muted-foreground">正在取…</p>;
+  if (loading) return <p className="mt-4 text-sm text-muted-foreground">正在取…（这一页还没有存档）</p>;
   if (err) return <p className="mt-4 text-sm text-destructive">{err}</p>;
   if (!data || data.items.length === 0)
     return <p className="mt-4 text-sm text-muted-foreground">这一轮没取到合约报价（上游可能暂时不可用），不代表没有相关事件。</p>;
@@ -384,6 +398,16 @@ function EventsPanel() {
         <span>{`共 ${data.items.length} 份合约`}</span>
         {data.partial && <span className="text-warning">· 部分源没取到，这不是完整清单</span>}
         <span className="text-[11px] text-muted-foreground/60">{`更新于 ${data.updated}`}</span>
+        {refreshing && (
+          <span className="inline-flex items-center gap-1 rounded-full bg-primary/10 px-2 py-0.5 text-[11px] text-primary">
+            <Loader2 className="h-3 w-3 animate-spin" /> 刷新中（下面是上次的存档）
+          </span>
+        )}
+        {staleNote && <span className="text-[11px] text-warning">{staleNote}</span>}
+        <button onClick={refresh} disabled={refreshing}
+          className="inline-flex items-center gap-1 rounded-lg border border-border px-2 py-0.5 text-[11px] hover:text-foreground disabled:opacity-50">
+          <RefreshCw className="h-3 w-3" /> 刷新
+        </button>
       </p>
 
       {[...byTopic.entries()].map(([topic, items]) => (

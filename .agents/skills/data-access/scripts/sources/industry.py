@@ -28,7 +28,6 @@ FINMIND = "https://api.finmindtrade.com/api/v4/data"
 TW_DEFAULT = "2383,6274,2368,3081"
 TW_NAMES = {"2383": "台光电子·CCL(M8/M9;英伟达链 + AWS Trainium 独供)", "6274": "台燿·CCL(交换机料)",
             "2368": "金像电·PCB(ASIC / Trainium 侧)", "3081": "联亚光电·InP 外延(光芯片上游)"}
-VAST_BASE = "https://console.vast.ai/api/v0/bundles/?q="
 KALSHI_API = "https://api.elections.kalshi.com/trade-api/v2/markets?series_ticker=KXB200MS&status=open&limit=200"
 DEPRECIATION_LINE = 3.0  # B200 每卡时设备折旧参考线(父项目标定,勿随意改);不是完整经济保本线
 
@@ -158,43 +157,112 @@ def tw_monthly_revenue(tickers: str = TW_DEFAULT, years: int = 2, now: Optional[
             "checked_at": now_tw.strftime("%Y-%m-%d"), "checked_tz": "Asia/Taipei", "source": "FinMind TaiwanStockMonthRevenue(零鉴权)"}
 
 
-def _vast_spot(gpu: str) -> dict:
-    """任何异常都收敛成 error 项(不让一张卡拖垮整个端点);顶层 offers 字段缺失 / 非列表 = 契约变化,不是"无报价"。"""
-    query = {"gpu_name": {"eq": gpu}, "rentable": {"eq": True}, "order": [["dph_total", "asc"]], "limit": 30}
+# ——— 近一年逐日中位（500.farm 的 Prometheus 查询代理，匿名可读；exporter 开源：
+# github.com/500farm/prometheus-vastai）。查询表达式与其官方面板同源。
+# 🔴 `rented="no"` = 当前**可租**的挂单；`quantile(0.5, …)` 是跨机型切片（机房 / 卡数段 / 认证）
+#    等权聚合 —— 这是「切片中位的中位」，**不是逐张挂单的精确中位**，文案一律称
+#    「分组统计后聚合的中位」，别写成「全市场挂单中位价」。
+FARM_BASE = "https://500.farm/vastai/grafana.v2/api/datasources/proxy/uid/EdgV2xcnz/api/v1"
+FARM_QUERY = 'quantile(0.5, vastai_v2_ondemand_price_median_dollars{gpu_name="%s", rented="no"})'
+FARM_DAYS = 365
+# 🔴 这里的型号名是 **500.farm 的 label 原文**，与 Vast 现货那边的参数不是一回事
+#    （那边 "H100"，这里 "H100 SXM"）。写错不会报错，只会安静地返回空序列。
+FARM_GPUS = ("B200", "H100 SXM", "A100 SXM4")
+FARM_SOURCE = ("500.farm 对 Vast.ai 可租挂单的逐日中位统计(按机型档位分组统计后聚合,含平台费;"
+               "每日一个采样点)")
+SPOT_SOURCE = "现货 = 走势曲线的最新采样点(与曲线同源同算法,两处数字严格一致);另附当前市场挂单卡数做规模读数"
+
+
+def _farm_history(gpu: str) -> dict:
+    """单卡近一年逐日中位价。points = [[unix**秒**, 美元价], ...] 升序。
+
+    🔴 单位是**秒**。前端图表按秒收（它自己 ×1000）——给毫秒的话时间轴会被推到公元 5 万多年，
+       表现是横轴刻度变成 58612 这种数字、曲线拉成一条直线，看着像"图坏了"。
+    ⚠️ 一张卡失败不拖垮整个端点：收敛成 error 项，由 mapper 决定降级到什么程度。
+    """
+    now = int(time.time())
+    url = FARM_BASE + "/query_range?" + urllib.parse.urlencode(
+        {"query": FARM_QUERY % gpu, "start": now - FARM_DAYS * 86400, "end": now, "step": 86400})
     try:
-        r = http_get(VAST_BASE + urllib.parse.quote(json.dumps(query)), headers={"User-Agent": "Python-urllib/3.12"}, timeout=40, ext="json")
+        r = http_get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=60, ext="json")
     except Exception as e:  # noqa: BLE001
-        return {"gpu": gpu, "error": f"Vast 请求失败:{type(e).__name__}: {str(e)[:120]}"}
+        return {"gpu": gpu, "error": f"500.farm 请求失败:{type(e).__name__}: {str(e)[:120]}"}
     raw = getattr(r, "_vra_raw_ref", None)
     if r.status_code >= 400:
-        return {"gpu": gpu, "error": f"Vast HTTP {r.status_code}", "raw_ref": raw}
+        return {"gpu": gpu, "error": f"500.farm HTTP {r.status_code}", "raw_ref": raw}
     try:
         body = r.json()
     except Exception as e:  # noqa: BLE001
-        return {"gpu": gpu, "error": f"Vast 响应不是 JSON:{type(e).__name__}", "raw_ref": raw}
-    offers = body.get("offers") if isinstance(body, dict) else None
-    if not isinstance(offers, list):
-        return {"gpu": gpu, "error": "Vast 响应缺少 offers 列表(契约可能已变)", "raw_ref": raw}
-    prices, bad = [], 0
-    for o in offers:
+        return {"gpu": gpu, "error": f"500.farm 响应不是 JSON:{type(e).__name__}", "raw_ref": raw}
+    result = ((body or {}).get("data") or {}).get("result") or []
+    if not result:
+        # 统计站没有这个型号的序列 = 市场状态 / 型号名变更，不是故障
+        return {"gpu": gpu, "unavailable": True, "raw_ref": raw,
+                "note": "统计站暂无该型号的历史序列(市场状态或型号名变更)"}
+    points, bad = [], 0
+    for pair in result[0].get("values") or []:
         try:
-            if not isinstance(o, dict) or isinstance(o.get("dph_total"), bool):
-                raise ValueError("offer 不是对象或 dph_total 非数值")
-            total = float(o["dph_total"])
-            n = int(o.get("num_gpus") or 1)
-            if total <= 0 or n <= 0:
-                raise ValueError("dph_total / num_gpus 非正")
-            prices.append(total / n)
+            ts, val = pair[0], pair[1]
+            price = float(val)
+        except (IndexError, TypeError, ValueError):
+            bad += 1
+            continue
+        # Prometheus 在切片空窗时会给 "NaN" / "Inf"。非有限值一旦进 JSON，
+        # 下游序列化会整个失败 —— 那是"整条端点挂掉"，比少几个点糟得多。
+        if not math.isfinite(price):
+            bad += 1
+            continue
+        points.append([int(ts), round(price, 2)])
+    if not points:
+        return {"gpu": gpu, "error": f"返回了序列但无一个点可解析(上游契约可能已变;丢弃 {bad} 个)", "raw_ref": raw}
+    return {"gpu": gpu, "n_points": len(points), "points": points, "latest": points[-1][1],
+            "dropped": bad, "raw_ref": raw}
+
+
+def _farm_count(gpu: str) -> Optional[dict]:
+    """当前市场挂单卡数：{available: 可租, total: 全市场}。
+
+    ⚠️ 这是**装饰性规模读数**，不是信号本体：拿不到就返回 None，界面上那一行自然缺席，
+       不进 errors（为一个配角把整个温度计标成 partial，会淹掉真正的失败）。
+    """
+    url = FARM_BASE + "/query?" + urllib.parse.urlencode(
+        {"query": 'sum by (rented) (vastai_v2_gpu_count{gpu_name="%s"})' % gpu})
+    try:
+        r = http_get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=30, ext="json")
+        if r.status_code >= 400:
+            return None
+        result = ((r.json() or {}).get("data") or {}).get("result") or []
+    except Exception:  # noqa: BLE001
+        return None
+    by_rented = {}
+    for item in result:
+        try:
+            by_rented[(item.get("metric") or {}).get("rented")] = int(float(item["value"][1]))
         except (KeyError, TypeError, ValueError):
-            bad += 1  # 单条报价坏不击穿整张卡;全坏才是契约错
-    prices.sort()
-    if not prices:
-        if offers:
-            return {"gpu": gpu, "error": f"返回 {len(offers)} 条报价但无一可解析(坏条目 {bad};契约可能已变)", "raw_ref": raw}
-        return {"gpu": gpu, "unavailable": True, "note": "无在租报价(市场状态不是故障;旧卡常态)", "n_offers": 0, "raw_ref": raw}
-    mid = statistics.median(prices)  # 偶数样本取中间两值平均(真中位数;V2 取上中位是错的)
-    return {"gpu": gpu, "n_offers": len(prices), "bad_offers": bad, "median_usd_per_gpu_hr": round(mid, 2), "min": round(prices[0], 2), "max": round(prices[-1], 2),
-            "below_depreciation_line": mid < DEPRECIATION_LINE, "raw_ref": raw}
+            continue
+    if "no" not in by_rented and "any" not in by_rented:
+        return None
+    return {"available": by_rented.get("no"), "total": by_rented.get("any")}
+
+
+def _spot_from_history(hist_row: dict, count: Optional[dict]) -> dict:
+    """现货 = 走势曲线的**最后一个点**。
+
+    🔴 与曲线同源同算法 ⇒ 卡片上的数字与曲线末端**严格一致**。
+       之前现货走的是另一条路（Vast bundles 当下报价），于是"卡片说 5.75、曲线末端 6.4"
+       这种对不上的事既解释不清、也没法查 —— 而且那条路只覆盖两张卡，界面上就只有一张。
+    ⚠️ 曲线那一行的失败 / 缺席状态**原样传染**给现货：它们本来就是同一份数据。
+    """
+    base = {"gpu": hist_row.get("gpu")}
+    if hist_row.get("error"):
+        return {**base, "error": hist_row["error"], "raw_ref": hist_row.get("raw_ref")}
+    if hist_row.get("unavailable") or not hist_row.get("points"):
+        return {**base, "unavailable": True, "raw_ref": hist_row.get("raw_ref"),
+                "note": hist_row.get("note") or "暂无统计序列(市场状态,非故障)"}
+    ts, price = hist_row["points"][-1]
+    return {**base, "median_usd_per_gpu_hr": price, "asof_ts": int(ts), "raw_ref": hist_row.get("raw_ref"),
+            "available_gpus": (count or {}).get("available"), "total_gpus": (count or {}).get("total"),
+            "below_depreciation_line": price < DEPRECIATION_LINE}
 
 
 _MONTHS = {"JAN": 1, "FEB": 2, "MAR": 3, "APR": 4, "MAY": 5, "JUN": 6, "JUL": 7, "AUG": 8, "SEP": 9, "OCT": 10, "NOV": 11, "DEC": 12}
@@ -252,20 +320,24 @@ def _kalshi_forward() -> dict:
             "ladder": [{"strike": x["strike"], "p_above": round(x["p_above"], 3)} for x in rungs[:6]], "other_months": sorted(k for k in by_month if k != month), "raw_ref": raw}
 
 
-def gpu_rent_thermometer(gpus: str = "B200,H100", now: Optional[datetime] = None) -> dict:
-    """GPU 租金温度计:现货(Vast 撮合市场,中位数)+ 远期(Kalshi KXB200MS 阶梯市场 → P(月均 < 最低档))。
-    现货与远期都拿不到 → 抛;单边失败由 mapper 标 partial。"""
+def gpu_rent_thermometer(gpus: str = "", now: Optional[datetime] = None) -> dict:  # noqa: ARG001
+    """GPU 租金温度计:近一年逐日曲线 + 现货(= 曲线最新点)+ 远期(Kalshi KXB200MS → P(月均 < 最低档))。
+
+    ⚠️ `gpus` 参数**已不再起作用**:型号由 `FARM_GPUS` 定(它们是统计站的 label 原文,
+       写错不会报错、只会安静地返回空序列)。保留形参只为注册表里旧的 args 不至于报未知参数。
+    现货与远期都拿不到 → 抛;单边失败由 mapper 标 partial。
+    """
     n = now or datetime.now(timezone.utc)
     now = (n if n.tzinfo else n.replace(tzinfo=timezone.utc)).astimezone(SHANGHAI)
-    spot = []
-    for i, g in enumerate([x.strip() for x in str(gpus).split(",") if x.strip()]):
-        if i:
-            time.sleep(1.0)  # Vast 连续请求会 429(实测第二张卡常撞),隔 1 秒
-        spot.append(_vast_spot(g))
+    # 曲线先取，现货由它派生 —— 两处数字必须严格一致（见 _spot_from_history）
+    history = [_farm_history(g) for g in FARM_GPUS]
+    spot = [_spot_from_history(h, _farm_count(h["gpu"])) for h in history]
     forward = _kalshi_forward()
     # 只有"现货每张卡都是 error 且远期也 error"才算全部失败;"无在租报价"是市场状态(有效响应),不算失败
     spot_all_failed = bool(spot) and all("error" in s for s in spot)
     if spot_all_failed and "error" in forward:
         raise IndustryError("GPU 租金现货与远期全部失败:" + "; ".join(str(s.get("error")) for s in spot) + "; " + str(forward.get("error")))
-    return {"spot": spot, "forward": forward, "depreciation_line_usd": DEPRECIATION_LINE, "checked_at": now.strftime("%Y-%m-%d"), "checked_tz": "Asia/Shanghai",
-            "source": "Vast.ai bundles(零鉴权)+ Kalshi trade-api v2(零鉴权)"}
+    return {"spot": spot, "forward": forward, "history": history, "history_days": FARM_DAYS, "history_source": FARM_SOURCE,
+            "spot_source": SPOT_SOURCE,
+            "depreciation_line_usd": DEPRECIATION_LINE, "checked_at": now.strftime("%Y-%m-%d"), "checked_tz": "Asia/Shanghai",
+            "source": "500.farm 统计站(零鉴权)+ Kalshi trade-api v2(零鉴权)"}

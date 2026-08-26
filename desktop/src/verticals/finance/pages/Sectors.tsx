@@ -1,6 +1,7 @@
 import { Link } from "react-router-dom";
 import { Flame, ChevronRight } from "lucide-react";
 import { PageHeader } from "@/components/ui/PageHeader";
+import { useAiPage } from "../../../core/ai/pageContext";
 import { GlassCard } from "@/components/ui/GlassCard";
 import { Disclaimer } from "@/components/ui/Disclaimer";
 import sectorsData from "@/data/sectors.json";
@@ -17,6 +18,15 @@ import sectorsData from "@/data/sectors.json";
 export function Sectors() {
   const sectors = sectorsData.sectors.filter((s) => s.verified);
   const hotCount = sectors.filter((s) => s.hot).length;
+
+  useAiPage({
+    key: "sectors",
+    title: "板块中心",
+    context:
+      `板块中心 · 已核实 ${sectors.length} 条产业链骨架（其中标热门 ${hotCount} 条）。只有环节，不含标的：\n` +
+      sectors.map((s) => `- ${s.label}：${s.tagline}｜环节 ${s.nodes.length} 个`).join("\n"),
+    suggestions: ["这几条链哪条更值得看", "帮我比较一下它们的环节结构", "还缺哪些环节"],
+  });
 
   return (
     <div>

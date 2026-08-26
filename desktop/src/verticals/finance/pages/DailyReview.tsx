@@ -4,8 +4,8 @@ import { Sparkles, Loader2, AlertCircle, RefreshCw, Gauge, ArrowDownUp, Trending
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { PageHeader } from "@/components/ui/PageHeader";
+import { useAiPage } from "../../../core/ai/pageContext";
 import { GlassCard } from "@/components/ui/GlassCard";
-import { AskAiButton } from "@/components/ui/AskAiButton";
 import { Disclaimer } from "@/components/ui/Disclaimer";
 import { api, ApiError, type IndexQuote, type Quote, type MarketOverview, type ShortTermEmotion, type TurnoverTop, type GlobalIndex } from "@/lib/api";
 import { hasLlm, chatStream } from "@/lib/llm";
@@ -124,18 +124,19 @@ export function DailyReview() {
     { k: "活跃度", v: sentiment.active, up: null },
   ] : []).filter((c) => c.v !== null && c.v !== "" && c.v !== undefined);
 
+  // 右上角那个 AI 按钮聊的就是这一页（登记处见 core/ai/pageContext）
+  useAiPage({
+    key: "daily-review",
+    title: "每日复盘",
+    context: `今日大盘数据：${dataSummary}`,
+    suggestions: ["今天大盘怎么走", "哪些指数领涨领跌", "盘面有什么值得注意"],
+  });
+
   return (
     <div>
       <PageHeader
         title="每日复盘"
         subtitle={`${today} · 大盘 / 情绪 / 板块资金一屏看全，交给你的 AI 做复盘`}
-        actions={
-          <AskAiButton
-            context={`今日大盘数据：${dataSummary}`}
-            label="问 AI"
-            suggestions={["今天大盘怎么走", "哪些指数领涨领跌", "盘面有什么值得注意"]}
-          />
-        }
       />
 
       {/* 1. 大盘指数（实时） */}
@@ -422,7 +423,9 @@ export function DailyReview() {
             <table className="w-full text-sm">
               <thead>
                 <tr className="border-b border-border/50 text-left text-xs text-muted-foreground">
-                  {["行业", "涨跌%", "今日净流入", "流入", "流出", "家数"].map((h) => (
+                  {/* 🔴 上游只给净额，拆不出「流入 / 流出 / 家数」——**那三列已经删掉**。
+                      留着表头而每行都是横杠，比没有这几列更糟：它让人以为数据坏了。 */}
+                  {["行业", "涨跌%", "今日净流入"].map((h) => (
                     <th key={h} className="whitespace-nowrap px-2 py-2 font-medium">{h}</th>
                   ))}
                 </tr>
@@ -433,9 +436,6 @@ export function DailyReview() {
                     <td className="px-2 py-2 font-medium">{s.name}</td>
                     <td className={cn("px-2 py-2 font-mono", pctColor(s.pct))}>{s.pct > 0 ? "+" : ""}{s.pct}%</td>
                     <td className={cn("px-2 py-2 font-mono", pctColor(s.net))}>{s.net > 0 ? "+" : ""}{fmt(s.net)} 亿</td>
-                    <td className="px-2 py-2 font-mono text-muted-foreground">{s.inflow == null ? "—" : fmt(s.inflow)}</td>
-                    <td className="px-2 py-2 font-mono text-muted-foreground">{s.outflow == null ? "—" : fmt(s.outflow)}</td>
-                    <td className="px-2 py-2 font-mono text-muted-foreground">{s.firms ?? "—"}</td>
                   </tr>
                 ))}
               </tbody>

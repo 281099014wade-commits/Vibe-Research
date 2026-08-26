@@ -67,12 +67,16 @@ def gpu_rent_thermometer_map(result: dict, ctx: dict) -> dict:
     for s in result.get("spot") or []:
         sctx = {**ctx, "symbol": s["gpu"], "market": "US"}
         if "median_usd_per_gpu_hr" in s:
+            # 现货 = 曲线最后一个点 ⇒ note 里带上那一点的时间戳与挂单卡数（规模读数，可能为 None）
             evs.append(ev(sctx, "gpu_spot_median_usd_per_gpu_hr", s["median_usd_per_gpu_hr"], "美元/卡时", day, currency="USD", as_of=day, record_key=s["gpu"], raw_ref=s.get("raw_ref"),
-                          note=f"gpu={s['gpu']};n_offers={s['n_offers']};min={s['min']};max={s['max']};depreciation_line_usd={line};below_line={s['below_depreciation_line']};{GPU_GUARD}"))
-            evs.append(ev(sctx, "gpu_spot_offer_count", s["n_offers"], "档", day, currency="n/a", as_of=day, record_key=s["gpu"], raw_ref=s.get("raw_ref"), note=f"gpu={s['gpu']};Vast 在租报价档数;{GPU_GUARD}"))
+                          note=f"gpu={s['gpu']};asof_ts={s.get('asof_ts')};available_gpus={s.get('available_gpus')};total_gpus={s.get('total_gpus')};"
+                               f"depreciation_line_usd={line};below_line={s['below_depreciation_line']};{GPU_GUARD}"))
+            if s.get("available_gpus") is not None:
+                evs.append(ev(sctx, "gpu_available_count", s["available_gpus"], "张", day, currency="n/a", as_of=day, record_key=s["gpu"], raw_ref=s.get("raw_ref"),
+                              note=f"gpu={s['gpu']};当前可租挂单卡数(规模读数,不是信号本体);total={s.get('total_gpus')};{GPU_GUARD}"))
         elif s.get("unavailable"):
             unavailable.append(s["gpu"])
-            evs.append(ev(sctx, "gpu_spot_offer_count", 0, "档", day, currency="n/a", as_of=day, record_key=s["gpu"], raw_ref=s.get("raw_ref"), note=f"gpu={s['gpu']};无在租报价(市场状态不是故障;旧卡常态);{GPU_GUARD}"))
+            evs.append(ev(sctx, "gpu_available_count", 0, "张", day, currency="n/a", as_of=day, record_key=s["gpu"], raw_ref=s.get("raw_ref"), note=f"gpu={s['gpu']};{s.get('note') or '暂无统计序列(市场状态不是故障)'};{GPU_GUARD}"))
         else:
             errs.append(f"{s['gpu']}: {s.get('error')}")
     f = result.get("forward") or {}
@@ -91,5 +95,12 @@ def gpu_rent_thermometer_map(result: dict, ctx: dict) -> dict:
     status, degraded = "ok", None
     if errs:
         status, degraded = "partial", "部分失败:" + "; ".join(errs)[:200]
-    return out(evs, extra={"source": result.get("source"), "checked_tz": result.get("checked_tz"), "depreciation_line_usd": line, "unavailable": unavailable, "errors": errs, "guard": GPU_GUARD, "forward_guard": FWD_GUARD},
+    # 近一年逐日曲线走 extra:它是**序列**不是证据(一条线上三百多个点,逐点发证据既无意义也淹没报告)。
+    # 🔴 曲线取不到不降级整个端点 —— 它是配图,现货与远期才是这个温度计的本体;
+    #    但**每张卡的失败原因要带出去**,不能让界面上少一条线而没人知道为什么。
+    hist = [h for h in (result.get("history") or []) if isinstance(h, dict)]
+    hist_errs = [f"{h.get('gpu')}: {h.get('error')}" for h in hist if h.get("error")]
+    return out(evs, extra={"source": result.get("source"), "checked_tz": result.get("checked_tz"), "depreciation_line_usd": line, "unavailable": unavailable, "errors": errs, "guard": GPU_GUARD, "forward_guard": FWD_GUARD,
+                           "history": {"gpus": hist, "days": result.get("history_days"), "source": result.get("history_source"), "errors": hist_errs},
+                           "spot_rows": result.get("spot"), "spot_source": result.get("spot_source")},
                status=status, degraded=degraded)
