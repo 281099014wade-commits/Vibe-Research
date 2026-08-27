@@ -59,10 +59,14 @@ const SECTOR_LINKS = [
 ];
 
 // 带子栏目的导航组：父项右侧小三角展开/收起，展开状态按组记忆。
+// 带子栏目的导航组。
+// 🔴 存储键**带版本号**：默认值从"展开"改成"收起"时，老键里存着的 "open"
+//    会让已经用过的人照旧全展开 —— 那不是 bug（它在记住你的选择），但新默认就等于没生效。
+//    换个键 = 旧记忆不再适用，所有人重新从收起开始；之后手动展开的仍然会被记住。
 const NAV_GROUPS: Record<string, { storageKey: string; links: typeof SIGNAL_LINKS }> = {
-  "/intel": { storageKey: "vr-intel-open", links: INTEL_LINKS },
-  "/signals": { storageKey: "vr-signals-open", links: SIGNAL_LINKS },
-  "/sectors": { storageKey: "vr-sectors-open", links: SECTOR_LINKS },
+  "/intel": { storageKey: "vr-intel-open2", links: INTEL_LINKS },
+  "/signals": { storageKey: "vr-signals-open2", links: SIGNAL_LINKS },
+  "/sectors": { storageKey: "vr-sectors-open2", links: SECTOR_LINKS },
 };
 
 export function Layout() {
@@ -79,7 +83,10 @@ export function Layout() {
   };
   // 各导航组子栏目的展开状态（默认展开；按组记住用户的选择）
   const [openGroups, setOpenGroups] = useState<Record<string, boolean>>(() =>
-    Object.fromEntries(Object.entries(NAV_GROUPS).map(([path, g]) => [path, storageGet(g.storageKey) !== "closed"])));
+    // 🔴 **默认收起**：一打开先看到一层干净的总览，要什么再展开。
+    //    默认全展开时侧栏一屏塞十几条，一级栏目反而被子项淹掉。
+    //    （`=== "open"` 而不是 `!== "closed"`：没存过就是收起。）
+    Object.fromEntries(Object.entries(NAV_GROUPS).map(([path, g]) => [path, storageGet(g.storageKey) === "open"])));
 
   const toggleGroup = (path: string) => {
     setOpenGroups((prev) => {
@@ -179,24 +186,47 @@ export function Layout() {
         </nav>
 
         {/* 🔴 AI 入口 —— **刻意与上面那些导航项长得不一样**：它不是"再一个页面"，
-            而是把底部控制台推上来的开关。实心橙 + 发光，收起时也保留图标。 */}
+            而是把底部控制台推上来的开关。
+            ⚠️ 早先是实心橙 + 纯白字：够显眼，但在这套玻璃质感的暗色界面里显得生硬
+            （Simon：「橙色加白色有点傻」）。现在改成**橙作强调、不作底色**：
+            很淡的橙色渐变底 + 细橙环 + 橙图标 + 常规前景色文字，
+            打开时只把这几样各自加重一档，并给图标一个极缓的呼吸 —— 灵动但不吵。 */}
         <div className={cn(collapsed ? "px-1.5 pb-1.5" : "px-2.5 pb-2.5")}>
           <button
             onClick={toggleConsole}
             title={consoleOpen ? "收起 Agent" : "打开 Agent"}
             aria-pressed={consoleOpen}
             className={cn(
-              "flex w-full items-center rounded-xl font-semibold shadow-glow transition-all",
-              collapsed ? "justify-center p-2" : "gap-2 px-3 py-2.5 text-sm",
+              "group relative flex w-full items-center overflow-hidden rounded-xl",
+              "font-medium tracking-wide transition-all duration-300",
+              "bg-gradient-to-br from-primary/[0.18] via-primary/[0.10] to-transparent",
+              "text-foreground/90 ring-1 ring-inset",
+              collapsed ? "justify-center p-2" : "gap-2.5 px-3 py-2.5 text-sm",
               consoleOpen
-                ? "bg-primary text-white ring-2 ring-primary/60"
-                : "bg-primary/90 text-white hover:bg-primary",
+                ? "ring-primary/50 shadow-[0_0_18px_-4px_hsl(var(--primary)/0.55)] text-foreground"
+                : "ring-primary/25 hover:ring-primary/45 hover:from-primary/[0.26] hover:via-primary/[0.14]",
             )}
           >
-            <Sparkles className="h-4 w-4 shrink-0" />
-            {!collapsed && <span>Agent</span>}
+            {/* 掠过的高光：只在悬停时走一次，给它一点"活气"而不是一直在动 */}
+            <span
+              aria-hidden
+              className="pointer-events-none absolute inset-y-0 -left-full w-1/2 skew-x-12 bg-gradient-to-r from-transparent via-white/[0.07] to-transparent transition-[left] duration-700 ease-out group-hover:left-full"
+            />
+            <Sparkles
+              className={cn(
+                "h-4 w-4 shrink-0 text-primary transition-transform duration-300",
+                consoleOpen ? "animate-[pulse_2.4s_ease-in-out_infinite]" : "group-hover:scale-110",
+              )}
+            />
+            {!collapsed && <span className="text-glow">Agent</span>}
             {!collapsed && (
-              <span className="ml-auto text-[10px] font-normal opacity-80">{consoleOpen ? "收起" : "对话"}</span>
+              // 小标做成一枚淡色胶囊,而不是压透明度的白字 —— 后者在浅色主题下几乎看不见
+              <span className={cn(
+                "ml-auto rounded-full px-1.5 py-0.5 text-[10px] font-normal transition-colors",
+                consoleOpen ? "bg-primary/20 text-primary" : "bg-foreground/[0.06] text-muted-foreground",
+              )}>
+                {consoleOpen ? "收起" : "对话"}
+              </span>
             )}
           </button>
         </div>
