@@ -173,11 +173,23 @@ function readProfileJson(dir: string, id: string, root: string, label: string): 
   try { return JSON.parse(fs.readFileSync(fd, "utf8")); } finally { fs.closeSync(fd); }
 }
 
-export function loadProviderProfile(repoRoot: string, dataRoot: string, id: string): { profile: ProviderProfileFile; source: string } {
+/**
+ * 读一份 provider 档案。
+ *
+ * `baseUrlOverride`:**在校验之前**替换 base_url。
+ * 🔴 顺序是承重的 —— 带占位符的模板（如百炼的 `{WorkspaceId}`）会被 `validateProfile` 拒掉，
+ *    先校验再替换的话，用户明明在界面上填了自己的网关地址，仍然会被告知"模板不能直接用"。
+ */
+export function loadProviderProfile(
+  repoRoot: string, dataRoot: string, id: string, baseUrlOverride?: string,
+): { profile: ProviderProfileFile; source: string } {
   if (!PROVIDER_ID_RE.test(id)) throw new Error(`非法 provider id ${JSON.stringify(id)}`);
   const { product, user } = providersDirs(repoRoot, dataRoot);
   for (const [dir, root, label] of [[user, dataRoot, "用户 provider"], [product, repoRoot, "产品 provider"]] as const) {
-    const raw = readProfileJson(dir, id, root, label);
+    const raw0 = readProfileJson(dir, id, root, label);
+    const raw = raw0 !== null && baseUrlOverride
+      ? { ...(raw0 as Record<string, unknown>), base_url: baseUrlOverride }
+      : raw0;
     if (raw !== null) {
       const f = path.join(dir, `${id}.json`);
       const prof = validateProfile(raw, `${label} ${f}`);

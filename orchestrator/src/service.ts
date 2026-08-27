@@ -13,6 +13,7 @@ import { fileURLToPath } from "node:url";
 import { FETCH_ENV_KEYS, RUN_ID_RE, stages as packStages, fetchEnv } from "./config.ts";
 import { nowIso, readJsonIfExists } from "./fsutil.ts";
 import { ChatError, chatSend as chatSendCore, type ChatTurnResult } from "./chat.ts";
+import { templateMatrix, type LlmOverride } from "./runtime_provider.ts";
 import { DebateError, advanceDebate, startDebate, type DebateState } from "./debate.ts";
 import { IngestError, MAX_TOTAL_BYTES, ingestFiles as ingestFilesCore, type IngestFileInput, type IngestResult } from "./ingest.ts";
 import { LedgerError, kinds as ledgerKindDefs, labels as ledgerLabelDefs, listRecordsChecked, listRecords as listRecordsOf, removeRecord as removeLedgerRecord, upsertRecord as upsertLedgerRecord, type LedgerIssue, type LedgerRecord } from "./ledger.ts";
@@ -689,6 +690,14 @@ export function productInfo(ctx: ServiceContext): Record<string, unknown> {
       key_present: pc.provider.auth !== "api_key" || Boolean(envKey && process.env[envKey]),
     },
     defaults: { ...pc.defaults },
+    /**
+     * 产品自带的 provider 模板 —— 界面据此标「已实测 / 有模板未实测」。
+     * 🔴 由后端下发,前端不写死一份:写死的那份迟早与 `providers/` 目录对不上,
+     *    而对不上的表现是「选了没反应」或「真实存在的选项不在列表里」,两种都看不出是配置漂移。
+     * 🔴 下发的是**每份模板自己声明的矩阵状态**,不是"目录里有这个文件"——
+     *    6 份模板里只有 2 份真跑过,按文件存在来标会在界面上造出 4 条假的「已实测」。
+     */
+    provider_templates: templateMatrix(ctx.repoRoot, pc.resolved.dataRoot),
     paths: { data_root: pc.resolved.dataRoot, codex_home: pc.resolved.codexHome, python: ctx.python },
     /** 这份配置是由哪几层合出来的(产品默认 ← 用户配置 ← 环境变量) */
     sources: [...pc.sources],
@@ -833,9 +842,38 @@ export function ledgerRemove(ctx: ServiceContext, req: { kind: string; id: strin
 // 薄封装:只做错误翻译(HTTP 层只认 ServiceError,否则 500 而不是 400)。
 // 沙箱 / 不联网 / 合规 gate 三条硬约束都在 chat.ts 里,这一层不许放宽。
 
-export async function chatSend(ctx: ServiceContext, req: { session?: string; message: string }): Promise<ChatTurnResult> {
+/**
+ * 边界上校验 `llm` 的**形状**。
+ *
+ * 🔴 HTTP 入口的 body 是 `as never` 进来的：`LlmOverride` 只是编译期类型，**运行时不拦任何东西**。
+ *    `{"llm":"x"}` 或 `{"llm":{"provider":{}}}` 会一路走到下游，轻则 500（对用户是"坏了"不是"填错了"），
+ *    重则被隐式字符串化成 `[object Object]` 当 provider / URL / key 用（Codex 审计 r2 P3）。
+ * ⚠️ 这里**只查形状不查语义**：provider 认不认识、key 缺不缺，由 `resolveRuntimeProvider` 给
+ *    可行动的错误码 —— 两处各查一半才是漂移的来源。
+ */
+function checkLlmShape(llm: unknown): LlmOverride | undefined {
+  // 🔴 只有**没传**才算没传。把显式的 `null` 也当没传，等于给"静默换一家去打"留了条后门 ——
+  //    上面那条"传了就必须解析"的规矩会被 `{"llm":null}` 原样绕过（Codex 复审 r3）。
+  if (llm === undefined) return undefined;
+  if (llm === null || typeof llm !== "object" || Array.isArray(llm)) {
+    throw new ServiceError("bad_llm", "llm 必须是一个对象");
+  }
+  const o = llm as Record<string, unknown>;
+  const allowed = ["provider", "baseURL", "apiKey", "model"];
+  for (const k of Object.keys(o)) {
+    if (!allowed.includes(k)) throw new ServiceError("bad_llm", `llm 里有不认识的字段 ${k}（只接受 ${allowed.join(" / ")}）`);
+    if (o[k] !== undefined && typeof o[k] !== "string") throw new ServiceError("bad_llm", `llm.${k} 必须是字符串`);
+  }
+  return o as unknown as LlmOverride;
+}
+
+export async function chatSend(ctx: ServiceContext, req: { session?: string; message: string; llm?: LlmOverride }): Promise<ChatTurnResult> {
+  const llm = checkLlmShape(req.llm);
   try {
-    return await chatSendCore({ repoRoot: ctx.repoRoot, dataRoot: ctx.dataRoot, python: ctx.python }, req);
+    return await chatSendCore(
+      { repoRoot: ctx.repoRoot, dataRoot: ctx.dataRoot, python: ctx.python },
+      { ...req, ...(llm ? { llm } : {}) },
+    );
   } catch (e) {
     if (e instanceof ChatError) throw new ServiceError(e.code, e.message);
     throw e;

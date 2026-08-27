@@ -169,6 +169,8 @@ export function createApiServer(ctx: ServiceContext, opts: { token: string; cook
       if (req.method === "POST" && url.pathname === "/fetch") { const b = await readBody(req); return send(res, 200, await fetchEndpoint(ctx, b as never)); }
       // 自由对话:一问一答。**只读沙箱 + 不联网 + 过合规 gate**(见 chat.ts),不产出证据、不写台账。
       if (req.method === "POST" && url.pathname === "/chat") {
+        // body 里可带 `llm`(界面上选的模型 + 用户自己的 key)。
+        // 🔴 key 只在这一次请求的内存里流转 —— 不写配置、不进日志、不入账本。
         const b = await readBody(req);
         return send(res, 200, await chatSend(ctx, b as never));
       }

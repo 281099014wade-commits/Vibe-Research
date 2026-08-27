@@ -6,9 +6,12 @@
  * 外加台账 / 对话 / 辩论 / 运行。**差异全部收在这一层与 `api.ts` 的映射里**,
  * 上游的页面代码一行不用改。
  *
- * 🔴 **鉴权不在这里**:Bearer token 由 Vite 代理注入,浏览器侧不持有(见 vite.config.ts)。
- *    密钥永远不进浏览器 —— 这条与上游最大的不同,也是唯一必须改写的一层。
+ * 🔴 **后端鉴权不在这里**:访问底座用的 Bearer token 由 Vite 代理注入,浏览器侧不持有
+ *    (见 vite.config.ts)。⚠️ 别把它跟**模型 key** 混为一谈 —— 那是两件事:
+ *    底座 token 浏览器永远拿不到;模型 key 是**用户自己的**,存在他自己的 localStorage 里,
+ *    随请求发给本机后端、用完即弃(见 llmStore.ts 与「接入 AI」页)。
  */
+import { readUserLlm } from "./llmStore";
 
 export class ApiError extends Error {
   constructor(
@@ -130,12 +133,37 @@ export const backend = {
    *    全站共用 "default" 的话，后端那条线程会把所有页面的对话串成一段，
    *    而界面上每页各自干净，这种不一致从界面上完全看不出来。
    */
-  chat: (message: string, session = "default", signal?: AbortSignal) =>
-    call<{ session: string; reply: string; redacted: number; duration_ms: number }>("/chat", {
+  /**
+   * 一轮对话。`llm` = 用户自己在「接入 AI」里配的那一份（不给则走后端默认）。
+   * 🔴 key 随请求发给**本机**后端，用完即弃：不写配置文件、不进日志、不入账本。
+   */
+  chat: (message: string, session = "default", signal?: AbortSignal, llm?: unknown) => {
+    // 🔴 **默认就带上用户那份**，不靠调用方记得传。
+    //    上一版要求每个入口自己传 —— 结果三个入口里有两个（Agent 面板、agents.ts）漏了，
+    //    表现是"用户在界面上选的模型没生效"，而对话照常成功、界面上看不出任何异常。
+    let use = llm;
+    if (use === undefined) {
+      const r = readUserLlm();
+      // 🔴 本地那份**坏了 / 读不到**时要说出来，不许当"没配"回落到后端默认 ——
+      //    那正是"用户选的模型悄悄换了一家"的形状，而对话照常有答案、界面上看不出来。
+      if (r.status === "broken") {
+        throw new ApiError("本机存的模型配置读不懂了 —— 请到「接入 AI」重新选一次", 400, "llm_broken");
+      }
+      if (r.status === "unavailable") {
+        throw new ApiError("浏览器不让读本地存储（隐私模式？）—— 「接入 AI」的配置这一轮用不了", 400, "llm_unavailable");
+      }
+      use = r.config ?? undefined;
+    }
+    return call<{ session: string; reply: string; redacted: number; duration_ms: number }>("/chat", {
       method: "POST",
-      body: JSON.stringify({ session, message }),
+      // 🔴 判据是 `!== undefined`，不是真值。用真值判的话，显式传进来的 `null`（以及 ""/0/false）
+      //    会在这里被悄悄丢掉、请求体里根本没有 llm ⇒ 后端的形状校验压根不会执行，
+      //    照样回落到后端默认。后端刚把这条堵上，前端这个**兄弟编译点**不能漏
+      //    （Codex 复审 r4：同一根因，两处各判各的）。
+      body: JSON.stringify({ session, message, ...(use !== undefined ? { llm: use } : {}) }),
       signal,
-    }),
+    });
+  },
 
   /** 垂类工具:清单由后端下发,前端**不写死一份**(写死的那份迟早与真实实现对不上) */
   tools: () => call<{ tools: { name: string; label: string }[] }>("/tools"),
@@ -186,6 +214,13 @@ export interface ProductInfo {
   paths: { data_root: string; codex_home: string; python: string };
   sources: string[];
   auth_error: string | null;
+  /**
+   * provider 模板 id → 它自己声明的兼容矩阵状态（`baseline/pass/partial` = 真跑过；`untested` = 只有模板）。
+   * 前端只用它给某一家打「已实测」标 —— **不写死一份**，
+   * 写死的那份迟早与 providers/ 目录对不上，而对不上的表现是
+   * 「明明实测过却没标」或更糟的「没测过却标了已实测」。
+   */
+  provider_templates?: Record<string, string>;
 }
 
 /** 一段产出里数字的着落。三档分开报 —— 混成一个数等于什么都没说 */

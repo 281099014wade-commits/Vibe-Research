@@ -10,7 +10,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 
 import { createApiServer, resolveToken, isLoopbackHost } from "../src/api.ts";
-import { ServiceError, assertArgs, fetchEndpoint, ledgerList, ledgerSnapshot, ledgerUpsert, getEvidence, getReport, knowledgeRecall, listEndpoints, listRuns, redact, researchEnv, researchStatus, safePath, startResearch, type ServiceContext, displayUrl } from "../src/service.ts";
+import { ServiceError, assertArgs, chatSend, fetchEndpoint, ledgerList, ledgerSnapshot, ledgerUpsert, getEvidence, getReport, knowledgeRecall, listEndpoints, listRuns, redact, researchEnv, researchStatus, safePath, startResearch, type ServiceContext, displayUrl } from "../src/service.ts";
 import { writeJson } from "../src/fsutil.ts";
 import { detectPython } from "../src/init.ts";
 
@@ -427,4 +427,27 @@ test("🔴 researchEnv 透传 ELECTRON_RUN_AS_NODE：装机版的 node 就是 El
   assert.equal(out.ELECTRON_RUN_AS_NODE, "1");
   assert.equal(out.MIMO_API_KEY, "k");
   assert.equal(out.RANDOM_SECRET, undefined, "不相干的变量仍然不透传");
+});
+
+test("🔴 /chat 的 llm 在**边界**上校验形状 —— 畸形负载给可读的 400，不是 500", async () => {
+  const ctx: ServiceContext = { repoRoot: REPO, dataRoot: fs.mkdtempSync(path.join(os.tmpdir(), "vra-llmshape-")), python: "python3", node: process.execPath, providerEnvKey: null };
+  const bad: [unknown, string][] = [
+    ["x", "llm 必须是一个对象"],
+    // 🔴 显式 null 不算"没传":当没传处理等于给"静默换一家去打"留了后门
+    [null, "llm 必须是一个对象"],
+    [["a"], "llm 必须是一个对象"],
+    [{ provider: {} }, "llm.provider 必须是字符串"],
+    [{ provider: "mimo", apiKey: { secret: "x" } }, "llm.apiKey 必须是字符串"],
+    [{ provider: "mimo", model: 1 }, "llm.model 必须是字符串"],
+    // 未知字段要拒:悄悄忽略的话,前端多打一个字段就永远不生效,而两边都看不出来
+    [{ provider: "mimo", apiKey: "k", extra: "x" }, "不认识的字段 extra"],
+  ];
+  for (const [llm, want] of bad) {
+    await assert.rejects(
+      () => chatSend(ctx, { message: "问", llm } as never),
+      (e: unknown) => e instanceof ServiceError && e.code === "bad_llm" && e.message.includes(want),
+      `${JSON.stringify(llm)} 应报 bad_llm/${want}`,
+    );
+  }
+  fs.rmSync(ctx.dataRoot, { recursive: true, force: true });
 });

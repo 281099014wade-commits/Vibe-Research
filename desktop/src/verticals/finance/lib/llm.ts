@@ -1,23 +1,24 @@
 /**
- * 对话能力 —— **接我们的底座,不碰密钥**。
+ * 用户的模型配置（**只存本地 localStorage，不上传、不进仓库**）+ 对话调用。
  *
- * 🔴 与上游最大的不同就在这里。上游把用户的 API key 存在浏览器 localStorage、
- *    每个请求带着走;我们的密钥**只在后端环境变量里**,浏览器侧一个字节都不持有。
- *    ⇒ `LlmConfig` 这一套保留成同名同签名的空壳,只为让上游页面一行不用改;
- *      真正的模型配置在后端,「接入 AI」页只读地显示它。
+ * 🔴 口径与开源版 Vibe-Research 对齐 —— 那一份经过真实用户验证：
+ *    用户在「接入 AI」页选模型、粘自己的 key → 存本地 → **随请求发给本机后端** →
+ *    后端把它拼进一个临时 env 交给引擎。**配置文件 / 日志 / 账本一个字节都碰不到。**
  *
- * ⚠️ 我们的 `/chat` 是**一问一答不流式**的。`chatStream` 因此把整段回复作为一次
- *    `onDelta` 吐出去 —— 页面的逐字 UI 会变成"一次出现",功能不受影响。
- *    (真要逐字得在编排器上加 SSE;那是另一件事,没做就别假装在流式。)
+ * ⚠️ 上一版的口径是「密钥只从环境变量读，界面只读」。那在终端里启动时没问题，
+ *    但**装机版（访达双击）根本没有 shell 环境** —— 等于除了在终端里启动的人，
+ *    没有人能把产品用起来。「不进配置文件」这条纪律在新做法下照样成立
+ *    （localStorage 不是仓库文件，key 也不落盘），换来的是装机版真的能配。
+ *
+ * ⚠️ 没配用户配置时**回落到后端默认**（`.local/config.json` + 环境变量那一套）——
+ *    Simon 自己在终端里跑的那条路不受影响。
  */
 import { ApiError, backend, type ProductInfo } from "./backend";
+import { clearUserLlm, loadUserLlm, saveUserLlm, type LlmConfig } from "./llmStore";
 
-export interface LlmConfig {
-  provider: string;
-  baseURL: string;
-  apiKey: string;
-  model: string;
-}
+export type { LlmConfig };
+// ⚠️ 存取一律走 llmStore —— 这里再抄一份实现，迟早两边判定不一致
+export { loadUserLlm };
 
 export interface ChatMsg {
   role: "user" | "assistant";
@@ -37,10 +38,10 @@ export interface ChatHandlers {
 }
 
 /**
- * 后端配置的缓存。
- * ⚠️ `hasLlm()` 在上游是**同步**的(页面渲染时直接调),而我们要问后端 ——
- *    所以模块加载时取一次放这儿。取到之前**乐观当作已配置**:
- *    宁可让用户点下去看到一条真实的错误,也不要在配置其实好着的时候先劝退他。
+ * 后端默认配置的缓存（用户没配时的回落）。
+ * ⚠️ `hasLlm()` 是**同步**的（页面渲染时直接调），而问后端是异步的 ——
+ *    所以模块加载时取一次放这儿。取到之前**乐观当作已配置**：
+ *    宁可让用户点下去看到一条真实的错误，也不要在配置其实好着的时候先劝退他。
  */
 let cached: ProductInfo | null = null;
 let optimistic = true;
@@ -52,35 +53,46 @@ void backend
     optimistic = p.provider.key_present;
   })
   .catch(() => {
-    /* 后端没起时保持乐观:真去用的时候会给出"连接不到编排器"的明确错误 */
+    /* 后端没起时保持乐观：真去用的时候会给出"连接不到编排器"的明确错误 */
   });
 
-/** 后端当前的模型配置(只读投影,**不含密钥**);还没取到时为 null */
+/** 后端当前的模型配置（只读投影，**不含密钥**）；还没取到时为 null */
 export const backendProvider = (): ProductInfo | null => cached;
 
+export function saveLlm(cfg: LlmConfig): void {
+  try {
+    saveUserLlm(cfg);
+  } catch (e) {
+    // 🔴 存不下要**说出来**：静默失败会让用户以为配好了，下次打开又是空的
+    throw new ApiError(`本地存储写不进去（${e instanceof Error ? e.message : String(e)}）—— 配置没保存`, 500, "storage_failed");
+  }
+}
+
+export function clearLlm(): void {
+  clearUserLlm();
+}
+
+/**
+ * 有没有可用的模型。用户自己配了算，后端默认配好了也算。
+ * ⚠️ 两条路都不通才算没有 —— 只看其中一条会误判。
+ */
+export function hasLlm(): boolean {
+  if (loadUserLlm()) return true;
+  return cached ? cached.provider.key_present : optimistic;
+}
+
+/** 兼容上游签名：上游的 `loadLlm()` 语义是"当前生效的配置"。 */
 export function loadLlm(): LlmConfig | null {
+  const mine = loadUserLlm();
+  if (mine) return mine;
   if (!cached) return optimistic ? { provider: "backend", baseURL: "", apiKey: "", model: "" } : null;
   if (!cached.provider.key_present) return null;
   return {
     provider: cached.provider.name,
     baseURL: cached.provider.base_url ?? "",
-    // 🔴 恒为空字符串。密钥不进浏览器 —— 这个字段只是为了让上游类型对得上。
-    apiKey: "",
+    apiKey: "",                       // 后端那条路的密钥本来就不进浏览器
     model: String(cached.defaults.model ?? ""),
   };
-}
-
-/** 上游用它写配置。我们这儿配置在后端,前端**不允许写** —— 说清楚,不静默失败。 */
-export function saveLlm(_cfg: LlmConfig): void {
-  throw new ApiError("模型配置在后端(改配置文件 + 环境变量),界面不提供写入入口", 400, "read_only");
-}
-
-export function clearLlm(): void {
-  throw new ApiError("模型配置在后端,界面不提供清除入口", 400, "read_only");
-}
-
-export function hasLlm(): boolean {
-  return cached ? cached.provider.key_present : optimistic;
 }
 
 /**
@@ -100,7 +112,8 @@ export async function chatStream(
   if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
 
   const message = context ? `【当前页面的数据】\n${context}\n\n【问题】\n${last.content}` : last.content;
-  const r = await backend.chat(message);
+  // ⚠️ 用户那份由 `backend.chat` 自己带上（见 llmStore.ts 里那条"防线只守一个入口等于没有"）
+  const r = await backend.chat(message, "default", signal);
   // 用户中途关面板 / 换问题:结果照样回来了,但不往界面上写(与上游 abort 行为一致)
   if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
 

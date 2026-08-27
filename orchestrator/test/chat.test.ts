@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 
 import "../src/finance/register.ts"; // 测试文件也是入口:插件要先注册
 import { ChatError, chatSend, chatSessionCount, resetChatSessions } from "../src/chat.ts";
+import type { LlmOverride } from "../src/runtime_provider.ts";
 
 // ⚠️ 用 fileURLToPath 而不是 new URL(...).pathname —— 本机仓库路径含中文,
 //    pathname 会给出百分号编码的路径,子进程与 fs 都找不到(这条坑本仓库踩过)
@@ -183,5 +184,151 @@ test("🔴 指纹要覆盖**真正传给引擎的整份配置** —— 手挑几
     assert.equal(chatSessionCount(), 2, "换了密钥必须重开线程,否则继续按旧凭据计费");
   } finally {
     delete process.env.MIMO_API_KEY;
+  }
+});
+
+// ── 用户在界面上自己配的模型（按请求带下来的 llm） ─────────────────────────
+
+test("llm 覆盖:换 key / 换 provider 都要重开线程 —— 同一份配置才复用", async () => {
+  resetChatSessions();
+  const root = tmp();
+  const send = (llm: LlmOverride) =>
+    chatSend({ repoRoot: REPO, dataRoot: root }, { session: "default", message: "问", llm }, fakeCodex("好", { prompts: [] }));
+
+  const mimo = { provider: "mimo", apiKey: "key-AAAAAAAAAAAA", baseURL: "https://gw.example.com/v1", model: "mimo-v2.5" };
+  await send(mimo);
+  assert.equal(chatSessionCount(), 1);
+  await send(mimo);
+  assert.equal(chatSessionCount(), 1, "同样配置要复用同一条线程");
+
+  // 🔴 只换 key:provider / 端点 / 模型全没变。指纹要是没覆盖到密钥,
+  //    这里会**静默复用旧线程、继续按旧凭据计费**,而且请求正常返回、不报错。
+  await send({ ...mimo, apiKey: "key-BBBBBBBBBBBB" });
+  assert.equal(chatSessionCount(), 2, "换了 key 必须重开线程");
+
+  await send({ ...mimo, provider: "deepseek" });
+  assert.equal(chatSessionCount(), 3, "换了 provider 必须重开线程");
+});
+
+test("llm 覆盖:key 只进引擎的临时 env,不改动本进程环境", async () => {
+  resetChatSessions();
+  const before = process.env.DEEPSEEK_API_KEY;
+  await chatSend(
+    { repoRoot: REPO, dataRoot: tmp() },
+    { session: "t-env", message: "问", llm: { provider: "deepseek", apiKey: "sk-user-supplied-000" } },
+    fakeCodex("好", { prompts: [] }),
+  );
+  // 🔴 用户的 key 是**一次性**的:落进 process.env 就等于泄漏给同进程里所有别的活
+  assert.equal(process.env.DEEPSEEK_API_KEY, before, "不许把用户的 key 写进本进程环境");
+});
+
+test("🔴 用户配了自己的 provider 时,绝不回落到后端默认模型（那是另一家的模型名）", async () => {
+  resetChatSessions();
+  const root = tmp();
+  // 后端默认 = mimo-v2.5
+  fs.writeFileSync(path.join(root, "config.json"), JSON.stringify({ defaults: { model: "mimo-v2.5" } }));
+
+  const capCli: Cap = { prompts: [] };
+  await chatSend({ repoRoot: REPO, dataRoot: root }, { session: "t-cli", message: "问", llm: { provider: "cli-codex", model: "随便写的名字" } }, fakeCodex("好", capCli));
+  // 订阅档的模型由登录态决定。把界面上那个 id 当模型名发出去,真实报错是
+  // "The 'x' model is not supported when using Codex with a ChatGPT account"（实测撞过）；
+  // 回落到后端默认的 mimo-v2.5 更糟 —— 那是另一家的模型名配上订阅登录态。
+  assert.equal(capCli.opts!.model, undefined, "订阅档不该带任何模型名");
+
+  const capApi: Cap = { prompts: [] };
+  await chatSend({ repoRoot: REPO, dataRoot: root }, { session: "t-api", message: "问", llm: { provider: "deepseek", apiKey: "k" } }, fakeCodex("好", capApi));
+  assert.equal(capApi.opts!.model, "deepseek-v4-flash", "没指定模型时用**该 provider 模板**的默认模型,不是后端默认");
+});
+
+test("llm 覆盖:配置不对时报出可行动的错误码,而不是悄悄换一家去打", async () => {
+  const root = tmp();
+  const bad = async (llm: LlmOverride, want: string) => {
+    resetChatSessions();
+    await assert.rejects(
+      () => chatSend({ repoRoot: REPO, dataRoot: root }, { session: "t-bad", message: "问", llm }, fakeCodex("好", { prompts: [] })),
+      (e: unknown) => e instanceof ChatError && e.code === want,
+      `${JSON.stringify(llm)} 应报 ${want}`,
+    );
+  };
+  await bad({ provider: "cli-claude" }, "unsupported_cli");
+  await bad({ provider: "nosuchvendor", apiKey: "k" }, "unknown_provider");
+  await bad({ provider: "deepseek" }, "missing_key");
+  await bad({ provider: "qwen", apiKey: "k" }, "needs_base_url");
+  await bad({ provider: "custom", apiKey: "k", baseURL: "file:///etc/passwd" }, "bad_base_url");
+});
+
+test("🔴 传了 llm 但 provider 为空 —— 必须报错，不许静默回落到后端默认", async () => {
+  resetChatSessions();
+  const root = tmp();
+  fs.writeFileSync(path.join(root, "config.json"), JSON.stringify({ provider: { profile: "mimo", auth: "api_key" } }));
+  // 前端的有效性判定放得过这种形状（provider 空 + baseURL/key/model 齐全），
+  // 按"provider 填没填"来判的话，这里会悄悄用后端默认那家去打 —— 界面上显示"已配置"，
+  // 请求却落到别处，连 bad_provider 都收不到。
+  for (const p of ["", "   "]) {
+    await assert.rejects(
+      () => chatSend(
+        { repoRoot: REPO, dataRoot: root },
+        { session: "t-empty", message: "问", llm: { provider: p, apiKey: "k", baseURL: "https://x.example.com/v1", model: "m" } },
+        fakeCodex("好", { prompts: [] }),
+      ),
+      (e: unknown) => e instanceof ChatError && e.code === "bad_provider",
+      `provider=${JSON.stringify(p)} 应报 bad_provider`,
+    );
+  }
+});
+
+test("🔴 用户的 key 不许出现在回答或报错里 —— 回答上有「存入沉淀」，一点就落盘", async () => {
+  const root = tmp();
+  const KEY = "sk-user-secret-1234567890";
+  const llm = { provider: "deepseek", apiKey: KEY, model: "deepseek-v4-flash" };
+
+  resetChatSessions();
+  // 模型把 key 念了出来（提示注入让它 `env` 一下就够了）
+  const r = await chatSend(
+    { repoRoot: REPO, dataRoot: root },
+    { session: "t-scrub", message: "问", llm },
+    fakeCodex(`你的密钥是 ${KEY} 哦`, { prompts: [] }),
+  );
+  assert.ok(!r.reply.includes(KEY), `回答里还有 key：${r.reply}`);
+  assert.ok(r.reply.includes("已移除"), "抹掉了要留个痕，别让人以为模型没说");
+
+  resetChatSessions();
+  // 报错路径同样要抹 —— 只抹回答不抹报错，等于留了条同样通向界面与日志的口子
+  const boom = () =>
+    ({
+      startThread: () => ({
+        id: "t",
+        runStreamed: () => Promise.reject(new Error(`401 Unauthorized key=${KEY}`)),
+      }),
+    }) as never;
+  await assert.rejects(
+    () => chatSend({ repoRoot: REPO, dataRoot: root }, { session: "t-scrub2", message: "问", llm }, boom),
+    (e: unknown) => e instanceof ChatError && !e.message.includes(KEY),
+    "报错消息里不许带 key",
+  );
+});
+
+test("🔴 装机版场景：后端默认缺 key，但用户自己配了 —— 必须能用", async () => {
+  resetChatSessions();
+  const root = tmp();
+  // 访达双击启动的 App 没有 shell 环境 ⇒ 后端默认那份 api_key 永远缺席
+  fs.writeFileSync(path.join(root, "config.json"), JSON.stringify({ provider: { profile: "mimo", auth: "api_key" } }));
+  const before = process.env.MIMO_API_KEY;
+  delete process.env.MIMO_API_KEY;
+  try {
+    // 不带 llm：照旧应当拒绝（这条路本来就要求环境变量）
+    await assert.rejects(
+      () => chatSend({ repoRoot: REPO, dataRoot: root }, { session: "t-noenv", message: "问" }, fakeCodex("好", { prompts: [] })),
+      /MIMO_API_KEY 未设置/,
+    );
+    // 带 llm：后端默认缺不缺 key 与这一轮无关，必须放行
+    const r = await chatSend(
+      { repoRoot: REPO, dataRoot: root },
+      { session: "t-own", message: "问", llm: { provider: "deepseek", apiKey: "sk-mine-000000", model: "deepseek-v4-flash" } },
+      fakeCodex("好", { prompts: [] }),
+    );
+    assert.equal(r.reply, "好");
+  } finally {
+    if (before === undefined) delete process.env.MIMO_API_KEY; else process.env.MIMO_API_KEY = before;
   }
 });

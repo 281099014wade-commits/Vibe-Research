@@ -25,6 +25,7 @@ import { complianceGate } from "./gate.ts";
 import { currentPlugin } from "./plugin.ts";
 import { loadProductConfig } from "./productConfig.ts";
 import { codexOptionsFor } from "./runner.ts";
+import { RuntimeProviderError, resolveRuntimeProvider, type LlmOverride, type ResolvedRuntimeProvider } from "./runtime_provider.ts";
 
 export class ChatError extends Error {
   code: string;
@@ -108,7 +109,7 @@ function sessionDir(cfg: RunConfig, session: string): string {
  */
 export async function chatSend(
   opts: { repoRoot: string; dataRoot?: string; python?: string; maxMessage?: number },
-  req: { session?: string; message: string },
+  req: { session?: string; message: string; llm?: LlmOverride },
   codexFactory: (o: CodexOptions) => Codex = (o) => new Codex(o),
 ): Promise<ChatTurnResult> {
   const session = String(req.session ?? "default");
@@ -126,10 +127,38 @@ export async function chatSend(
   //    表现是"研究能跑,对话报错",而且报的是别人家的错 —— 极难往配置上想。
   // ⚠️ 调用方给了 dataRoot 就整个按它走(用户配置 + provider 覆盖模板 + 数据根):
   //    只塞 userConfigPath 的话,配置从这个根读、模板却从 repoRoot 推的根找 —— 两套口径,静默不一致。
+  // 🔴 请求自带 llm 时**不校验后端默认那份凭据**（`requireAuth: false`）：
+  //    我们马上就要整份换掉 provider，后端默认有没有 key 与这一轮无关。
+  //    不这么做的话，装机版用户（访达双击 ⇒ 没有 shell 环境 ⇒ 后端默认永远缺 key）
+  //    即使在界面上填好了自己的 key，也会被一句"环境变量 MIMO_API_KEY 未设置"挡在门外 ——
+  //    而这个功能存在的理由，正是让这种用户能把产品用起来。
   const pc = loadProductConfig(opts.repoRoot, {
     env: process.env,
     ...(opts.dataRoot ? { dataRootOverride: opts.dataRoot } : {}),
+    ...(req.llm ? { requireAuth: false as const } : {}),
   });
+  // 🔴 界面上选的那一份**覆盖**后端默认。key 只拼进一个临时 env 对象,
+  //    配置文件 / 日志 / 账本一个字节都碰不到。
+  // ⚠️ 解析失败要**当场抛**,不能悄悄回落到后端默认 —— 那会让用户以为在用自己选的模型,
+  //    而账单和产出来自别处,且不会有任何提示。
+  // 🔴 判据是"**传没传 llm**",不是"provider 填没填"。
+  //    按 provider 非空来判的话,`{provider:"", apiKey:"…", baseURL:"…"}` 会**静默回落到后端默认** ——
+  //    用户配了、界面显示已配置,请求却打到另一家,连 bad_provider 都收不到
+  //    (Codex 审计 r1 P2;实测确认前端的有效性判定放得过这种形状)。
+  //    provider 为空该由 resolveRuntimeProvider 抛 bad_provider,不由这里吞掉。
+  let rt: ResolvedRuntimeProvider | null = null;
+  if (req.llm) {
+    try {
+      rt = resolveRuntimeProvider(opts.repoRoot, opts.dataRoot ?? pc.resolved.dataRoot, req.llm);
+    } catch (e) {
+      throw new ChatError(
+        e instanceof RuntimeProviderError ? e.code : "bad_llm",
+        e instanceof Error ? e.message : String(e),
+      );
+    }
+  }
+  const engineEnv = rt?.env ?? process.env;
+
   const cfg = makeConfig({
     symbol: "CHAT",
     repoRoot: opts.repoRoot,
@@ -137,9 +166,12 @@ export async function chatSend(
     python: opts.python ?? pc.python ?? undefined,
     codexPath: pc.resolved.codexPath,
     codexHome: pc.resolved.codexHome,
-    provider: pc.provider,
-    providerProfile: pc.providerProfile,
-    ...(pc.defaults.model ? { model: pc.defaults.model } : {}),
+    provider: rt ? { ...pc.provider, auth: rt.auth, env_key: rt.profile.env_key, name: rt.profile.id } : pc.provider,
+    providerProfile: rt ? rt.profile : pc.providerProfile,
+    // 🔴 用户配了自己的 provider 时，**绝不回落到后端默认模型** —— 那个模型名属于另一家
+    //    （后端默认 mimo-v2.5 配上订阅档的登录态 = 一个根本不存在的组合）。
+    //    用户没指定模型就什么都不传，让引擎按它自己的默认来。
+    ...(rt ? (rt.model ? { model: rt.model } : {}) : pc.defaults.model ? { model: pc.defaults.model } : {}),
     runId: `chat-${session}`,
   });
 
@@ -162,7 +194,9 @@ export async function chatSend(
   // ⚠️ 这个哈希里含密钥派生值 ⇒ **只留在内存里当 Map 的键,永不落盘、永不进日志**。
   const providerFingerprint = crypto
     .createHash("sha256")
-    .update(JSON.stringify(codexOptionsFor(cfg)))
+    // ⚠️ 指纹与下面建实例**必须用同一份 env**:只给其中一处传,
+    //    换了 key 指纹却不变 ⇒ 继续复用旧线程、按旧凭据计费,而且不报错。
+    .update(JSON.stringify(codexOptionsFor(cfg, engineEnv)))
     .digest("hex")
     .slice(0, 16);
   const sessionKey = `${path.resolve(cfg.dataRoot)}\u0000${providerFingerprint}\u0000${session}`;
@@ -175,7 +209,7 @@ export async function chatSend(
 
   if (!s) {
     const dir = sessionDir(cfg, session);
-    const codex = codexFactory(codexOptionsFor(cfg));
+    const codex = codexFactory(codexOptionsFor(cfg, engineEnv));
     const thread = codex.startThread({
       // 工作目录必须在**指令根**之下,否则宪法与 skills 加载不到 —— 而引擎**不会报错**(见 instructions_root.ts)
       workingDirectory: dir,
@@ -199,21 +233,39 @@ export async function chatSend(
     const { events } = await s.thread.runStreamed(prompt, { signal: ac.signal });
     for await (const ev of events) {
       if (ev.type === "item.completed" && ev.item.type === "agent_message") raw = ev.item.text ?? raw;
-      if (ev.type === "turn.failed") throw new ChatError("turn_failed", ev.error?.message ?? "对话失败");
-      if (ev.type === "error") throw new ChatError("turn_failed", ev.message);
+      // ⚠️ 引擎的报错会把请求细节带回来（实测见过整条端点 URL）。**报错路径也要抹 key**：
+      //    只抹回答不抹报错，等于留了一条同样通向界面与日志的口子。
+      if (ev.type === "turn.failed") throw new ChatError("turn_failed", scrubKey(ev.error?.message ?? "对话失败", rt));
+      if (ev.type === "error") throw new ChatError("turn_failed", scrubKey(ev.message, rt));
     }
   } catch (e) {
     if (e instanceof ChatError) throw e;
     if (ac.signal.aborted) throw new ChatError("timeout", `对话超时(${TURN_TIMEOUT_MS / 1000} 秒)`);
-    throw new ChatError("turn_failed", e instanceof Error ? e.message : String(e));
+    throw new ChatError("turn_failed", scrubKey(e instanceof Error ? e.message : String(e), rt));
   } finally {
     clearTimeout(timer);
   }
   s.turns += 1;
   s.lastUsed = Date.now();
 
-  const { reply, redacted } = applyGate(raw);
+  const { reply, redacted } = applyGate(scrubKey(raw, rt));
   return { session, reply, redacted, duration_ms: Date.now() - t0 };
+}
+
+/**
+ * 把用户这次给的 key 从**要送出去的文本**里抹掉。
+ *
+ * 🔴 界面上写着"不进日志、不入台账"。对话线程不联网，所以 key 出不了这台机器；
+ *    但它**能被写进回答**（提示注入让它 `env` 一下就够了），而回答上有个「存入沉淀」按钮
+ *    —— 一点就落进台账文件。那条承诺就是在这里破的。
+ * ⚠️ 只抹这次请求带来的那一份：不做通用 `sk-\w+` 之类的猜测式匹配，
+ *    那会把用户正常讨论的内容也抹掉，还给人一种"什么密钥都拦得住"的错觉。
+ */
+function scrubKey(text: string, rt: ResolvedRuntimeProvider | null): string {
+  const key = rt ? String(rt.env[rt.profile.env_key] ?? "") : "";
+  // 太短的当没有:极短字符串会在正常文本里到处误命中
+  if (key.length < 8 || !text.includes(key)) return text;
+  return text.split(key).join("[已移除:你的 API key]");
 }
 
 /**
