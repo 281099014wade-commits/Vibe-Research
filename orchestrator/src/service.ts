@@ -305,10 +305,20 @@ const KILL_GRACE_MS = 2_000;
 function runFetchProcess(
   cmd: string,
   argv: string[],
-  opts: { cwd: string; env: Record<string, string>; timeout: number },
+  opts: { cwd: string; env: Record<string, string>; timeout: number; input?: string },
 ): Promise<{ status: number | null; stdout: string; stderr: string }> {
   return new Promise((resolve, reject) => {
-    const child = spawn(cmd, argv, { cwd: opts.cwd, env: opts.env, stdio: ["ignore", "pipe", "pipe"] });
+    // stdin 只在**真要喂东西**时才开管道:取数那条路一直是 "ignore",
+    // 改成无条件 "pipe" 会让不读 stdin 的脚本在管道满时挂住。
+    const child = spawn(cmd, argv, {
+      cwd: opts.cwd, env: opts.env,
+      stdio: [opts.input === undefined ? "ignore" : "pipe", "pipe", "pipe"],
+    });
+    if (opts.input !== undefined) {
+      // EPIPE:子进程没读完就退了 —— 交给下面的退出码分支去报,不要在这里炸掉整个 Promise
+      child.stdin?.on("error", () => undefined);
+      child.stdin?.end(opts.input);
+    }
     const out: Buffer[] = [];
     const err: Buffer[] = [];
     let outLen = 0;
@@ -332,8 +342,8 @@ function runFetchProcess(
       buf.push(chunk);
       return next;
     };
-    child.stdout.on("data", (c: Buffer) => { outLen = take(out, c, outLen); });
-    child.stderr.on("data", (c: Buffer) => { errLen = take(err, c, errLen); });
+    child.stdout?.on("data", (c: Buffer) => { outLen = take(out, c, outLen); });
+    child.stderr?.on("data", (c: Buffer) => { errLen = take(err, c, errLen); });
 
     const done = () => { clearTimeout(timer); if (hardKill) clearTimeout(hardKill); };
     child.on("error", (e) => {
@@ -847,4 +857,49 @@ export async function ingestFiles(ctx: ServiceContext, req: { kind: string; file
     if (e instanceof IngestError) throw new ServiceError(e.code, e.message);
     throw e;
   }
+}
+
+/** 工具默认超时:这类工具要先取数再算,比单次取数慢得多 */
+const TOOL_DEFAULT_TIMEOUT_MS = 300_000;
+
+/**
+ * 跑一个**垂类声明的工具**(`Plugin.tools`)。JSON 进 / JSON 出。
+ *
+ * 🔴 Core 不知道这些工具各自是干什么的 —— 它只负责起进程、喂 stdin、把 stdout 当 JSON 读回来。
+ * ⚠️ 工具**自己**要把"业务上不成立"与"出错了"分开表达(它的 JSON 里怎么写由垂类定);
+ *    这里只区分"进程跑起来了没有"。把两者混成一个 HTTP 错误的话,
+ *    界面就只能显示"失败了",而用户真正需要看到的往往是那句"为什么不成立"。
+ */
+export async function runTool(
+  ctx: ServiceContext,
+  name: string,
+  body: unknown,
+): Promise<unknown> {
+  const tools = currentPlugin().tools ?? {};
+  const spec = Object.prototype.hasOwnProperty.call(tools, name) ? tools[name] : undefined;
+  if (!spec) throw new ServiceError("not_found", `没有这个工具:${name}`);
+
+  const input = JSON.stringify(body ?? {});
+  const r = await runFetchProcess(ctx.python, ["-m", spec.module], {
+    cwd: ctx.repoRoot,
+    env: researchEnv(ctx),
+    timeout: spec.timeoutMs ?? TOOL_DEFAULT_TIMEOUT_MS,
+    input,
+  });
+  if (r.status !== 0) {
+    const tail = (r.stderr || "").trim().split("\n").slice(-2).join(" / ");
+    throw new ServiceError("tool_failed", `${spec.label}没跑起来(退出码 ${r.status}):${redact(tail, 200)}`);
+  }
+  try {
+    return JSON.parse(r.stdout);
+  } catch {
+    // 输出不是 JSON = 工具坏了或者往 stdout 打了别的东西。**把前几百字带出去**,
+    // 只说"解析失败"的话没人查得动。
+    throw new ServiceError("tool_failed", `${spec.label}的输出不是 JSON:${redact(r.stdout.slice(0, 300), 300)}`);
+  }
+}
+
+/** 界面要用的工具清单(名字 + 显示名),由垂类下发 —— 前端不写死一份 */
+export function listTools(): { name: string; label: string }[] {
+  return Object.entries(currentPlugin().tools ?? {}).map(([name, t]) => ({ name, label: t.label }));
 }

@@ -316,6 +316,14 @@ export const FINANCE_PLUGIN: Plugin = {
   pageContext: FINANCE_PAGE_CONTEXT,
   /** 用户自有台账的记录种类(Core 只管存储与校验,种类在 ledger_kinds.ts) */
   ledger: { kinds: FINANCE_LEDGER_KINDS, fieldLabels: FINANCE_FIELD_LABELS, enumLabels: FINANCE_ENUM_LABELS },
+  /**
+   * 本垂类自带的工具。Core 只知道"起进程、喂 stdin、读 stdout 的 JSON",
+   * 这些工具各自是干什么的**只有这里知道**。
+   * ⚠️ 回测要先取数(三个市场、几年日线)再逐 bar 撮合,比单次取数慢得多 ⇒ 单独给 5 分钟。
+   */
+  tools: {
+    backtest: { label: "回测", module: "backtest.cli", timeoutMs: 300_000 },
+  },
 
   lexicon: FINANCE_LEXICON,
 };

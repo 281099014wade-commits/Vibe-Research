@@ -137,6 +137,15 @@ export const backend = {
       signal,
     }),
 
+  /** 垂类工具:清单由后端下发,前端**不写死一份**(写死的那份迟早与真实实现对不上) */
+  tools: () => call<{ tools: { name: string; label: string }[] }>("/tools"),
+  /**
+   * 跑一个垂类工具。
+   * ⚠️ 这类工具要先取数再算,**几十秒**很正常 —— 调用方要自己给足耐心与进度反馈。
+   * 🔴 返回的 JSON 由工具自己定形状(比如"被拦住"与"出错了"分开),这里原样透传。
+   */
+  runTool: <T>(name: string, body: unknown, signal?: AbortSignal) =>
+    call<T>(`/tool/${encodeURIComponent(name)}`, { method: "POST", body: JSON.stringify(body), signal }),
   debateStart: (symbol: string) => call<DebateState>("/debate", { method: "POST", body: JSON.stringify({ symbol }) }),
   debateAdvance: (id: string) =>
     call<DebateState>(`/debate/${encodeURIComponent(id)}/advance`, { method: "POST", body: "{}" }),

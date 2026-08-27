@@ -292,6 +292,22 @@ export interface Plugin {
     readonly enumLabels?: Readonly<Record<string, string>>;
   };
   /**
+   * **垂类自带的工具**(可选):一段 JSON 进 / JSON 出的脚本,由界面按名字调用。
+   *
+   * 🔴 Core 只提供"跑一个进程、把 stdin 喂进去、把 stdout 当 JSON 读回来"这件事,
+   *    **不知道这些工具各自是干什么的** —— 换个垂类换一套工具,Core 一行不用改。
+   * ⚠️ `module` 会被拼进命令行 ⇒ 注册期按安全模块名校验(只许字母数字下划线与点)。
+   * ⚠️ 这类工具通常比取数慢得多(要先取数再算),`timeoutMs` 由垂类自己定。
+   */
+  readonly tools?: Readonly<Record<string, {
+    /** 界面上的显示名 */
+    readonly label: string;
+    /** `python -m <module>` 的模块名 */
+    readonly module: string;
+    /** 超时(毫秒)。不给则用 Core 默认 */
+    readonly timeoutMs?: number;
+  }>>;
+  /**
    * **界面查询契约**(BFF):页面按**名字**要一屏数据,而不是自己去点名物理端点。
    *
    * 🔴 为什么必须有这一层:现在每个页面卡片都写死了 `em_limit_up_sentiment` 这种端点 id ——
@@ -497,6 +513,22 @@ const ARCHIVE_BLOCK = {
  */
 const RISKY_KEYS = new Set(["__proto__", "constructor", "prototype"]);
 const LEDGER_KIND_NAME = { type: "string", pattern: "^[a-z][a-z0-9_]{0,31}$" };
+/** 工具名 / 模块名都会被拼进命令行,收紧到安全字符 */
+const TOOL_NAME = { type: "string", pattern: "^[a-z][a-z0-9_-]{0,31}$" };
+const TOOLS = {
+  type: "object",
+  propertyNames: TOOL_NAME,
+  additionalProperties: {
+    type: "object", additionalProperties: false, required: ["label", "module"],
+    properties: {
+      label: NONBLANK,
+      // 只许 python 模块名的合法形状:`a.b_c`。有 `/`、`..`、空格的一律拒
+      module: { type: "string", pattern: "^[A-Za-z_][A-Za-z0-9_]*(\\.[A-Za-z_][A-Za-z0-9_]*)*$" },
+      timeoutMs: { type: "integer", minimum: 1000, maximum: 1800000 },
+    },
+  },
+};
+
 const LEDGER = {
   type: "object", additionalProperties: false, required: ["kinds"],
   properties: {
@@ -566,6 +598,7 @@ export const PLUGIN_SCHEMA = {
     alertFields: strArray(),
     // 可选:不声明台账的垂类完全合法(第二垂类验收装置里就没有)
     ledger: LEDGER,
+    tools: TOOLS,
     /**
      * 界面查询:块的形状要查(拼错块 id / 漏端点都该当场说),但**不查端点是否存在** ——
      * 那要读注册表,而注册表与插件注册不在同一时刻。取数时端点不存在会照常报错。
@@ -687,6 +720,21 @@ function mapValues<T, R>(obj: Record<string, T>, f: (v: T, k: string) => R): Rec
 const UNSAFE_KEYS = ["__proto__", "constructor", "prototype"];
 
 /**
+ * **JSON Schema 表达不了**、因而不在 `PLUGIN_SCHEMA.properties` 里的插槽 ——
+ * 要么本身是函数,要么内部含函数(`gate.probeLine`、`pageContext.resolve`)。
+ * 它们各自在下面手工校验;键集比对时要把它们算上。
+ *
+ * 🔴 这是**唯一**需要手写的一份 —— 其余键一律从 schema 派生。
+ *    以前整份清单都是手抄的:加一个可选槽位要同时改 schema 与这里,漏了就是
+ *    「schema 里明明声明了,注册却说这是契约之外的字段」。加 tools 时真踩过。
+ */
+const NON_SCHEMA_SLOTS = [
+  "quoteDecision", "baselinePeriod", "marketRegion", "buildStagePrompt", "buildRewritePrompt",
+  "lexicon", "afterFetch", "beforeFetch", "transformFetch", "afterRun", "doctorChecks", "seriesFor",
+  "gate", "pageContext",
+] as const;
+
+/**
  * 原对象上不许有契约之外的字段。
  *
  * 🔴 ajv 的 `additionalProperties: false` **看不到它们** —— 校验的是投影出来的 `decl`,
@@ -793,6 +841,7 @@ interface Decl {
   alertFields: string[];
   selfTestCalc: { fn: string; args: Record<string, unknown>; expect: number } | null;
   ledger?: { kinds: Record<string, { label: string; properties: Record<string, unknown>; required: string[] }> };
+  tools?: Record<string, { label: string; module: string; timeoutMs?: number }>;
   pageQueries?: Plugin["pageQueries"];
   pageContext?: Plugin["pageContext"];
   debate?: Plugin["debate"];
@@ -931,6 +980,11 @@ function checkRelations(d: Decl): void {
   // 台账:与 stageSchemas 同样的三条 —— required ⊆ properties、片段真能编译、不许 $ref。
   // 🔴 少了"注册期编译"这一条,一个写错的字段 schema 会拖到**用户第一次点保存**才炸,
   //    而那时他刚写完一条记录 —— 最糟的时机。
+  for (const [name, t] of Object.entries(d.tools ?? {})) {
+    // 与 ledger 种类名同一条:对象原型成员当键会让后面的 `tools[name]` 拿到函数而不是配置
+    if (RISKY_KEYS.has(name)) throw new Error(`Plugin.tools 不能用 ${name} 当工具名(与对象原型成员重名)`);
+    if (!t.module) throw new Error(`Plugin.tools.${name} 缺 module`);
+  }
   for (const [kind, def] of Object.entries(d.ledger?.kinds ?? {})) {
     // 🔴 pattern 挡不住 `constructor` / `prototype`(它们本身就是小写字母)。
     //    作为文件名它们无害,但作为**对象键**会和原型打架:普通 `{}` 上 `obj["constructor"]`
@@ -1045,6 +1099,7 @@ function register(plugin: Plugin): void {
     // 界面查询是纯声明数据,同 ledger 一样只读一次并深冻结;没声明就整个不带这个键
     ...(plugin.pageQueries === undefined ? {} : { pageQueries: deepFrozen("pageQueries", plugin.pageQueries) }),
     ...(plugin.debate === undefined ? {} : { debate: deepFrozen("debate", plugin.debate) }),
+    ...(plugin.tools === undefined ? {} : { tools: deepFrozen("tools", plugin.tools) }),
     // ⚠️ pageContext 里有函数(resolve),**不能 deepFrozen**(它会拒函数)——
     //    与 quoteDecision 那批同类:函数插槽单独带过去,由下面的类型检查兜底。
 
@@ -1118,7 +1173,14 @@ function register(plugin: Plugin): void {
     if (typeof fn !== "function") throw new Error(`Plugin.${k} 必须是函数`);
   }
   // ⓪ 原对象的键集:ajv 只看得到投影后的 `decl`,多余字段得在这里比
-  assertNoExtraKeys("", plugin, [...(PLUGIN_SCHEMA.required as readonly string[]), "quoteDecision", "baselinePeriod", "marketRegion", "buildStagePrompt", "buildRewritePrompt", "lexicon", "afterFetch", "beforeFetch", "transformFetch", "afterRun", "doctorChecks", "seriesFor", "gate", "ledger", "pageQueries", "pageContext", "debate"]);
+  // 🔴 允许的键**从 schema 派生**,不手写第二份。
+  //    原来这里是一份手抄的清单 —— 加一个可选槽位要同时改两处,漏了就是
+  //    「schema 里明明声明了,注册却说这是契约之外的字段」。真踩过(加 tools 时)。
+  //    函数插槽 JSON Schema 表达不了,只有它们仍需列出来。
+  assertNoExtraKeys("", plugin, [
+    ...Object.keys(PLUGIN_SCHEMA.properties as Record<string, unknown>),
+    ...NON_SCHEMA_SLOTS,
+  ]);
   assertNoExtraKeys("evidence", ev, ["markets", "adjustments", "marketWideCodes", "marketWideOnlyCodes"]);
   assertNoExtraKeys("selfTestCalc", st, ["fn", "args", "expect"]);
   assertNoExtraKeys("archive", decl.archive, ["validDays", "maxFacts", "sections"]);
@@ -1190,6 +1252,7 @@ function register(plugin: Plugin): void {
     ...(d.ledger === undefined ? {} : { ledger: d.ledger }),
     ...((d as { debate?: unknown }).debate === undefined ? {} : { debate: (d as { debate?: Plugin["debate"] }).debate }),
     ...(d.pageQueries === undefined ? {} : { pageQueries: d.pageQueries }),
+    ...(d.tools === undefined ? {} : { tools: d.tools }),
     // pageContext 含函数,没进 ajv 的 decl —— 从原插件对象直接带过来(同 quoteDecision 那批)
     ...(plugin.pageContext === undefined ? {} : { pageContext: plugin.pageContext }),
     // gate 含 RegExp,同样没进 ajv 的 decl —— 从原插件对象直接带过来

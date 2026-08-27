@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { currentPlugin, registerPlugin, resetPlugin, type Plugin } from "../src/plugin.ts";
+import { PLUGIN_SCHEMA, currentPlugin, registerPlugin, resetPlugin, type Plugin } from "../src/plugin.ts";
 import { FINANCE_PLUGIN } from "../src/finance/plugin.ts";
 import { stageOutputSchema } from "../src/schemas.ts";
 
@@ -374,4 +374,22 @@ test("🔴 stageSchemas 与 ledger 是**同一根因**的两个编译点:未知 
   // 认识的照过 —— 不是把 format 一律关死
   fresh(plugin({ stageSchemas: { ...FINANCE_PLUGIN.stageSchemas, [st]: { properties: { d: { type: "string", format: "date" } }, required: [] } } }));
   fresh(FINANCE_PLUGIN);
+});
+
+/* ===== 可选槽位的投影完整性（2026-08-27） ===== */
+
+test("🔴 schema 里声明、垂类也设了的槽位，必须都活到 currentPlugin()", () => {
+  // 加一个可选槽位要动**四处**：schema properties / 键集白名单 /
+  // 注册期的 decl 投影 / currentPlugin() 的返回投影。
+  // 真踩过：加 tools 时前两处改了、后两处漏了 —— 注册通过、测试全绿，
+  // 但 `currentPlugin().tools` 是 undefined，界面上表现为「工具清单是空的」，
+  // **没有任何一层报错**。这条就是钉这个的。
+  const declared = Object.keys(
+    (PLUGIN_SCHEMA as { properties: Record<string, unknown> }).properties,
+  );
+  const pack = currentPlugin() as unknown as Record<string, unknown>;
+  const src = FINANCE_PLUGIN as unknown as Record<string, unknown>;
+  const lost = declared.filter((k) => src[k] !== undefined && pack[k] === undefined);
+  assert.deepEqual(lost, [],
+    `这些槽位垂类声明了、却没活到 currentPlugin()（多半漏了某处投影）：${lost.join(" / ")}`);
 });

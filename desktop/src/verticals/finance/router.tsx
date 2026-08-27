@@ -6,6 +6,7 @@ import { Signals } from "@/pages/Signals";
 import { Sectors } from "@/pages/Sectors";
 import { SectorDetail } from "@/pages/SectorDetail";
 import { Debate } from "@/pages/Debate";
+import { Backtest } from "@/pages/Backtest";
 import { Portfolio } from "@/pages/Portfolio";
 import { StockData } from "@/pages/StockData";
 import { Watchlist } from "@/pages/Watchlist";
@@ -28,6 +29,7 @@ export const router = createBrowserRouter([
       { path: "/portfolio", element: <Portfolio /> },
       { path: "/stock-data", element: <StockData /> },
       { path: "/debate", element: <Debate /> },
+      { path: "/backtest", element: <Backtest /> },
       { path: "/watchlist", element: <Watchlist /> },
       { path: "/my-reports", element: <MyReports /> },
       { path: "/notes", element: <Notes /> },

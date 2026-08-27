@@ -4,8 +4,7 @@ import {
   Activity, Radar, LayoutGrid, Wallet, Settings, Search, NotebookPen,
   Moon, Sun, ChevronsLeft, ChevronsRight, ChevronDown, LineChart, Github, UserRound,
   Cog, Cpu, Star, FileText, Swords, Thermometer, Gauge,
-  Rss, Newspaper, TrendingUp, Sparkles,
-} from "lucide-react";
+  Rss, Newspaper, TrendingUp, Sparkles, FlaskConical } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { AiPageProvider } from "../../../../core/ai/pageContext";
 import { FinanceAiConsole, FinanceAiDock } from "@/components/ui/FinanceAiDock";
@@ -30,6 +29,7 @@ const NAV = [
   { to: "/sectors", icon: LayoutGrid, label: "板块中心" },
   { to: "/stock-data", icon: Search, label: "个股研究" },
   { to: "/debate", icon: Swords, label: "多空辩论" },
+  { to: "/backtest", icon: FlaskConical, label: "回测" },
   { to: "/watchlist", icon: Star, label: "自选股" },
   { to: "/portfolio", icon: Wallet, label: "我的持仓" },
   { to: "/my-reports", icon: FileText, label: "我的研报" },

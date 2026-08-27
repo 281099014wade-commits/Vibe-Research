@@ -15,7 +15,7 @@ import path from "node:path";
 
 import crypto from "node:crypto";
 
-import { IMPORT_MAX_TOTAL_BYTES, ServiceError, chatSend, fetchEndpoint, ingestFiles, debateAdvance, debateStart, ledgerKinds, ledgerLabels, ledgerList, productInfo, ledgerRemove, ledgerSnapshot, ledgerUpsert, pageQuery, getEvidence, getReport, knowledgeRecall, listEndpoints, listRuns, readRunFile, redact, researchStatus, safePath, serviceContext, startResearch, thermoSeries, type ServiceContext } from "./service.ts";
+import { IMPORT_MAX_TOTAL_BYTES, ServiceError, chatSend, listTools, runTool, fetchEndpoint, ingestFiles, debateAdvance, debateStart, ledgerKinds, ledgerLabels, ledgerList, productInfo, ledgerRemove, ledgerSnapshot, ledgerUpsert, pageQuery, getEvidence, getReport, knowledgeRecall, listEndpoints, listRuns, readRunFile, redact, researchStatus, safePath, serviceContext, startResearch, thermoSeries, type ServiceContext } from "./service.ts";
 
 
 // **composition root**:插件在入口注册,Core 模块一律不 import 它
@@ -147,6 +147,14 @@ export function createApiServer(ctx: ServiceContext, opts: { token: string; cook
         return send(res, 200, await pageQuery(ctx, { query: parts[1], symbol: b?.symbol, refresh: b?.refresh === true, blockArgs: b?.blockArgs }));
       }
       // 多空辩论:开一场 → 逐个阶段推进(一次一个,界面据此逐段显示)
+      // 垂类自带的工具:GET 列清单 / POST 跑一个。Core **不知道**这些工具各自是干什么的。
+      if (req.method === "GET" && url.pathname === "/tools") {
+        return send(res, 200, { tools: listTools() });
+      }
+      if (req.method === "POST" && parts[0] === "tool" && parts[1] && parts.length === 2) {
+        const b = await readBody(req);
+        return send(res, 200, await runTool(ctx, parts[1], b));
+      }
       if (req.method === "POST" && url.pathname === "/debate") {
         const b = (await readBody(req)) as { symbol?: string; session?: string };
         return send(res, 200, await debateStart(ctx, { symbol: String(b?.symbol ?? ""), ...(b?.session ? { session: b.session } : {}) }));
