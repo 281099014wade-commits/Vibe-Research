@@ -379,17 +379,15 @@ export function StockData() {
           {fin && (fin.revenue || fin.roe) && (
             <GlassCard className="mb-4">
               <h3 className="mb-1 flex items-center gap-1.5 text-sm font-semibold"><BarChart3 className="h-4 w-4 text-primary" /> 财务关键指标{fin.period && <span className="text-xs font-normal text-muted-foreground/60">· {fin.period}</span>}</h3>
-              <p className="mb-3 text-[11px] text-muted-foreground/60">同花顺财务摘要,最新报告期。</p>
+              {/* 🔴 来源要写对:这条链走的是**新浪财务摘要**(akshare stock_financial_abstract),
+                  不是同花顺 —— 落盘 raw 的文件名就是 `extracted_sina_abstract_...`。
+                  一个卖溯源的产品把来源标错,比不标更糟。 */}
+              <p className="mb-3 text-[11px] text-muted-foreground/60">新浪财务摘要（akshare），最新报告期。</p>
               <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
                 {[
                   { k: "营业总收入", v: fin.revenue, yoy: fin.revenue_yoy },
                   { k: "归母净利润", v: fin.net_profit, yoy: fin.net_profit_yoy },
                   { k: "每股收益", v: fin.eps },
-                  { k: "ROE", v: fin.roe },
-                  { k: "销售毛利率", v: fin.gross_margin },
-                  { k: "销售净利率", v: fin.net_margin },
-                  { k: "每股净资产", v: fin.bvps },
-                  { k: "每股经营现金流", v: fin.op_cf_ps },
                 ].map((m) => (
                   <div key={m.k} className="rounded-lg bg-muted/30 p-3">
                     <p className="text-xs text-muted-foreground">{m.k}</p>
@@ -397,6 +395,14 @@ export function StockData() {
                     {m.yoy && <p className="text-[11px] text-muted-foreground">同比 {m.yoy}</p>}
                   </div>
                 ))}
+              </div>
+              {/* 🔴 原来这里还摆着 ROE / 毛利率 / 净利率 / 每股净资产 / 每股经营现金流 五个格子,
+                  全是写死的「—」。用户分不清是**这只票没有**还是**这个源不提供** ——
+                  而实际是后者(该端点只给营收 / 归母 / 扣非 / EPS 四项)。⇒ 与其摆五个空格子,
+                  不如把这句说出来。 */}
+              <div className="mt-2 text-[11px] leading-relaxed text-muted-foreground/60">
+                这个源只提供营收 / 归母净利 / 扣非 / 每股收益。ROE、毛利率、净利率、每股净资产、
+                每股经营现金流<b className="text-foreground/70">不在这条链路里</b>（不是这只票没有）——要看得另接端点。
               </div>
             </GlassCard>
           )}
@@ -594,7 +600,7 @@ export function StockData() {
       {!val && !err && !loading && (
         <GlassCard>
           <div className="py-10 text-center text-sm text-muted-foreground">
-            输入一个 6 位股票代码，拉取它的行情、估值、研报与新闻。<br />
+            输入 A 股 6 位代码，或美股 / 港股 / 韩股代码（AAPL · 00700 · 005930.KS），拉取它的行情、估值、研报与新闻。<br />
             <span className="text-xs text-muted-foreground/60">数据来自公开源（腾讯行情 / 东财研报 / akshare）；Vibe-Research 不预置任何标的、不做推荐。</span>
           </div>
         </GlassCard>

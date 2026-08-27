@@ -554,8 +554,10 @@ async function blockTradeOf(code: string): Promise<BlockTradeRow[]> {
     premium_pct: n0(r.fields.block_trade_premium_pct),
     vol: n0(r.fields.block_trade_volume),
     amount: n0(r.fields.block_trade_amount),
-    buyer: str(r.fields.block_trade_buyer),
-    seller: str(r.fields.block_trade_seller),
+    // 🔴 买卖方在 **note** 里,不是字段(端点只给 price / premium / volume / amount / count)。
+    //    原来取不存在的字段 → 空串 → 界面上显示成「买 · 卖」,像是渲染坏了而不是没数据。
+    buyer: noteKV(r.note).买方 ?? "",
+    seller: noteKV(r.note).卖方 ?? "",
   }));
 }
 
@@ -977,22 +979,33 @@ async function lockupOf(code: string): Promise<Lockup> {
 
 async function blocksOf(code: string): Promise<Blocks> {
   const e = await env("em_concept_blocks", { symbol: code });
-  const boards: Board[] = rows(e).map((r) => ({
-    name: noteKV(r.note).name ?? r.note ?? r.key,
-    code: r.key,
-    change_pct: num(r.fields.block_change_pct) ?? "",
-    lead_stock: "",
-  }));
+  const boards: Board[] = rows(e).map((r) => {
+    const kv = noteKV(r.note);
+    return {
+      // 🔴 板块名是**证据的 value**(食品饮料 / 白酒Ⅲ),不在 note 里。
+      //    原来找 `name=` 这个根本不存在的键,取不到就回退 `?? r.note` ——
+      //    于是界面上显示的是 `板块代码=BK0438;当日涨跌=-0.38%;龙头=五芳斋` 这条内部字符串。
+      //    ⚠️ 回退到原始 note 比显示空更糟:它看着像内容,用户不知道那是调试文本。
+      name: str(r.fields.board_membership) || r.key,
+      code: kv.板块代码 ?? r.key,
+      change_pct: kv.当日涨跌 ?? "",
+      lead_stock: kv.龙头 ?? "",
+    };
+  });
   return { total: boards.length, boards, concept_tags: boards.map((b) => b.name).filter(Boolean) };
 }
 
 async function hotConceptsOf(code: string): Promise<HotConcept[]> {
   const e = await env("em_hot_concept", { symbol: code });
-  return rows(e).map((r) => ({
-    concept: noteKV(r.note).name ?? r.note ?? r.key,
-    bk: r.key,
-    hit: num(r.fields.hot_concept_rank) ?? 0,
-  }));
+  return rows(e)
+    // 端点里混着一条汇总(hot_concept_count,没有 record_key)—— 它不是一个概念,别当条目渲染
+    .filter((r) => r.fields.hot_concept_hit !== undefined)
+    .map((r) => ({
+      // 同上:概念名在 note 的 `概念=` 里,不是 `name=`
+      concept: noteKV(r.note).概念 ?? r.key,
+      bk: r.key,
+      hit: num(r.fields.hot_concept_hit) ?? 0,
+    }));
 }
 
 async function investorQaOf(code: string): Promise<QaRow[]> {
@@ -1195,11 +1208,19 @@ async function globalStockOf(code: string): Promise<GlobalStock> {
 
 async function hkCashflowOf(code: string): Promise<HkCashflow> {
   const e = await env("em_global_cashflow", { symbol: code });
-  // record_key 形如 `<科目>|<报告期>`;拆成"科目 × 报告期"的表
+  // 🔴 record_key 实际是 `<报告期>|<科目>` —— 注释和解构原来都写反了。
+  //    于是 `byPeriod` 按**科目**分组、`order` 收的是**报告期**,整张表两个轴对调:
+  //    表头那句 `report_date.slice(0,7)`(为日期写的)套在科目名上,
+  //    把「投资活动产生的现金流量净额」截成「投资活动产生的」——
+  //    数值因为转置一致所以还对得上,**只有表头是错的**,最难看出来。
   const order: string[] = [];
   const byPeriod = new Map<string, HkCashflowPeriod>();
   for (const r of rows(e)) {
-    const [item = "", period = ""] = r.key.split("|");
+    const [periodKey = "", item = ""] = r.key.split("|");
+    const amountEv0 = Object.values(r.fields)[0];
+    // ⚠️ 展示用**证据自己的资料期**(真实日期 2026-06-27),不用 record_key 里的标签:
+    //    上游那个标签会出现 `2026/Q9` 这种不存在的季度,直接摆到界面上就是编出来的期间。
+    const period = amountEv0?.period || periodKey;
     if (!byPeriod.has(period)) {
       byPeriod.set(period, {
         report_date: period,

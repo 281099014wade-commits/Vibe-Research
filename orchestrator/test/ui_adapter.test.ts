@@ -143,3 +143,55 @@ test("noteKV 的中文键要从一个字起算(`年=2026`)", () => {
   assert.ok(m && /\{1,8\}/.test(m[1]!),
     "中文键仍写成 {2,8} —— 单字键会被上一个字段吞掉,而注释宣称的是「任何标识符形状」");
 });
+
+/* ===== 个股研究页实测挖出来的（2026-08-27） ===== */
+
+/**
+ * 从源文件里把 `noteKV` 重建出来（本文件的既有做法：不 import 前端源码）。
+ * ⚠️ 按文件头的规矩，**先断言源里那几段还在** —— 否则源码改了这里还绿着，测的是影子实现。
+ */
+function rebuildNoteKV(): (note: string) => Record<string, string> {
+  const keysM = /const KV_KEYS = \[([\s\S]*?)\] as const;/.exec(backendSrc);
+  const termM = /const KV_TERM = "([^"]+)"/.exec(backendSrc);
+  const kvM = /const KV = new RegExp\(\s*`([^`]+)`/.exec(backendSrc);
+  assert.ok(keysM && termM && kvM, "KV_KEYS / KV_TERM / KV 有一个不见了或写法变了");
+  const keys = [...keysM![1]!.matchAll(/"([^"]+)"/g)].map((m) => m[1]!);
+  const term = termM![1]!.replace(/\\\\/g, "\\");
+  const src = kvM![1]!
+    .replace("${KV_KEYS.join(\"|\")}", keys.join("|"))
+    .replace("${KV_TERM}", term)
+    .replace(/\\\\/g, "\\");
+  const re = new RegExp(src, "g");
+  return (note: string) => {
+    const out: Record<string, string> = {};
+    for (const m of note.matchAll(re)) {
+      const k = m[1]; const v = m[2];
+      if (k && v !== undefined && !(k in out)) out[k] = v.trim();
+    }
+    return out;
+  };
+}
+
+test("🔴 note 末尾那句没有键的尾注,不能被最后一个键的值吞掉", () => {
+  // 真实数据:大宗交易的 note 以 `;单位按东财数据中心口径` 收尾（没有 `=`）。
+  // 不挡的话界面上显示成「卖方 = 广发证券…营业部;单位按东财数据中心口径」—— 一眼假,但不报错。
+  const kv = rebuildNoteKV()("买方=中信证券股份有限公司总部(非营业场所);卖方=广发证券股份有限公司昆明东风东路证券营业部;单位按东财数据中心口径");
+  assert.equal(kv.买方, "中信证券股份有限公司总部(非营业场所)");
+  assert.equal(kv.卖方, "广发证券股份有限公司昆明东风东路证券营业部");
+});
+
+test("尾注终止符不能误伤正常的 k=v;k=v", () => {
+  const kv = rebuildNoteKV()("板块代码=BK0438;当日涨跌=-0.38%;龙头=五芳斋");
+  assert.deepEqual([kv.板块代码, kv.当日涨跌, kv.龙头], ["BK0438", "-0.38%", "五芳斋"]);
+});
+
+test("个股研究页要用的中文键都在白名单里", () => {
+  // 🔴 白名单外的键会被**安静地丢掉** —— 界面上表现为「那一行就是不显示」,
+  //    而上层往往还写着 `?? r.note`,于是回退成把整条 note 当文本渲染:
+  //    用户看到的是 `板块代码=BK0438;当日涨跌=-0.38%;龙头=五芳斋` 这种内部字符串。
+  //    (同一个坑的第三次:研报的 industry、GPU 现货卡的可租张数、这次。)
+  const kv = rebuildNoteKV()("买方=A;卖方=B;当日涨跌=-1.5%;龙头=甲;板块代码=BK1;概念=白酒");
+  for (const [k, v] of Object.entries({ 买方: "A", 卖方: "B", 当日涨跌: "-1.5%", 龙头: "甲", 板块代码: "BK1", 概念: "白酒" })) {
+    assert.equal(kv[k], v, `白名单漏了「${k}」`);
+  }
+});
