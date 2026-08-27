@@ -1,10 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { AlertTriangle, Ban, FlaskConical, Loader2, Play, Save } from "lucide-react";
+import { AlertTriangle, Ban, FlaskConical, Loader2, Play } from "lucide-react";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { GlassCard } from "@/components/ui/GlassCard";
 import { Disclaimer } from "@/components/ui/Disclaimer";
 import { backend } from "@/lib/backend";
-import { addNote } from "@/lib/notes";
+import { SaveNoteButton } from "@/components/ui/SaveNoteButton";
 import { useAiPage } from "../../../core/ai/pageContext";
 
 /** 后端下发的选项表。**前端不写死一份** —— 写死的那份迟早与真实实现对不上，
@@ -268,23 +268,22 @@ export function Backtest() {
                   {res.plan.start} → {res.plan.end}
                 </span>
               </div>
-              <button
-                onClick={() => void addNote(
-                  "回测",
-                  `回测 · ${res.strategy} · ${res.plan.codes.join("/")}`,
-                  [
-                    `${res.plan.market} · ${res.plan.style} · ${res.plan.start} → ${res.plan.end}`,
-                    METRICS.map((m) => `${m.label} ${m.fmt(res.metrics[m.key])}`).join(" · "),
-                    `对照 ${pct(res.metrics.benchmark_return)}（${res.benchmark_is_self ? "等权买入持有这几只标的本身，不是指数" : String(res.metrics.benchmark_ticker)}）`,
-                    "", "这次回测的限制：", ...res.plan.limits.map((x) => `· ${x}`),
-                    "", "口径：", ...res.plan.notes.map((x) => `· ${x}`),
-                    "", "数据来源：", ...res.provenance.map((p) => `· ${p.code} ${p.endpoint} ${p.rows} 根 ${p.first_bar}→${p.last_bar}`),
-                  ].join("\n"),
-                )}
-                className="inline-flex items-center gap-1.5 rounded-lg border border-border px-2.5 py-1.5 text-xs text-muted-foreground hover:border-primary/40 hover:text-primary"
-              >
-                <Save className="h-3.5 w-3.5" /> 存进研究记录
-              </button>
+              {/* 🔴 用 SaveNoteButton，不要手搓 —— 我第一版写的是 `void addNote(...)` 配一个普通按钮，
+                  `void` 把 rejection 吞掉了：**既不报成功也不报失败**，错只进控制台。
+                  （分类没注册时就是这样：用户点了，什么都没发生。）
+                  这个组件本来就把"存成功了才显示已存入 / 失败显示可重试"处理好了。 */}
+              <SaveNoteButton
+                kind="回测"
+                title={`回测 · ${res.strategy} · ${res.plan.codes.join("/")}`}
+                content={[
+                  `${res.plan.market} · ${res.plan.style} · ${res.plan.start} → ${res.plan.end}`,
+                  METRICS.map((m) => `${m.label} ${m.fmt(res.metrics[m.key])}`).join(" · "),
+                  `对照 ${pct(res.metrics.benchmark_return)}（${res.benchmark_is_self ? "等权买入持有这几只标的本身，不是指数" : String(res.metrics.benchmark_ticker)}）`,
+                  "", "这次回测的限制：", ...res.plan.limits.map((x) => `· ${x}`),
+                  "", "口径：", ...res.plan.notes.map((x) => `· ${x}`),
+                  "", "数据来源：", ...res.provenance.map((p) => `· ${p.code} ${p.endpoint} ${p.rows} 根 ${p.first_bar}→${p.last_bar}`),
+                ].join("\n")}
+              />
             </div>
 
             <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">

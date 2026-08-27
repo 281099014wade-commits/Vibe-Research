@@ -38,6 +38,7 @@ const KIND_TO_CATEGORY: Record<string, string> = {
   "问 Agent": "ask",
   多空辩论: "debate",
   反思审计: "audit",
+  回测: "backtest",
 };
 
 function toCategory(kind: string): string {
