@@ -15,6 +15,11 @@ def tencent_prefix(code: str) -> str:
     """与 a-stock-data get_prefix 一致的前缀路由;显式 sh/sz/bj 前缀透传(解决 000001 歧义)。"""
     c = str(code).strip()
     low = c.lower()
+    # 🔴 美股 / 港股代码**原样透传,不转小写**:腾讯对它们大小写敏感 ——
+    #    `usDJI` 有数据、`usdji` 返回 `v_usdji="1";`(空壳,20 字节)。
+    #    转了小写不会报错,只是那一条**静默地没有了** —— 界面上表现为"少一张卡片"。
+    if low.startswith(("us", "hk")):
+        return c
     if low.startswith(("sh", "sz", "bj")):
         return low
     if c.startswith("92"):

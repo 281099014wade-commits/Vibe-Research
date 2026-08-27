@@ -785,7 +785,9 @@
     },
     {
       "market": [
-        "CN"
+        "CN",
+        "US",
+        "HK"
       ],
       "compliance": "cn-public",
       "symbol_kind": "none",
@@ -794,7 +796,7 @@
       "enabled": true,
       "mapper_module": "mappers_cn",
       "id": "tx_quotes_batch",
-      "title": "腾讯批量行情(默认主要指数 + 宽基 ETF)",
+      "title": "腾讯批量行情(默认 A股四大指数 + 美股道指纳指 + 港股恒生与恒生科技)",
       "layer": "1 行情",
       "source": "tencent",
       "module": "tencent",
@@ -807,9 +809,10 @@
           "sh000300",
           "sz399001",
           "sz399006",
-          "sh000688",
-          "sh510050",
-          "sh510300"
+          "usDJI",
+          "usIXIC",
+          "hkHSI",
+          "hkHSTECH"
         ]
       },
       "cache_max_age_sec": 300

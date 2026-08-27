@@ -26,6 +26,16 @@ _TX_SPECS = [("price", "price", "元"), ("change_pct", "change_pct", "%"), ("pe_
              ("limit_up", "limit_up_price", "元"), ("limit_down", "limit_down_price", "元"), ("open", "open", "元"), ("high", "high", "元"), ("low", "low", "元"), ("last_close", "last_close", "元")]
 
 
+def _tx_market(code: str) -> str:
+    """腾讯批量行情的代码 → 市场。美股 `us` / 港股 `hk` 前缀,其余按 A 股。"""
+    low = code.strip().lower()
+    if low.startswith("us"):
+        return "US"
+    if low.startswith("hk"):
+        return "HK"
+    return "CN"
+
+
 def tencent_quotes_map(result: dict, ctx: dict) -> dict:
     if not result:
         return empty("腾讯无返回(代码无效或被拒)")
@@ -33,9 +43,13 @@ def tencent_quotes_map(result: dict, ctx: dict) -> dict:
     evs, stale = [], []
     for code, q in result.items():
         note = f"{q.get('name')}({q.get('query')})" + (f";僵尸报价:{q.get('stale_reason')}" if q.get("is_stale") else "")
-        e, _ = dict_fields(ctx, q, _TX_SPECS, day, record_key=str(code), note=note)
+        # 🔴 **逐行判市场**:这个端点同时能取 A股 / 美股 / 港股(腾讯的 usDJI、hkHSI 等)。
+        #    沿用端点级的 CN 会把道指标成 `CNY` —— 数字对、标签错,而界面上不显示币种,
+        #    所以**看不出来**;错的那份会随证据进 AI 上下文。市场决定币种(见 `ev()`)。
+        rctx = {**ctx, "market": _tx_market(str(code))}
+        e, _ = dict_fields(rctx, q, _TX_SPECS, day, record_key=str(code), note=note)
         evs += e
-        evs.append(ev(ctx, "security_name", q.get("name", ""), "text", day, currency="n/a", record_key=str(code), note=note))
+        evs.append(ev(rctx, "security_name", q.get("name", ""), "text", day, currency="n/a", record_key=str(code), note=note))
         if q.get("is_stale"):
             stale.append(code)
     all_stale = bool(stale) and len(stale) == len(result)

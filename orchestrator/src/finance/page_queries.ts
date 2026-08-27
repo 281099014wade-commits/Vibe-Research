@@ -15,7 +15,7 @@ import type { PageContextDef, PageQueryDef } from "../plugin.ts";
 import { calendarFromEnvelope, resolveSession } from "./session.ts";
 
 /** 主要指数 + 宽基 ETF(端点自带默认代码表,这里不重复写死) */
-const INDEX_BLOCK = { id: "indices", title: "大盘", note: "指数与宽基 ETF;红涨绿跌", endpoint: "tx_quotes_batch", required: true } as const;
+const INDEX_BLOCK = { id: "indices", title: "大盘", note: "A股四大指数 + 美股道指纳指 + 港股恒生与恒生科技;红涨绿跌", endpoint: "tx_quotes_batch", required: true } as const;
 
 /** 板块资金流:**取全 496 个**。默认 50 只够看流入侧,"净流出最多"那一栏会全是净流入的板块 */
 const BOARD_FLOW_ARGS = { board_type: "industry", period: "today", top_n: 500 } as const;
