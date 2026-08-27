@@ -172,7 +172,11 @@ export const HOME_PREFIXES = ["/Users/", "/home/", "/root/"];
  *    多一套应用初始化,而不是一个安静的后台脚本。这是"我是怎么被托管的"这一层的事实,
  *    不是密钥,透传它不违反最小环境的初衷。
  */
-const BASE_ENV_KEYS = ["PATH", "HOME", "USER", "LOGNAME", "SHELL", "TERM", "LANG", "LC_ALL", "LC_CTYPE", "TMPDIR", "TZ", "ELECTRON_RUN_AS_NODE"];
+const BASE_ENV_KEYS = ["PATH", "HOME", "USER", "LOGNAME", "SHELL", "TERM", "LANG", "LC_ALL", "LC_CTYPE", "TMPDIR", "TZ", "ELECTRON_RUN_AS_NODE",
+  // 🔴 装机版必须能把它传下去:App 包是**已签名**的,Python 往里写 .pyc 会当场破坏代码签名
+  //    (实测跑两次业务写进 505 个 .pyc,`codesign -v --strict` 随即报 sealed resource missing)。
+  //    置不置位由**外壳**决定(只有它知道自己跑在 .app 里),这里只负责不把它过滤掉。
+  "PYTHONDONTWRITEBYTECODE"];
 /** 取数脚本(联网进程)的最小环境:只加代理与证书;**不含任何 Codex 凭据 / 配置目录**(AGENTS.md §5) */
 export const FETCH_ENV_KEYS = [...BASE_ENV_KEYS, "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "http_proxy", "https_proxy", "no_proxy", "ALL_PROXY", "all_proxy",
   "SSL_CERT_FILE", "REQUESTS_CA_BUNDLE"];

@@ -89,7 +89,8 @@ export const APP_DIRS = [
  *    ⇒ 新加一个顶层目录时，要么进 APP_DIRS，要么进这里，二选一，不许都不选。
  */
 export const APP_DIRS_EXCLUDED = {
-  assets: "构建期资源（图标等），运行时用不到",
+  assets: "图标母图等原始素材，运行时用不到",
+  build: "App 图标的 icns 与 iconset —— electron-builder 自己会把它嵌进 .app，不进载荷",
   desktop: "界面源码；发的是 vite build 产物（payload/ui），不发源码",
   orchestrator: "单独按 ORCH_ENTRIES 装配（要挑掉 test/）",
   shell: "外壳自己，由 electron-builder 打，不能自己装自己",
@@ -185,14 +186,27 @@ function pruneJunk(root, { dropPycache = false } = {}) {
  *
  * 为什么不直接把 venv 里现成的 `__pycache__` 拷过来：那份是零散的（只有被 import 过的才有），
  * 而且里面记着 venv 的路径。这里先清干净再统一生成，得到的是完整且一致的一份。
- * ⚠️ 缓存有效性按**源文件 mtime**判定，而 `ditto` 保留 mtime ⇒ 装到用户机器上依然有效。
+ * 🔴 **必须用 hash 型缓存（`--invalidation-mode unchecked-hash`）**，不能用默认的 mtime 型。
+ *    上一版这里写着"`ditto` 保留 mtime ⇒ 装到用户机器上依然有效" —— **那句只算了 ditto 这一步**，
+ *    没算 electron-builder 自己那次 `payload → App` 的拷贝：**它不保留 mtime**。
+ *    实测（已签名的包里）：`.py` 的 mtime 被重置成拷贝时刻，而 `.pyc` 记的还是原始 mtime，
+ *    抽 60 个有 48 个失效 ⇒ 用户第一次用到任何模块都会重新编译，于是
+ *      ① 预编那 20 秒白省了（这是做预编的**全部理由**）；
+ *      ② 更糟：**重新编译会把 .pyc 写进 App 包里，当场破坏代码签名**
+ *         —— 实测跑两次业务就有 505 个 .pyc 被写进去，`codesign -v --strict` 随即报
+ *         `a sealed resource is missing or invalid`。
+ *    hash 型缓存不看 mtime（`unchecked-hash` 连 hash 都不校验，直接用），两个问题一起解。
+ * ⚠️ **必须带 `-f`**：`compileall` 认为已有的 .pyc「还新鲜」就直接跳过，**不会**因为你换了
+ *    失效模式就重写它。实测漏了 `-f` 时包里 mtime 型与 hash 型混着，等于修了一半。
+ * ⚠️ 代价：源文件改了而没重新预编时，会**静默用旧字节码**。在只读、已签名的发行包里
+ *    源文件不会变，这个代价不存在；但**别把这个模式用到开发目录**。
  * ⚠️ 代价：报错回溯里的文件路径会显示成构建时的载荷路径，不是安装路径（只影响观感）。
  */
 function precompile(pythonExe, targets) {
   for (const t of targets) {
     // -q 只报错误；编译失败（比如某个包里有 py2 语法的样例文件）不该拦住发布，所以不看退出码
     try {
-      execFileSync(pythonExe, ["-m", "compileall", "-q", "-j", "0", t], { stdio: "pipe", timeout: 900_000 });
+      execFileSync(pythonExe, ["-m", "compileall", "-q", "-j", "0", "-f", "--invalidation-mode", "unchecked-hash", t], { stdio: "pipe", timeout: 900_000 });
     } catch {
       /* 个别文件编不了很正常（第三方包里常有故意不合法的样例）；缺的那几个只是回到懒编译 */
     }

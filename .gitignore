@@ -27,3 +27,6 @@ dist/
 # 桌面外壳的构建产物
 shell/payload/
 shell/release/
+
+# 图标的中间产物：由 build/icon.png 生成（重建命令见 build/README-icon.md）
+build/icon.iconset/

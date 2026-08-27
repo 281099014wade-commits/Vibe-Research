@@ -12,7 +12,8 @@
     "typecheck": "tsc --noEmit",
     "test": "node --test \"test/*.test.ts\"",
     "assemble": "node scripts/assemble.mjs",
-    "dist": "electron-builder --mac --arm64 --publish never"
+    "dist": "electron-builder --mac --arm64 --publish never",
+    "dist:notarize": "APPLE_KEYCHAIN_PROFILE=${APPLE_KEYCHAIN_PROFILE:-vibe-research-notary} npm run dist"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",

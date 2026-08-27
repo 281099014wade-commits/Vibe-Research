@@ -4,6 +4,8 @@ import path from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 
+// @ts-expect-error 装配脚本是纯 JS（构建期工具，不进 tsconfig 的类型体系）——
+// 这里只取它导出的两张清单来对账，不需要给它写一份 .d.ts
 import { APP_DIRS, APP_DIRS_EXCLUDED } from "../scripts/assemble.mjs";
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");

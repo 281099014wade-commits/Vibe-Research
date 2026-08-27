@@ -97,6 +97,13 @@ export async function startBackend(
     VRA_DATA_ROOT: paths.dataRoot,
     VRA_CODEX_HOME: paths.codexHome,
     VRA_PYTHON: paths.python,
+    // 🔴 **别让 Python 往 App 包里写 .pyc**：包是已签名的，写进去当场破坏签名
+    //    （实测跑两次业务写进 505 个 .pyc，`codesign -v --strict` 立刻报
+    //    `a sealed resource is missing or invalid`）。
+    // ⚠️ 这是**第二道**防线：第一道是装配时用 hash 型字节码缓存
+    //    （`--invalidation-mode unchecked-hash`），让 Python 压根不需要重新编译。
+    //    这一道兜的是"某个模块没被预编到"的漏网情形 —— 代价只是那个模块每次现编。
+    PYTHONDONTWRITEBYTECODE: "1",
     ...(paths.enginePath ? { VRA_CODEX_PATH: paths.enginePath } : {}),
     // 用 Electron 自带的 Node 跑子进程时必须置位,否则它会当成 Electron 再开一个窗口
     ELECTRON_RUN_AS_NODE: "1",

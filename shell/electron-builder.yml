@@ -13,6 +13,9 @@ productName: VibeResearch
 copyright: Copyright © 2026 Simon Lin
 
 beforePack: scripts/before-pack.cjs
+# 签完立刻自查「每个 Mach-O 都签上了吗」—— signIgnore 那张表误伤一个，公证就会失败，
+# 而那要等 Apple 跑完几十分钟才告诉你。这里几秒钟就能在本地炸出来（见脚本头部）。
+afterSign: scripts/verify-signed.cjs
 
 directories:
   output: release
@@ -35,8 +38,58 @@ mac:
     - target: dmg
       arch: [arm64]
   category: public.app-category.finance
-  # 先不签名（还没开 Developer ID 证书）。首次打开要右键→打开；自动更新也要等签名。
-  identity: null
+  # 图标：五根 K 线摆成一个 V。选它是因为**在 Dock 的 16 像素下仍看得出是 K 线**，
+  # 而且不用解释。母图与 iconset 的生成方式见 build/README-icon.md。
+  icon: ../build/icon.icns
+
+  # 🔴 **签名身份靠自动发现**（钥匙串里的 `Developer ID Application: … (W23NY49KQ5)`）。
+  #    刻意不写死名字：换机器 / 换证书时，写死的那份会让构建在"找不到身份"上失败，
+  #    而报错指向配置、不指向"这台机器没装证书"。
+  #    要临时出一个不签名的包：`CSC_IDENTITY_AUTO_DISCOVERY=false npm run dist`。
+  hardenedRuntime: true                    # 公证的硬性前提
+  entitlements: entitlements.mac.plist     # 开了 hardened runtime 就必须给豁免，否则 Python / 引擎起不来
+  entitlementsInherit: entitlements.mac.plist
+  # ⚠️ **不能**打开 gatekeeperAssess：包还没公证时它会判失败并中断构建，
+  #    而"先签名、后公证"这个中间状态是要允许存在的。
+  gatekeeperAssess: false
+
+  # 🔴 **只签该签的**。载荷里 14,124 个文件，实测只有 109 个是真 Mach-O ——
+  #    其余是 Python 源码 / 字节码 / 头文件 / 文档。electron-builder 默认把整棵树逐个签，
+  #    每个还要往 Apple 时间戳服务器打一次往返：实测 **121 个/分钟 ⇒ 一次打包 92 分钟**。
+  #    下面这 21 种扩展名是**从载荷实际内容里推出来的**（`file` 逐个判，确认零 Mach-O），
+  #    覆盖 95% 的文件。
+  # ⚠️ 这张表的安全性质是**单向**的：漏写一种只是慢一点（照签不误），
+  #    写错一种（真含 Mach-O）会让公证失败 —— 而 `scripts/verify-signed.cjs` 会在本地就先炸，
+  #    不用等 Apple 那边 30 分钟后告诉你。
+  signIgnore:
+    - \.py$
+    - \.pyc$
+    - \.ts$
+    - \.js$
+    - \.map$
+    - \.h$
+    - \.pyi$
+    - \.json$
+    - \.md$
+    - \.cjs$
+    - \.cts$
+    - \.tcl$
+    - \.enc$
+    - \.txt$
+    - \.f90$
+    - \.csv$
+    - \.yml$
+    - \.typed$
+    - \.pxi$
+    - \.pxd$
+    - \.f$
+
+  # 🔴 公证凭据**一个字都不进仓库**：`APPLE_KEYCHAIN_PROFILE` 指向钥匙串里存好的 profile
+  #    （`xcrun notarytool store-credentials <名字> …`，密码由本人粘、只落钥匙串）。
+  #    ⚠️ 没设这个环境变量时 electron-builder 只打印 "skipped macOS notarization" **继续走** ——
+  #    也就是说**漏了公证不会让构建失败**。要带公证请用 `npm run dist:notarize`。
+  notarize: true
+
   extendInfo:
     # Finder / Dock 上显示的名字，可以带空格 —— 它不参与路径
     CFBundleDisplayName: Vibe Research
