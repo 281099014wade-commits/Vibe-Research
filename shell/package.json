@@ -1,7 +1,7 @@
 {
   "name": "vibe-research-shell",
   "productName": "Vibe Research",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "private": true,
   "description": "桌面外壳（Electron）——开窗口、拉起本机编排器、装载界面。",
   "main": "dist/main.cjs",

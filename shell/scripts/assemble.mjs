@@ -28,7 +28,7 @@ import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const SHELL = path.resolve(HERE, "..");
@@ -68,15 +68,32 @@ const APP_FILES = [
   "codex-version.json",         // 引擎版本记录
   "README.md",
 ];
-const APP_DIRS = [
+export const APP_DIRS = [
   ".agents",       // 项目技能
   "calc",          // 确定性计算库（agent 通过 CLI 调）
+  "backtest",      // 回测（后端按 `backtest.cli` 当模块跑，不在包里回测页就是坏的）
   "datasources",   // 端点注册表 + 产业标签
   "providers",     // 模型接入模板
   "knowledge",     // 知识层脚手架
   "scripts",       // init / doctor
   "docs",
 ];
+
+/**
+ * **刻意不发**的顶层目录。写出来不是为了好看 —— `payload_manifest.test.ts` 会拿它和
+ * `APP_DIRS` 一起去跟仓库实际的顶层目录对账。
+ *
+ * 🔴 为什么需要这张表：`assembleApp()` 对清单里**缺**的目录会 `die()`，但对清单里**没写**的
+ *    目录一无所知。`backtest/` 就是这么漏的 —— 2026-08-26 加的模块，装配脚本没人改，
+ *    打出来的 App 里没有它，而**打包全程零报错**，装机后点开回测页才会炸。
+ *    ⇒ 新加一个顶层目录时，要么进 APP_DIRS，要么进这里，二选一，不许都不选。
+ */
+export const APP_DIRS_EXCLUDED = {
+  assets: "构建期资源（图标等），运行时用不到",
+  desktop: "界面源码；发的是 vite build 产物（payload/ui），不发源码",
+  orchestrator: "单独按 ORCH_ENTRIES 装配（要挑掉 test/）",
+  shell: "外壳自己，由 electron-builder 打，不能自己装自己",
+};
 /** 编排器目录内部同样按清单来（`test/` 不发） */
 const ORCH_ENTRIES = ["package.json", "package-lock.json", "tsconfig.json", "README.md", "src", "hooks", "node_modules"];
 
@@ -300,6 +317,16 @@ function sizeOf(p) {
 }
 
 // ── 主流程 ───────────────────────────────────────────────────────────────
+/**
+ * 🔴 只有**作为脚本被运行**时才装配。
+ *    没有这道门的话，任何人 `import` 这个文件（比如棘轮想读一下 APP_DIRS）都会
+ *    **把整个载荷重装一遍** —— 慢，而且是一次谁都没打算触发的副作用。
+ */
+if (process.argv[1] && pathToFileURL(process.argv[1]).href === import.meta.url) {
+  main();
+}
+
+function main() {
 if (os.platform() !== "darwin") die("目前只装配 macOS 载荷（ditto 是 macOS 工具）");
 log(`装配到 ${OUT}`);
 fs.rmSync(OUT, { recursive: true, force: true });
@@ -326,3 +353,5 @@ log("");
 for (const d of ["app", "ui", "python"]) log(`  ${d.padEnd(8)} ${sizeOf(path.join(OUT, d))}`);
 log(`  ${"合计".padEnd(7)} ${sizeOf(OUT)}`);
 log("\n完成。");
+
+}
