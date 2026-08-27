@@ -7,6 +7,7 @@ import { useAiPage } from "../../../core/ai/pageContext";
 import { GlassCard } from "@/components/ui/GlassCard";
 import { Disclaimer } from "@/components/ui/Disclaimer";
 import { debateStream, type DebateStage } from "@/lib/agents";
+import type { DebateNumberAudit } from "@/lib/backend";
 import { addNote } from "@/lib/notes";
 import { ApiError } from "@/lib/api";
 
@@ -15,6 +16,8 @@ interface StageBox {
   label: string;
   content: string;
   done: boolean;
+  /** 这一段里数字的着落（后端就地自查的结果） */
+  audit?: DebateNumberAudit;
 }
 
 // 多方用品牌橙、空方用蓝灰、主持用中性——刻意不用红绿，
@@ -28,6 +31,46 @@ const STAGE_TONE: Record<DebateStage, string> = {
 };
 
 const DOSSIER_HINT = "多空双方拿到的是同一份接口实时拉取的数据，谁也不能靠编数字赢。";
+
+
+/**
+ * 这一段里数字的着落。
+ *
+ * 🔴 **三档分开显示**：「对得上资料包」「写了算式且重算通过」「两样都不是」
+ *    是三种不同的可信度，合成一个「有 N 个数字」等于什么都没说。
+ * 🔴 `badMath` 是唯一能断言「这里错了」的一类 —— 算式是它自己写的，结果对不上。
+ *    实测抓到过同比算反方向（写 +0.2%，实为 −2.04%）。这一条必须显眼。
+ * ⚠️ 「没着落」**不等于错**（可能只是没写算式），所以措辞是「没有交代出处」而不是「错」。
+ */
+function AuditBar({ a }: { a: DebateNumberAudit }) {
+  if (!a.total && !a.badMath.length) return null;
+  return (
+    <div className="mt-3 border-t border-border/40 pt-2 text-[11px]">
+      {a.badMath.length > 0 && (
+        <div className="mb-1.5 rounded-lg border border-destructive/40 bg-destructive/[0.07] p-2">
+          <p className="font-semibold text-destructive">
+            🔴 这一段有 {a.badMath.length} 处算式重算对不上（算式是它自己写的）：
+          </p>
+          <ul className="mt-1 space-y-0.5 font-mono text-muted-foreground">
+            {a.badMath.slice(0, 4).map((b, i) => (
+              <li key={i}>
+                「{b.raw}」→ 重算应为 <b className="text-destructive">
+                  {b.recomputed.toFixed(2)}{b.percent ? "%" : ""}
+                </b>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+      <p className="text-muted-foreground/70">
+        数字 {a.total} 个：<b className="text-foreground/70">{a.bound}</b> 个对得上资料包 ·{" "}
+        <b className="text-foreground/70">{a.derived}</b> 个写了算式且重算通过 ·{" "}
+        <b className={a.loose ? "text-warning" : "text-foreground/70"}>{a.loose}</b> 个没有交代出处
+        {a.loose > 0 && <span className="text-muted-foreground/60">（不等于错，但这一档没经过核对）</span>}
+      </p>
+    </div>
+  );
+}
 
 export function Debate() {
   const [code, setCode] = useState("");
@@ -62,8 +105,8 @@ export function Debate() {
         onDossierReady: (_sections, miss) => { setMissing(miss); setStatus("底稿就绪，辩论开始"); },
         onStageStart: (stage, label) =>
           setStages((s) => [...s, { stage, label, content: "", done: false }]),
-        onDelta: (stage, text) =>
-          setStages((s) => s.map((b) => (b.stage === stage && !b.done ? { ...b, content: b.content + text } : b))),
+        onDelta: (stage, text, audit) =>
+          setStages((s) => s.map((b) => (b.stage === stage && !b.done ? { ...b, content: b.content + text, ...(audit ? { audit } : {}) } : b))),
         onStageDone: (stage, _label, content) =>
           setStages((s) => s.map((b) => (b.stage === stage && !b.done ? { ...b, content, done: true } : b))),
         onError: (message, stage) => setError(stage ? `${stage}：${message}` : message),
@@ -202,6 +245,7 @@ export function Debate() {
             <div className="prose prose-sm dark:prose-invert max-w-none text-foreground prose-table:text-sm">
               <ReactMarkdown remarkPlugins={[remarkGfm]}>{s.content || "…"}</ReactMarkdown>
             </div>
+            {s.audit && <AuditBar a={s.audit} />}
           </div>
         ))}
       </div>

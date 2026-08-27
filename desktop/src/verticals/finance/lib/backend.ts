@@ -188,12 +188,25 @@ export interface ProductInfo {
   auth_error: string | null;
 }
 
+/** 一段产出里数字的着落。三档分开报 —— 混成一个数等于什么都没说 */
+export interface DebateNumberAudit {
+  total: number;
+  /** 对得上资料包里的值 */
+  bound: number;
+  /** 没有对应的值,但写了算式且重算通过 */
+  derived: number;
+  /** 两样都不是。不等于错,但这一档没人在看 */
+  loose: number;
+  /** 🔴 算式是它自己写的、结果对不上 —— 唯一能断言「这里错了」的一类 */
+  badMath: { raw: string; stated: number; recomputed: number; percent: boolean }[];
+}
 export interface DebateStage {
   id: string;
   label: string;
   status: "pending" | "running" | "done" | "failed";
   text: string;
   error?: string;
+  audit?: DebateNumberAudit;
 }
 export interface DebateState {
   id: string;

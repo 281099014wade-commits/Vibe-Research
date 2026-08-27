@@ -15,7 +15,9 @@
  *    一种落盘格式;要留存,用户点"存为研究记录"进台账(那才是留痕该去的地方)。
  * ⚠️ 每个阶段的产出都走 `chatSend`,因此**照常过合规 gate** —— 辩论不是红线的豁免区。
  */
+import { auditNumbers } from "./arithmetic.ts";
 import { ChatError, chatSend } from "./chat.ts";
+import { claimTokens, numberBound } from "./number_fidelity.ts";
 import { currentPlugin } from "./plugin.ts";
 
 export class DebateError extends Error {
@@ -35,10 +37,29 @@ export interface DebateStageDef {
   readonly prompt: string;
 }
 
+/**
+ * 一段产出里数字的着落。**三档必须分开报** ——
+ * 「对得上资料包」「自己写了算式且重算通过」「两样都不是」是三种不同的可信度,
+ * 混成一个「有 N 个数字」等于什么都没说。
+ */
+export interface DebateNumberAudit {
+  total: number;
+  /** 对得上资料包里的值 */
+  bound: number;
+  /** 没有对应的值,但它把算式写出来了且重算通过 */
+  derived: number;
+  /** 两样都不是。**不等于错**,但这一档没人在看 */
+  loose: number;
+  /** 🔴 算式是它自己写的、结果对不上 —— 唯一可以断言「这里错了」的一类 */
+  badMath: { raw: string; stated: number; recomputed: number; percent: boolean }[];
+}
+
 export interface DebateStageState {
   id: string;
   label: string;
   status: "pending" | "running" | "done" | "failed";
+  /** 数字自查结果(阶段跑完才有) */
+  audit?: DebateNumberAudit;
   text: string;
   error?: string;
 }
@@ -68,6 +89,8 @@ export interface DebateState {
  */
 interface Session extends Omit<DebateState, "outcome"> {
   dossier: string;
+  /** 资料包里所有数值。用来判「产出里这个数字是引来的,还是它自己算的」 */
+  dossierValues: number[];
   lastUsed: number;
 }
 
@@ -123,8 +146,9 @@ function safeNote(v: unknown): string {
   return t.length > MAX_NOTE ? t.slice(0, MAX_NOTE) + "…" : t;
 }
 
-export function renderDossier(envelopes: { script?: string; evidence?: unknown[] }[]): { text: string; count: number; truncated: boolean } {
+export function renderDossier(envelopes: { script?: string; evidence?: unknown[] }[]): { text: string; count: number; truncated: boolean; values: number[] } {
   const lines: string[] = [];
+  const values: number[] = [];
   let count = 0;
   for (const env of envelopes) {
     const evs = Array.isArray(env.evidence) ? env.evidence : [];
@@ -133,6 +157,8 @@ export function renderDossier(envelopes: { script?: string; evidence?: unknown[]
     for (const raw of evs) {
       const e = raw as Record<string, unknown>;
       count += 1;
+      // 数值另收一份:后面要拿它判「这个数字是引来的还是算出来的」
+      if (typeof e.value === "number" && Number.isFinite(e.value)) values.push(e.value);
       const key = e.record_key ? `${String(e.record_key)} ` : "";
       const unit = e.unit && !["n/a", "text", "date"].includes(String(e.unit)) ? String(e.unit) : "";
       lines.push(
@@ -145,7 +171,7 @@ export function renderDossier(envelopes: { script?: string; evidence?: unknown[]
   //    而它其实只在一半事实上打过。调用方要把 truncated 放进 gaps 让用户看见。
   const truncated = full.length > MAX_DOSSIER;
   const text = truncated ? full.slice(0, MAX_DOSSIER) + "\n…(资料包过长已截断,后面的证据没进来)" : full;
-  return { text, count, truncated };
+  return { text, count, truncated, values };
 }
 
 
@@ -160,6 +186,16 @@ function pickStages(
   return def.stages.filter((st) => ids.includes(st.id));
 }
 
+
+/** 把一段产出的数字分三档,并重算它自己写下的算式。 */
+function auditStageText(text: string, known: number[]): DebateNumberAudit {
+  const a = auditNumbers(text, known, (line) => claimTokens(line), numberBound);
+  return {
+    total: a.total, bound: a.bound, derived: a.derived, loose: a.loose.length,
+    badMath: a.badMath.map((c) => ({ raw: c.raw, stated: c.stated, recomputed: c.recomputed, percent: c.percent })),
+  };
+}
+
 /** 开一场辩论。资料包在这一刻拉一次,之后所有角色**共用这一份**。 */
 export function startDebate(req: {
   id: string;
@@ -171,7 +207,7 @@ export function startDebate(req: {
 }): DebateState {
   sweep();
   const def = debateDef();
-  const { text, count, truncated } = renderDossier(req.envelopes);
+  const { text, count, truncated, values } = renderDossier(req.envelopes);
   const gaps = [...req.gaps];
   if (truncated) gaps.push(`资料包超过 ${MAX_DOSSIER} 字符已截断 —— 后面的证据没进这一场`);
   // 🔴 一条证据都没有就不开场 —— 没有共同事实的"辩论"是两段作文,比不辩更糟:
@@ -184,6 +220,7 @@ export function startDebate(req: {
     id: req.id,
     symbol: req.symbol,
     evidence_count: count,
+    dossierValues: values,
     gaps,
     // 按档位挑阶段。🔴 认不出的档位**跑全部**,不是跑零个 —— 少跑等于悄悄换了一个更弱的产物。
     //    `sees` 那边本来就按"这一场里存不存在且已完成"过滤,所以少几个阶段不用另外处理。
@@ -259,6 +296,12 @@ export async function advanceDebate(
       ? await chat(message, session)
       : (await chatSend({ ...opts, maxMessage: MAX_MESSAGE }, { session, message })).reply;
     stage.status = "done";
+    // 🔴 **产出落定就地自查**。引用来的数字能跟资料包比对,算出来的数字比不了 ——
+    //    后者是唯一一类「谁都没在看」的数字,而它就摆在核对过的数字旁边,看着一样可信。
+    //    实测抓到过:同比算反方向(+0.2% 实为 −2.04%)、拿隔年的数当去年基数。
+    // ⚠️ 只标不改:重算对不上不代表结论一定错(也可能是算式写得不规整),
+    //    但**必须让人看见**,而不是让它混在正确的数字里。
+    stage.audit = auditStageText(stage.text, s.dossierValues);
   } catch (e) {
     // 单个阶段失败不废掉整场:只记原因,**状态交给 finally 统一定** —— 见下。
     stage.error = e instanceof ChatError ? `${e.code}:${e.message}` : e instanceof Error ? e.message : String(e);

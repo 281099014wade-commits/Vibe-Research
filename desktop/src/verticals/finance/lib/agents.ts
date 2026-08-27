@@ -10,7 +10,7 @@
  *    —— 谁也不能靠编数字赢。资料包为空(取数全挂)时**直接拒开**,
  *    因为没有共同事实的"辩论"只是两段作文,而它看着像做过功课。
  */
-import { ApiError, backend, type DebateState } from "./backend";
+import { ApiError, backend, type DebateNumberAudit, type DebateState } from "./backend";
 
 export type DebateStage = "bull" | "bear" | "bull_rebut" | "bear_rebut" | "referee";
 
@@ -19,7 +19,7 @@ export interface DebateHandlers {
   onDossierProgress?: (title: string, ok: boolean, loaded: number, total: number) => void;
   onDossierReady?: (sections: { title: string; tool: string }[], missing: string[]) => void;
   onStageStart?: (stage: DebateStage, label: string) => void;
-  onDelta?: (stage: DebateStage, text: string) => void;
+  onDelta?: (stage: DebateStage, text: string, audit?: DebateNumberAudit) => void;
   onStageDone?: (stage: DebateStage, label: string, content: string) => void;
   onError?: (message: string, stage?: DebateStage) => void;
 }
@@ -56,7 +56,7 @@ export async function debateStream(
           emitted.add(`start:${s.id}`);
           handlers.onStageStart?.(s.id as DebateStage, s.label);
         }
-        handlers.onDelta?.(s.id as DebateStage, s.text);
+        handlers.onDelta?.(s.id as DebateStage, s.text, s.audit);
         handlers.onStageDone?.(s.id as DebateStage, s.label, s.text);
       }
       if (s.status === "failed" && !emitted.has(`fail:${s.id}`)) {
