@@ -15,7 +15,7 @@ import path from "node:path";
 
 import crypto from "node:crypto";
 
-import { IMPORT_MAX_TOTAL_BYTES, ServiceError, chatSend, listTools, runTool, fetchEndpoint, ingestFiles, debateAdvance, debateStart, ledgerKinds, ledgerLabels, ledgerList, productInfo, ledgerRemove, ledgerSnapshot, ledgerUpsert, pageQuery, getEvidence, getReport, knowledgeRecall, listEndpoints, listRuns, readRunFile, redact, researchStatus, safePath, serviceContext, startResearch, thermoSeries, type ServiceContext } from "./service.ts";
+import { IMPORT_MAX_TOTAL_BYTES, ServiceError, chatSend, evidenceAlerts, listTools, runTool, fetchEndpoint, ingestFiles, debateAdvance, debateStart, ledgerKinds, ledgerLabels, ledgerList, productInfo, ledgerRemove, ledgerSnapshot, ledgerUpsert, pageQuery, getEvidence, getReport, knowledgeRecall, listEndpoints, listRuns, readRunFile, redact, researchStatus, safePath, serviceContext, startResearch, thermoSeries, type ServiceContext } from "./service.ts";
 
 
 // **composition root**:插件在入口注册,Core 模块一律不 import 它
@@ -182,6 +182,11 @@ export function createApiServer(ctx: ServiceContext, opts: { token: string; cook
       }
       if (req.method === "POST" && url.pathname === "/research") { const b = await readBody(req); return send(res, 202, startResearch(ctx, b as never)); }
       if (req.method === "GET" && url.pathname === "/runs") return send(res, 200, listRuns(ctx, q.limit ? Number(q.limit) : undefined));
+      // 「昨天以来变了什么」:对齐同一对象最近两次研究。**不足两次会报 need_two_runs**,
+      // 调用方据此区分"没变化"与"还没有可比较的第二次"——这两件事完全不同(见 service.evidenceAlerts)。
+      if (req.method === "GET" && url.pathname === "/alerts") {
+        return send(res, 200, evidenceAlerts(ctx, { symbol: String(q.symbol ?? ""), market: q.market, base: q.base, next: q.next }));
+      }
       if (req.method === "GET" && parts[0] === "runs" && parts[1] && parts[2]) {
         const id = parts[1];
         if (parts[2] === "status") return send(res, 200, researchStatus(ctx, id));

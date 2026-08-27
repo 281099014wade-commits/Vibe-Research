@@ -10,6 +10,7 @@ import { Backtest } from "@/pages/Backtest";
 import { Portfolio } from "@/pages/Portfolio";
 import { StockData } from "@/pages/StockData";
 import { Watchlist } from "@/pages/Watchlist";
+import { Research } from "@/pages/Research";
 import { MyReports } from "@/pages/MyReports";
 import { Notes } from "@/pages/Notes";
 import { Settings } from "@/pages/Settings";
@@ -31,6 +32,7 @@ export const router = createBrowserRouter([
       { path: "/debate", element: <Debate /> },
       { path: "/backtest", element: <Backtest /> },
       { path: "/watchlist", element: <Watchlist /> },
+      { path: "/research", element: <Research /> },
       { path: "/my-reports", element: <MyReports /> },
       { path: "/notes", element: <Notes /> },
       { path: "/settings", element: <Settings /> },

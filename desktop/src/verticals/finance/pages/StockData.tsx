@@ -3,10 +3,12 @@ import {
   Search, FileText, Newspaper, Loader2, AlertCircle, LineChart, BarChart3, Megaphone,
   Wallet, Trophy, CalendarClock, Boxes, MessageSquare,
 } from "lucide-react";
+import { backend } from "@/lib/backend";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { useAiPage } from "../../../core/ai/pageContext";
 import { GlassCard } from "@/components/ui/GlassCard";
 import { EarningsSnapshot } from "@/components/ui/EarningsSnapshot";
+import { ThesisPanel } from "@/components/ui/ThesisPanel";
 import { Disclaimer } from "@/components/ui/Disclaimer";
 import {
   api, ApiError, type Valuation, type Report, type NewsItem, type ValPercentile, type ValMetric,
@@ -82,6 +84,14 @@ export function StockData() {
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [val, setVal] = useState<Valuation | null>(null);
+  /**
+   * 消化年数的**四情景**。
+   * 🔴 不在前端算 —— 调 Core 的确定性计算库（`/tool/calc`）。
+   *    此前界面自己写死 30 倍锚出一个数，而 `calc/` 的正式口径是四档（30/25/22/18）；
+   *    于是最乐观那一档被当成了既定事实（实测 0.05 年，而 18 倍锚下是 1.14 年）。
+   *    在这儿再抄一份公式，就是把"两套计算链路"这个病又种一次。
+   */
+  const [digest, setDigest] = useState<{ name: string; anchor: number | null; years: number | null; status: string }[] | null>(null);
   const [reports, setReports] = useState<Report[]>([]);
   const [news, setNews] = useState<NewsItem[]>([]);
   const [pctl, setPctl] = useState<ValPercentile | null>(null);
@@ -107,7 +117,7 @@ export function StockData() {
     const c = code.trim().toUpperCase();
     if (!c) { setErr("请输入代码"); return; }
     const rid = ++runIdRef.current;
-    setLoading(true); setErr(null); setDepNote(null); setVal(null); setReports([]); setNews([]); setPctl(null); setFin(null); setAnns([]);
+    setLoading(true); setErr(null); setDepNote(null); setVal(null); setDigest(null); setReports([]); setNews([]); setPctl(null); setFin(null); setAnns([]);
     setMargin([]); setBlockT([]); setHolders([]); setDividend([]); setFundFlow([]); setDt(null); setLockup(null); setBlocks(null); setHotCon([]); setQa([]);
     setGStock(null); setCashflow(null);
 
@@ -149,6 +159,29 @@ export function StockData() {
       ]);
       if (rid !== runIdRef.current) return;
       setVal(v);
+      // ⚠️ calc 收的 cagr 是**小数**不是百分数（`|CAGR| > 5` 会直接报错）——
+      //    界面的 cagr_pct 是百分数，这里必须除以 100。第一次就是漏了这步，四情景全 error。
+      if (v?.pe_26e != null && v.cagr_pct != null && v.cagr_pct > 0) {
+        backend
+          .runTool<{ ok: boolean; result?: { details?: { scenarios?: Record<string, { value: number | null; status: string; details?: { anchor?: number } }> } } }>(
+            "calc",
+            { fn: "pe_digestion_scenarios", args: { pe: v.pe_26e, cagr: v.cagr_pct / 100 } },
+          )
+          .then((r: { ok: boolean; result?: { details?: { scenarios?: Record<string, { value: number | null; status: string; details?: { anchor?: number } }> } } }) => {
+            // 🔴 慢请求回来时若已经查了别的主体,不许覆盖 —— 否则 A 的四情景会显示在 B 的名字下面
+            if (rid !== runIdRef.current) return;
+            const sc = r?.result?.details?.scenarios;
+            if (!r?.ok || !sc) { setDigest(null); return; }
+            setDigest(Object.entries(sc).map(([name, x]: [string, { value: number | null; status: string; details?: { anchor?: number } }]) => ({
+              name: name.replace(/_/g, "·"),
+              // 🔴 拿不到锚值就是 null,**不许写 0** —— "0 倍锚"是个看着像真的的数字
+              anchor: typeof x.details?.anchor === "number" ? x.details.anchor : null,
+              years: x.status === "ok" ? x.value : null,
+              status: x.status,
+            })));
+          })
+          .catch(() => { if (rid === runIdRef.current) setDigest(null); });   // 算不出就不显示这一块,不退回单点数字
+      }
       setReports(r);
       setPctl(p);
       setFin(f);
@@ -172,15 +205,27 @@ export function StockData() {
     { k: "PE(TTM)", v: fmt(val.pe_ttm) },
     { k: "PB", v: fmt(val.pb) },
     { k: "总市值", v: fmt(val.mcap_yi, " 亿") },
-    { k: "26E EPS", v: fmt(val.eps_26e) },
+    // 🔴 标签由 base_year 拼,不写死 —— 写死会出现「数字是真的、年份是错的」
+    { k: val.base_year ? `${String(val.base_year).slice(2)}E EPS` : "一致预期 EPS(基年未知)", v: fmt(val.eps_26e) },
     { k: "前向PE", v: fmt(val.pe_26e) },
     { k: "PEG", v: fmt(val.peg) },
-    { k: "消化年数", v: fmt(val.digest_years, " 年") },
+    // 🔴 消化年数**不放在这排单点指标里** —— 它依赖"合理 PE 锚"这个假设，
+    //    单独给一个数会读成事实。四情景在下面单独一块展示（见 digest）。
+
   ] : [];
 
   const aiContext = val
     ? `个股：${val.name}（${val.code}）\n现价 ${val.price} · PE(TTM) ${val.pe_ttm} · PB ${val.pb} · 市值 ${val.mcap_yi}亿\n` +
-      `26E EPS ${val.eps_26e ?? "—"} · 前向PE ${val.pe_26e ?? "—"} · PEG ${val.peg ?? "—"} · 消化 ${val.digest_years ?? "—"}年 · 机构覆盖 ${val.analyst_count} 家\n` +
+      `${val.base_year ? `FY${val.base_year}` : "基年未知"} 一致预期 EPS ${val.eps_26e ?? "—"} · 前向PE ${val.pe_26e ?? "—"} · PEG ${val.peg ?? "—"} · 机构覆盖 ${val.analyst_count} 家\n` +
+      // 🔴 消化年数按**四情景**给模型，不给单点 —— 给一个数它会当事实用，
+      //    而这个数依赖"合理 PE 锚在多少倍"这个假设（30 倍 0.05 年 vs 18 倍 1.14 年）。
+      (digest?.length
+        ? `估值消化年数(情景,非事实;取决于合理PE锚与一致预期是否兑现)：${digest.map((d) => `${d.name}(${d.anchor === null ? "锚值未覆盖" : `${d.anchor}倍`}) ${d.years === null ? d.status : d.years.toFixed(2) + "年"}`).join("；")}\n`
+        : "") +
+      `⚠️ PEG 与消化年数的分母是**一致预期增速**,是整条计算里最软的假设;别把它们当确定性结论\n` +
+      // 🔴 派生数(前向PE / PEG / 消化年数)自己没有证据 id,引用它们时要能指回**输入**的证据
+      `派生数的输入来源：现价 ${val.price_evidence_id ?? "证据id未覆盖"}${val.quote_at ? `（${val.quote_at.slice(0, 16).replace("T", " ")}）` : ""}` +
+      ` · ${val.base_year ? `FY${val.base_year}` : "基年未知"} 一致预期 EPS ${val.eps_evidence_id ?? "证据id未覆盖"}\n` +
       (pctl?.metrics.pe_ttm ? `估值历史分位(近5年)：PE-TTM 处于 ${pctl.metrics.pe_ttm.percentile}% 分位、PB 处于 ${pctl.metrics.pb?.percentile ?? "—"}% 分位\n` : "") +
       (fin?.revenue ? `财务(${fin.period ?? "—"})：营收 ${fin.revenue}(同比${fin.revenue_yoy ?? "—"})、净利 ${fin.net_profit ?? "—"}(同比${fin.net_profit_yoy ?? "—"})、ROE ${fin.roe ?? "—"}、毛利率 ${fin.gross_margin ?? "—"}\n` : "") +
       (anns.length ? `近期公告：${anns.slice(0, 5).map((a) => a.title.replace(/^[^:：]*[:：]/, "")).join("；")}\n` : "") +
@@ -345,9 +390,13 @@ export function StockData() {
             <div className="mb-4 flex items-baseline gap-2">
               <h2 className="text-xl font-bold">{val.name}</h2>
               <span className="font-mono text-sm text-muted-foreground">{val.code}</span>
-              {val.analyst_count > 0 && (
-                <span className="ml-auto text-xs text-muted-foreground">机构覆盖 {val.analyst_count} 家</span>
-              )}
+              {/* 🔴 渲染纪律:每个数字常驻显示资料期。前向PE / PEG / 消化年数都由
+                  「基年一致预期 + 行情现价」派生 —— 两者的口径与时刻都写在这里。 */}
+              <span className="ml-auto text-xs text-muted-foreground">
+                {val.base_year ? `一致预期 FY${val.base_year}–FY${val.base_year + 2}` : "一致预期基年未知"}
+                {val.analyst_count > 0 ? ` · 机构覆盖 ${val.analyst_count} 家` : ""}
+                {val.quote_at ? ` · 行情 ${val.quote_at.slice(0, 16).replace("T", " ")}` : ""}
+              </span>
             </div>
             <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
               {metrics.map((m) => (
@@ -360,7 +409,45 @@ export function StockData() {
             {val.forecast_note && (
               <p className="mt-3 text-xs text-warning">{val.forecast_note}</p>
             )}
+
+            {/*
+              🔴 **消化年数是情景，不是事实**。它同时依赖两个软假设：
+                 ① 一致预期的两年 CAGR 真的兑现；② "合理 PE"锚定在多少倍。
+                 只给一个数（此前写死 30 倍 → 0.05 年）会读成既定事实 ——
+                 而同一份输入在 18 倍锚下是 1.14 年，差二十多倍。
+              这四档来自 Core 的确定性计算库，不是界面自己算的。
+            */}
+            {digest && digest.length > 0 && (
+              <div className="mt-4 rounded-lg border border-border/60 bg-muted/20 p-3">
+                <p className="mb-2 text-xs text-muted-foreground">
+                  估值消化年数 · <span className="text-foreground">四种情景</span>
+                  <span className="ml-1 text-muted-foreground/70">（取决于把"合理 PE"锚在多少倍，以及一致预期是否兑现）</span>
+                  {/* 🔴 消化年数是**算出来的**,它自己没有证据 id —— 但它的两个输入有。
+                      把输入的证据 id 挂上去,这条数字才追得回来源。 */}
+                  <span className="ml-1 cursor-help underline decoration-dotted underline-offset-2 text-muted-foreground/70"
+                        title={`输入：现价${val.price_evidence_id ? `（证据 ${val.price_evidence_id}${val.quote_at ? ` · ${val.quote_at.slice(0, 16).replace("T", " ")}` : ""}）` : "（证据 id 未覆盖）"}` +
+                               ` ÷ ${val.base_year ? `FY${val.base_year}` : "基年未知"} 一致预期 EPS${val.eps_evidence_id ? `（证据 ${val.eps_evidence_id}）` : "（证据 id 未覆盖）"}`}>
+                    输入来源
+                  </span>
+                </p>
+                <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+                  {digest.map((d) => (
+                    <div key={d.name} className="rounded-md bg-background/40 px-2.5 py-2">
+                      <p className="text-[11px] text-muted-foreground">{d.name} · {d.anchor === null ? "锚值未覆盖" : `${d.anchor} 倍锚`}</p>
+                      <p className="mt-0.5 font-mono text-base font-semibold">
+                        {d.years === null ? <span className="text-sm text-muted-foreground">{d.status === "not_meaningful" ? "无意义" : "—"}</span> : `${d.years.toFixed(2)} 年`}
+                      </p>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
           </GlassCard>
+
+          {/* 🔴 论点放在资料**之后、结论之前**：先看清事实，再对照自己当初写下的判断。
+              这块把台账里的 thesis / criterion 组成工作流 —— 产品此前只帮用户"看资料"，
+              没帮他"记住自己当时为什么买、什么情况下认错"。 */}
+          <ThesisPanel symbol={val.code} name={val.name} />
 
           {/* 财报速览（结论先行摘要，借鉴 equity-research 的结构纪律，剔除评级/目标价） */}
           <EarningsSnapshot val={val} fin={fin} pctl={pctl} />

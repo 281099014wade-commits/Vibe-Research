@@ -401,6 +401,78 @@ export async function runDoctor(opts: { repoRoot?: string; env?: NodeJS.ProcessE
     } catch (e) { add({ id: "net", title: "数据源连通", status: "warn", detail: sub(e instanceof Error ? e.message : String(e)), fix: "检查网络 / 代理;python datasources/health.py 看全量" }); }
   }
 
+  /**
+   * 16. 上下文注入的**取值写法**(仅 --net)。
+   *
+   * 🔴 这条是别处都查不出来的一类:注入键的**名字**有棘轮核(比对函数签名),
+   *    但**取值写法**没有 —— 同一个概念,有的端点要紧凑写法、有的要带分隔符的写法,
+   *    **写错不报错**:上游返回空集,端点如实报"没有数据" —— 读起来像真实状况,
+   *    不像格式不对。实测某一块本有 77 条,因写法不对被显示成 0,而界面上看不出异常。
+   *
+   * 判据 = **同一个块,把上下文能产出的每种写法都试一遍,你声明的那个不能明显更差**。
+   * ⚠️ 刻意**不拿"不注入"当基准** —— 不注入走的是端点自己的默认(通常是"最近一期"),
+   *    可能落在另一个周期上,条数本来就该不一样;拿它比会两头出错(对的判错、错的放过)。
+   */
+  const injBlocks = Object.entries(currentPlugin().pageQueries ?? {})
+    .flatMap(([q, def]) => def.blocks.filter((b) => b.injectContext).map((b) => ({ q, b })));
+  if (!opts.net) add({ id: "inject_format", title: "上下文注入的取值写法", status: "skip", detail: "未指定 --net(会真实取数)" });
+  else if (!python || !pyOk || !dataRootOk) add({ id: "inject_format", title: "上下文注入的取值写法", status: "skip", detail: "Python 或数据根不可用" });
+  else if (!injBlocks.length) add({ id: "inject_format", title: "上下文注入的取值写法", status: "skip", detail: "垂类没有吃上下文的块" });
+  else {
+    const ctx = serviceContext({ repoRoot, python, env });
+    const pc = currentPlugin().pageContext;
+    let injected: Record<string, unknown> = {};
+    try {
+      if (pc) {
+        const probe = await fetchEndpoint(ctx, { endpoint: pc.endpoint, ...(pc.symbol ? { symbol: pc.symbol } : {}), session: "doctor", timeout_ms: 60_000, consistency: { mode: "fresh" } });
+        injected = pc.resolve(probe.envelope)?.inject ?? {};
+      }
+    } catch { /* 下面按"拿不到上下文"报 */ }
+    if (!Object.keys(injected).length) add({ id: "inject_format", title: "上下文注入的取值写法", status: "warn", detail: "拿不到上下文,没法核写法", fix: "先看「数据源连通」那项" });
+    else {
+      const bad: string[] = [];
+      const seen: string[] = [];
+      for (const { q, b } of injBlocks) {
+        /**
+         * 取回**证据条数**;`null` = 这次取数本身没成功(信封 failed / 抛异常)。
+         * 🔴 `null` 与 `0` 必须分开:把"没取到"折算成 0,后面任何"条数比较"都会
+         *    把故障读成"确实没有" —— 正是这轮在修的那一类洞。
+         */
+        const evCount = async (args: Record<string, unknown>): Promise<number | null> => {
+          try {
+            const r = await fetchEndpoint(ctx, { endpoint: b.endpoint, ...(b.symbol ? { symbol: b.symbol } : {}), args, session: "doctor", timeout_ms: 60_000, consistency: { mode: "fresh" } });
+            const st = String((r.envelope as { status?: unknown }).status ?? "");
+            if (st !== "ok" && st !== "partial") return null;
+            return Array.isArray(r.envelope.evidence) ? r.envelope.evidence.length : 0;
+          } catch { return null; }
+        };
+        const declared = Object.entries(b.injectAs ?? {});
+        // 声明的源键上下文根本不产出 → **直接判失败**,不许静默跳过:
+        // 跳过之后这一块与"没注入"完全一样,条数当然相等,检查会报 ok —— 恰好放过最该发现的拼写错误
+        const missing = declared.filter(([from]) => !(from in injected)).map(([from]) => from);
+        if (missing.length) { bad.push(`${q}.${b.id}:injectAs 的源键 ${missing.join(", ")} 上下文根本不产出(有:${Object.keys(injected).join(", ")})`); continue; }
+
+        for (const [from, to] of declared) {
+          const mine = await evCount({ ...(b.args ?? {}), [to]: injected[from] });
+          // 同一个目标参数名,换上下文里**其它每一种写法**再试
+          const rivals: { key: string; n: number | null }[] = [];
+          for (const k of Object.keys(injected)) {
+            if (k === from) continue;
+            rivals.push({ key: k, n: await evCount({ ...(b.args ?? {}), [to]: injected[k] }) });
+          }
+          seen.push(`${q}.${b.id}[${from}] ${mine ?? "取数失败"}${rivals.length ? `(其它写法:${rivals.map((r) => `${r.key}=${r.n ?? "取数失败"}`).join("、")})` : ""}`);
+          if (mine === null) { bad.push(`${q}.${b.id}:按声明的 ${from} 取数没成功,核不了写法`); continue; }
+          // 其它写法**明显更多**(留一倍余量防日内抖动)⇒ 说明选错了写法
+          const better = rivals.filter((r) => r.n !== null && r.n > Math.max(1, mine * 2));
+          if (better.length) bad.push(`${q}.${b.id}(${b.endpoint}):按声明的 ${from} 只拿到 ${mine} 条,而换成 ${better.map((r) => `${r.key} 有 ${r.n} 条`).join("、")} —— 写法多半选错了,而端点会把它报成"没有数据"`);
+        }
+      }
+      add({ id: "inject_format", title: "上下文注入的取值写法", status: bad.length ? "fail" : "ok",
+            detail: bad.length ? bad.join(";") : `${injBlocks.length} 块:${seen.join("、")}`,
+            fix: bad.length ? "在该块的 injectAs 里换一个源键(上下文可产出同一概念的多种写法)" : undefined });
+    }
+  }
+
   const tallyOf = () => { const t: Record<CheckStatus, number> = { ok: 0, warn: 0, fail: 0, skip: 0 }; for (const c of checks) t[c.status] += 1; return t; };
   const exitOf = (t: Record<CheckStatus, number>): 0 | 2 | 3 => (t.fail ? 3 : t.warn ? 2 : 0);
   let tally = tallyOf(); let exit_code = exitOf(tally);

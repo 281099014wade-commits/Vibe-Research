@@ -185,6 +185,47 @@ export const backend = {
       `/series/${encodeURIComponent(endpoint)}`,
     ),
 
+  /**
+   * 一屏数据（BFF 查询）。页面**只说要哪个屏**，不认识物理端点。
+   *
+   * 🔴 为什么必须走它：页面各自拼旧端点时，每块的业务日**互相独立** ——
+   *    实测出现过「标题与市场情绪是 08-27，短线情绪却是 08-26」这种跨日混合，
+   *    以及「流出 Top 六项全是正净流入」（旧路径只取了前 N 个板块，
+   *    而 Core 的页面查询取的是全市场约 500 个）。这两样**页面上都看不出异常**。
+   *    ⇒ 业务日、每块状态、跨日标记由 Core 一次算好随信封下发。
+   */
+  page: (query: string, opts: { symbol?: string; refresh?: boolean; blockArgs?: Record<string, Record<string, unknown>> } = {}) =>
+    call<PageResult>(`/page/${encodeURIComponent(query)}`, {
+      method: "POST",
+      body: JSON.stringify({
+        ...(opts.symbol ? { symbol: opts.symbol } : {}),
+        ...(opts.refresh ? { refresh: true } : {}),
+        ...(opts.blockArgs ? { blockArgs: opts.blockArgs } : {}),
+      }),
+    }),
+
+  /**
+   * 发起一次**六阶段深度研究**（公司画像 → 财务 → 一致预期 → 估值 → 风险 → 成稿）。
+   *
+   * 🔴 这条链路后端一直都有，界面却**没有任何入口** —— 用户完全不知道产品能生成
+   *    带证据链、确定性计算、数据缺口与裁决点的正式研究；「我的研报」只是上传外部文件的归档柜。
+   * ⚠️ 它会真的花模型额度、跑十几分钟，所以必须由用户显式点，不能页面一打开就跑。
+   */
+  startResearch: (body: { symbol: string; market?: string; endpoints?: "core" | "full"; knowledge?: "on" | "off"; stages?: string[] }) =>
+    call<{ run_id: string; log: string; pid?: number }>("/research", { method: "POST", body: JSON.stringify(body) }),
+
+  researchStatus: (id: string) => call<ResearchStatus>(`/runs/${encodeURIComponent(id)}/status`),
+
+  /**
+   * 「昨天以来变了什么」：对齐同一标的最近两次研究。
+   * ⚠️ 只有一次研究时后端报 **need_two_runs** —— 调用方要把它显示成"还没有可比较的第二次"，
+   *    **不能显示成"没有变化"**。这两件事完全不同。
+   */
+  alerts: (symbol: string, market?: string) =>
+    call<{ symbol: string; base: string; next: string; diffs: AlertDiff[] }>(
+      `/alerts?symbol=${encodeURIComponent(symbol)}${market ? `&market=${encodeURIComponent(market)}` : ""}`,
+    ),
+
   runs: (limit = 50) => call<RunListItem[]>(`/runs?limit=${limit}`),
   report: (id: string) =>
     call<{ run_id: string; report: string | null; appendix: string | null }>(`/runs/${encodeURIComponent(id)}/report`),
@@ -258,10 +299,81 @@ export interface ThermoObservation {
   record_key: string; field: string; value: number | string | null;
   unit: string; period: string; raw_ref: string | null; source: string;
 }
+/** 一屏里的一块。**status 与 note 要跟数字一起渲染** —— 只给数字不给读法等于替上游打包票 */
+export interface PageBlock {
+  id: string;
+  title: string;
+  /** 取数层写的读法护栏（"此源只给当日""是市场叙事不是核验过的因果"…），照抄不改写 */
+  note: string | null;
+  /**
+   * 🔴 **精确联合,不许再混进 `| string`** —— 混了以后整个联合塌成 `string`,
+   *    编译器一点检查都做不了:曾因此写出 `b.status === "failed"` 这种
+   *    **永远不匹配**的缺口保护(那时后端只产出 "ok" | "missing"),
+   *    看着在保护用户,其实一条都没拦住,而 tsc 全绿。
+   */
+  status: "ok" | "partial" | "failed" | "missing";
+  fetched_at: string | null;
+  cached?: boolean;
+  envelope: { status?: string; evidence?: unknown[]; extra?: Record<string, unknown>; degraded?: string } & Record<string, unknown>;
+}
+
+/**
+ * 这一屏该看哪一天，以及为什么。
+ * 🔴 由 Core 统一算：盘中看进行时、收盘后看今天、非交易日回退到上一个交易日。
+ *    页面各自判断的话，同一屏里不同块会落在不同日期上（实测发生过）。
+ */
+export interface PageContext {
+  last_trading_day: string;
+  previous_trading_day: string;
+  is_today_trading_day: boolean;
+  session_phase: string;
+  review_date?: string;
+  review_reason?: string;
+  intraday?: boolean;
+}
+
+export interface PageResult {
+  query: string;
+  title: string;
+  intent: string;
+  context: PageContext;
+  blocks: PageBlock[];
+  oldest_fetched_at: string | null;
+  /** 这一屏里的数据来自不同业务日 —— 要在界面上说出来，不能让用户以为是同一天的 */
+  mixed_ages: boolean;
+}
+
+/** 一次研究运行的状态。**阶段是逐个推进的**，界面据此显示进度而不是一个转圈 */
+export interface ResearchStatus {
+  run_id: string;
+  exists: boolean;
+  status: string;
+  exit_code: number | null;
+  stages: { stage: string; status: string; attempts?: number }[];
+  evidence_count: number | null;
+  calculation_count: number | null;
+  finished_at: string | null;
+  last_events?: unknown[];
+  report?: boolean;
+  viewer?: boolean;
+}
+
+/** 两次研究之间的一条差异。`kind` 分变了 / 新增 / 消失 —— 三者要分开显示，别糊成"有变化" */
+export interface AlertDiff {
+  key: string; field: string; period: string; unit: string;
+  kind: "changed" | "added" | "removed";
+  /** 🔴 `id` 是证据 id —— **必须带出来**:界面上的每个数字都要能点回它出自哪条证据。
+   *  后端一直在给,是界面此前把它丢了。 */
+  base?: { id?: string; value: unknown; period: string; source: string; as_of?: string };
+  next?: { id?: string; value: unknown; period: string; source: string; as_of?: string };
+}
+
 export interface RunListItem {
   run_id: string;
   status: string | null;
   symbol: string | null;
+  /** 同代码不同市场不算时间序列 —— 比较两次运行要带上它 */
+  market: string | null;
   started_at: string | null;
   finished_at: string | null;
   stages_done: number | null;

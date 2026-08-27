@@ -329,6 +329,13 @@ export const FINANCE_PLUGIN: Plugin = {
    */
   tools: {
     backtest: { label: "回测", module: "backtest.cli", timeoutMs: 300_000 },
+    // 🔴 让**界面也能调到确定性计算库**，而不是自己再抄一份公式。
+    //    此前 desktop 的 api.ts 手写了 PE / CAGR / PEG / 消化年数 ——
+    //    于是 `calc/` 里改对了口径，桌面端不会跟着变（"两套事实与计算链路"）。
+    //    最典型的后果：calc 的正式口径是**四情景**消化年数（30/25/22/18 倍锚），
+    //    界面却写死 30 倍出一个数，把最乐观那一档当成了既定事实。
+    //    ⚠️ 纯计算、不联网、不落盘，所以超时给得短 —— 它要是跑几秒，说明调错了东西。
+    calc: { label: "确定性计算", module: "calc.tool", timeoutMs: 20_000 },
   },
 
   lexicon: FINANCE_LEXICON,

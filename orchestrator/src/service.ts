@@ -11,6 +11,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { FETCH_ENV_KEYS, RUN_ID_RE, stages as packStages, fetchEnv } from "./config.ts";
+import { runAlerts, type AlertDiff } from "./alerts.ts";
 import { nowIso, readJsonIfExists } from "./fsutil.ts";
 import { ChatError, chatSend as chatSendCore, type ChatTurnResult } from "./chat.ts";
 import { templateMatrix, type LlmOverride } from "./runtime_provider.ts";
@@ -454,7 +455,40 @@ export function getEvidence(ctx: ServiceContext, runId: string, filter: { field?
  *    阶段数是判断"这是不是一次真研究"的唯一可见依据。
  * ⚠️ `test_scenario` 是**注入了合成数据**的运行:它的结论不能当真实研究看,必须标出来。
  */
-export function listRuns(ctx: ServiceContext, limit = 50): { run_id: string; status: string | null; symbol: string | null; started_at: string | null; finished_at: string | null; stages_done: number | null; stages_total: number | null; test_scenario: boolean }[] {
+/**
+ * 「昨天以来变了什么」—— 对齐同一对象最近两次研究，报出**变了 / 新增 / 消失**的事实。
+ *
+ * 🔴 这条能力 `alerts.ts` 一直都有（对齐口径、期间、来源，同源矛盾拒绝静默取舍），
+ *    但**从没暴露成接口**，界面自然也没有入口。而它恰恰是"用户明天还要回来"的那一条：
+ *    没有人每天重读一遍静态资料，但每天都会想知道**昨天以来变了什么**。
+ *
+ * ⚠️ 不足两次运行时**抛错，不返回空列表** —— 空列表会被读成"什么都没变"，
+ *    而真相是"还没有可比较的第二次"。这两件事完全不同。
+ */
+export function evidenceAlerts(
+  ctx: ServiceContext,
+  req: { symbol: string; market?: string; base?: string; next?: string },
+): { symbol: string; base: string; next: string; diffs: AlertDiff[] } {
+  const symbol = String(req.symbol ?? "").trim();
+  if (!symbol) throw new ServiceError("bad_symbol", "要给一个代码");
+  try {
+    const r = runAlerts({
+      symbol,
+      ...(req.market ? { market: req.market } : {}),
+      ...(req.base ? { base: req.base } : {}),
+      ...(req.next ? { next: req.next } : {}),
+      repoRoot: ctx.repoRoot,
+    });
+    return { symbol, base: r.base, next: r.next, diffs: r.diffs };
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    // 「可比较的运行不足两个」是**正常状态**不是故障，给一个调用方能分辨的错误码
+    if (/不足两个/.test(msg)) throw new ServiceError("need_two_runs", msg);
+    throw new ServiceError("alerts_failed", msg);
+  }
+}
+
+export function listRuns(ctx: ServiceContext, limit = 50): { run_id: string; status: string | null; symbol: string | null; market: string | null; started_at: string | null; finished_at: string | null; stages_done: number | null; stages_total: number | null; test_scenario: boolean }[] {
   const root = path.join(path.resolve(ctx.dataRoot), "runs");
   if (!fs.existsSync(root)) return [];
   const n = Math.min(Math.max(Number(limit) || 50, 1), 500);
@@ -467,6 +501,9 @@ export function listRuns(ctx: ServiceContext, limit = 50): { run_id: string; sta
       run_id: d,
       status: (m?.status as string) ?? null,
       symbol: (m?.symbol as string) ?? null,
+      // 🔴 市场要一起给：同一代码不同市场**不是时间序列**，比较两次运行必须同市场
+      //    （alerts 那条链路会为此报错）。前端猜不出来，只能由这里下发。
+      market: (m?.market as string) ?? null,
       started_at: (m?.started_at as string) ?? null,
       finished_at: (m?.finished_at as string) ?? null,
       stages_done: st ? st.filter((s) => s?.status === "complete").length : null,
@@ -497,7 +534,14 @@ export interface PageBlockResult {
   id: string; title: string; note?: string;
   /** 默认收起(界面的事;数据照常取回) */
   collapsed?: boolean;
-  status: "ok" | "missing";
+  /**
+   * 🔴 **跟着信封走,不是"调用没抛异常"就算 ok**。
+   *    取数器可以正常退出却在信封里写 `status:"failed"`(如上游改了签名、参数不被接受),
+   *    此前这里一律记成 ok ⇒ 一个证据 0 条、带 traceback 的块在界面上显示成正常,
+   *    而调用方按 status 做的"缺口保护"永远不会触发 —— **看着在保护,其实一条都匹配不上**。
+   *  missing = 取数调用本身失败(抛异常);failed / partial = 取数器跑了但自报没取全。
+   */
+  status: "ok" | "partial" | "failed" | "missing";
   /** 取不到时说清是什么问题(界面要显示,不能只留空白) */
   error?: string;
   fetched_at?: string; cached?: boolean;
@@ -547,6 +591,40 @@ function pickUserArgs(b: { userArgs?: readonly string[] }, given: Record<string,
   return out;
 }
 
+/**
+ * 信封状态 → 块状态。**"取数调用没抛异常"不等于 ok** ——
+ * 取数器可以正常退出却在信封里写 `status:"failed"`(上游改了签名、参数不被接受…)。
+ * 信封没说 / 说了个没见过的值 → 保守当 failed:**不许把"不知道"渲染成正常**。
+ * (抽成纯函数是为了能直接测这条映射;生产路径调的就是它。)
+ */
+export function blockStatusFromEnvelope(envelope: unknown): PageBlockResult["status"] {
+  const es = (envelope as { status?: unknown } | null)?.status;
+  return es === "ok" ? "ok" : es === "partial" ? "partial" : "failed";
+}
+
+/**
+ * 按块声明的 `injectAs` **选取并改名**上下文参数。
+ * **必须声明**(注册期强制);声明了就**只注入列出的键**,并改成端点认的名字。
+ *
+ * 🔴 "只注入列出的" 这条是必须的:上下文会同时产出同一概念的多种写法
+ *    (如日期的 `YYYY-MM-DD` 与 `YYYYMMDD`),整包塞给端点,多出来的那个键会被
+ *    参数白名单当场拒掉 —— 一屏的块会成片 missing。
+ * 🔴 声明了却**取不到**那个源键 → 抛错,**不许静默跳过**:跳过之后端点会按自己的默认值
+ *    (通常是"最近一期")取数,结果看着完全正常、其实不是你要的那一期 —— 又是一次
+ *    "把配置错误伪装成正常数据"。(源键拼错、或上下文改名后块没同步,都会走到这。)
+ */
+function selectInject(src: Record<string, unknown>, map?: Readonly<Record<string, string>>): Record<string, unknown> {
+  // 注册期已强制"吃上下文就必须声明 injectAs" —— 到这里还没有,说明校验被绕过了,不许静默整包塞
+  if (!map) throw new ServiceError("bad_plugin", "块声明了 injectContext 却没有 injectAs(注册期校验应已拦下)");
+  const out: Record<string, unknown> = {};
+  for (const [from, to] of Object.entries(map)) {
+    if (!Object.prototype.hasOwnProperty.call(src, from))
+      throw new ServiceError("bad_plugin", `injectAs 要的上下文键 ${show(from)} 不存在(上下文实际给出:${Object.keys(src).join(", ") || "无"})`);
+    out[to] = src[from];
+  }
+  return out;
+}
+
 export async function pageQuery(
   ctx: ServiceContext,
   req: { query: string; symbol?: string; refresh?: boolean; blockArgs?: Record<string, Record<string, unknown>> },
@@ -562,6 +640,8 @@ export async function pageQuery(
   // ① 先解析业务日期(如果这一页要)。日历端点自己声明了"从不缓存",所以这里拿到的是当下的时段。
   let context: Record<string, unknown> | null = null;
   let injected: Record<string, unknown> = {};
+  /** 上下文没解析出来 —— 吃上下文的块要如实失败,不许按上游默认值取数 */
+  let ctxUnavailable = false;
   const ctxDef = currentPlugin().pageContext;
   if (def.needsContext && ctxDef) {
     // 🔴 解析上下文的那次取数**必须 fresh**:它算的是"此刻"(如当前时段),缓存住会被永久冻结。
@@ -577,6 +657,7 @@ export async function pageQuery(
       injected = resolved.inject;
     } else {
       // 🔴 拿不到就**说出来**,别默默按默认值取 —— 那会让整页显示错误的业务日期且看不出来
+      ctxUnavailable = true;
       context = { error: ctxDef.unavailable };
     }
   }
@@ -586,17 +667,27 @@ export async function pageQuery(
     def.blocks.map(async (b): Promise<PageBlockResult> => {
       const used = pickUserArgs(b, req.blockArgs?.[b.id]);
       try {
+        /**
+         * 🔴 上下文没解析出来(如日历取不到)时,吃上下文的块**不许照常取**:
+         *    端点会按自己的默认值(通常是"最近一期")给数,页面上那一屏顶着
+         *    "拿不到上下文"的横幅、下面却是一屏看着正常的数字 —— 用户会照着它做判断。
+         *    ⇒ 如实标成失败,把原因原样说出来。
+         */
+        if (b.injectContext && ctxUnavailable)
+          throw new ServiceError("context_unavailable", ctxDef?.unavailable ?? "拿不到这一屏的上下文");
         const r = await fetchEndpoint(ctx, {
           endpoint: b.endpoint,
           ...(b.symbol ?? req.symbol ? { symbol: b.symbol ?? req.symbol } : {}),
           // 只有声明了 injectContext 的块才吃上下文参数 —— 不吃的端点会被参数校验当场拒
           // 🔴 用户改的参数**只认白名单里的键**:调用方传来的任何其它键一律丢掉。
           //    白名单是垂类声明的(`userArgs`),没声明就是一个都不许改。
-          args: { ...(b.args ?? {}), ...(b.injectContext ? injected : {}), ...used },
+          // 注入前先按块声明的改名表改键(端点之间同一概念参数名不同 —— 见 injectAs)
+          args: { ...(b.args ?? {}), ...(b.injectContext ? selectInject(injected, b.injectAs) : {}), ...used },
           consistency,
         });
         const userArgs = b.userArgs?.length ? { user_args: b.userArgs, applied_args: { ...(b.args ?? {}), ...used } } : {};
-        return { id: b.id, title: b.title, ...(b.note ? { note: b.note } : {}), ...(b.collapsed ? { collapsed: true } : {}), ...userArgs, status: "ok", fetched_at: r.fetched_at, cached: r.cached, envelope: r.envelope };
+        const st = blockStatusFromEnvelope(r.envelope);
+        return { id: b.id, title: b.title, ...(b.note ? { note: b.note } : {}), ...(b.collapsed ? { collapsed: true } : {}), ...userArgs, status: st, fetched_at: r.fetched_at, cached: r.cached, envelope: r.envelope };
       } catch (e) {
         // 一块取不到不该让整屏空白 —— 但也**不能装作没事**:如实标出来
         return { id: b.id, title: b.title, ...(b.note ? { note: b.note } : {}), status: "missing", error: e instanceof Error ? e.message : String(e) };

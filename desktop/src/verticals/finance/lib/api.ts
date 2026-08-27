@@ -61,6 +61,19 @@ export interface Valuation {
   name: string; code: string; price: number; mcap_yi: number;
   pe_ttm: number; pb: number;
   eps_26e: number | null; eps_27e: number | null; pe_26e: number | null;
+  /** 一致预期的**基年**(FY(T))。🔴 界面标签必须由它拼,不许写死 "26E" ——
+   *  基年跟着上游走(跨年 / 上游少给一年都会变),写死的标签会出现
+   *  「数字是真的、年份是错的」,而这种错没人看得出来。 */
+  base_year: number | null;
+  /** 行情信封的取数时刻(ISO)。派生数(前向PE / PEG / 消化年数)都以它为准。 */
+  quote_at: string | null;
+  /**
+   * 派生数的**两个输入各自的证据 id**。
+   * 🔴 前向PE / PEG / 消化年数都不是取来的、是算出来的 —— 它们自己没有证据 id,
+   *    但它们的输入有。不把这两个带出来,界面上就出现"追不回来源的数字"。
+   */
+  price_evidence_id: string | null;
+  eps_evidence_id: string | null;
   cagr_pct: number | null; peg: number | null; digest_years: number | null;
   analyst_count: number; forecast_note?: string;
 }
@@ -388,6 +401,10 @@ async function valuationOf(code: string): Promise<Valuation> {
     eps_26e: eps26,
     eps_27e: eps27,
     pe_26e: pe26,
+    base_year: baseYear,
+    quote_at: typeof q.fetched_at === "string" ? q.fetched_at : null,
+    price_evidence_id: (q.evidence.find((x) => x.field === "price")?.id as string | undefined) ?? null,
+    eps_evidence_id: (atYear(0)?.id as string | undefined) ?? null,
     cagr_pct: cagr,
     peg: pe26 && cagr && cagr > 0 ? round2(pe26 / cagr) : null,
     // 消化到 30 倍要几年:ln(PE/30)/ln(1+g)。⚠️ 已经低于 30 倍或没有增速时不给数
@@ -629,14 +646,29 @@ function speculationLabel(zt: number | null, maxBoards: number): string {
   return zt < 70 ? "活跃" : "亢奋";
 }
 
-async function marketOverviewOf(): Promise<MarketOverview> {
+/**
+ * 🔴 `pre` = **这一屏已经取回的信封**(来自 Core 的页面查询 `/page/review`)。
+ *    给了就用,不再自己打一遍上游。
+ *
+ *    为什么必须这样:这三个端点(情绪 / 板块资金 / 涨停梯队)本来页面和 BFF **各取一次** ——
+ *    ① 上游被打两遍;② **BFF 注入了业务日、这里没有** ⇒ 同一屏的"状态与业务日"和
+ *    "屏幕上的数字"可能来自不同的两天,而页面上完全看不出来;
+ *    ③ BFF 说某块 failed,页面却照常显示它的具体数字。
+ *    ⇒ 一屏一个数据来源。块取不到就把那个(failed 的)信封照样传进来,解析出 null、
+ *      界面显示缺口 —— **不许回退去重新取一遍**,那等于把双源又请回来。
+ */
+async function marketOverviewOf(pre?: { sentiment?: Envelope; board_flow?: Envelope; zt_pool?: Envelope }): Promise<MarketOverview> {
   const [sent, ind, flow, zt] = await Promise.all([
-    env("em_limit_up_sentiment"),
+    pre?.sentiment ? Promise.resolve(pre.sentiment) : env("em_limit_up_sentiment"),
     // 全市场涨跌家数没有单独端点 —— 把行业板块的涨跌家数加总。
     // ⚠️ 口径 = "所有行业板块成分股之和",不等于交易所口径,别拿它跟别处的数硬对
     env("em_industry_comparison").catch(() => undefined),
-    env("em_board_fund_flow").catch(() => undefined),
-    env("em_zt_pool").catch(() => undefined),
+    // 🔴 **必须取全市场**（约 496 个行业板块）。默认只给 50 个，那 50 个按净额从大到小排，
+    //    于是"净流出最多"那一栏拿到的仍是净流入的板块 —— 实测界面上「流出 Top」
+    //    第一名是 +8.04 亿，**一个正数排在流出榜里，而页面上看不出这是错的**。
+    //    这条与 Core 页面查询的 BOARD_FLOW_ARGS 同口径（page_queries.ts）。
+    pre?.board_flow ? Promise.resolve(pre.board_flow) : env("em_board_fund_flow", { args: { board_type: "industry", period: "today", top_n: 500 } }).catch(() => undefined),
+    pre?.zt_pool ? Promise.resolve(pre.zt_pool) : env("em_zt_pool").catch(() => undefined),
   ]);
 
   const sum = (e: Envelope | undefined, field: string): number | null => {

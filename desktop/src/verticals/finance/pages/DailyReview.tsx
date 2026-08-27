@@ -1,4 +1,5 @@
 import { useState, useEffect } from "react";
+import { backend, type PageResult } from "@/lib/backend";
 import { Link } from "react-router-dom";
 import { Sparkles, Loader2, AlertCircle, RefreshCw, Gauge, ArrowDownUp, TrendingUp, TrendingDown, Plus, X, Flame, BarChart3, Globe } from "lucide-react";
 import ReactMarkdown from "react-markdown";
@@ -46,9 +47,27 @@ export function DailyReview() {
   const loadIndices = () => {
     api.indices().then(setIndices).catch(() => setIdxErr(true));
     api.globalIndices().then(setGlobalIdx).catch(() => {});
-    api.marketOverview().then(setOverview).catch(() => {}).finally(() => setOvDone(true));
     api.emotion().then(setEmotion).catch(() => {}).finally(() => setEmoDone(true));
     api.turnoverTop().then(setTurnover).catch(() => {}).finally(() => setToDone(true));
+
+    /**
+     * 🔴 情绪 / 板块资金 / 涨停梯队 **只取一次**:向 Core 要一屏(`/page/review`),
+     *    再把取回的信封喂给解析。此前页面和 BFF 各取一遍 —— 上游被打两遍,
+     *    而且 **BFF 注入了业务日、页面这边没有**,同一屏的状态与数字可能是不同两天的。
+     */
+    setPageErr(null);
+    backend
+      .page("review")
+      .then((meta) => {
+        setPageMeta(meta);
+        const env = (id: string) => meta.blocks.find((b) => b.id === id)?.envelope as never;
+        return api.marketOverview({ sentiment: env("sentiment"), board_flow: env("board_flow"), zt_pool: env("zt_pool") });
+      })
+      .then(setOverview)
+      // 🔴 不吞:取不到这一屏 = 业务日与缺口保护都没了,必须让用户看见,
+      //    否则页面会拿着旧数据继续显示得像正常一样
+      .catch((e) => { setPageMeta(null); setPageErr(e instanceof Error ? e.message : String(e)); })
+      .finally(() => setOvDone(true));
   };
 
   // 数据块占位：请求没回来 = 加载中；回来了但为空 = 数据源暂不可用（别让用户干等）
@@ -84,11 +103,18 @@ export function DailyReview() {
     void saveWatch(next).catch(() => { setWatchCodes(loadWatch()); refreshWatch(loadWatch()); });
   };
 
-  const today = new Date().toLocaleDateString("zh-CN", { year: "numeric", month: "2-digit", day: "2-digit" });
 
-  const dataSummary = indices.length
-    ? indices.map((i) => `${i.name} ${i.price}（${i.change_pct > 0 ? "+" : ""}${i.change_pct}%）`).join("；")
-    : "（指数数据未取到）";
+  /**
+   * 🔴 业务日与各块状态**由 Core 一次算好**（`/page/review`），不再让每块自己判。
+   *    页面各自拼旧端点时实测出现过：标题与"市场情绪"是 08-27，"短线情绪"却是 08-26 ——
+   *    同一屏跨了两天，而**页面上看不出任何异常**。
+   */
+  const [pageMeta, setPageMeta] = useState<PageResult | null>(null);
+  const [pageErr, setPageErr] = useState<string | null>(null);
+  /** 这一屏在看哪一天 —— **只认 Core 给的业务日**（拿不到就是 null，不拿本地日期顶上） */
+  const bizDay = pageMeta ? pageMeta.context.review_date ?? pageMeta.context.last_trading_day : null;
+
+
 
   const runReview = async () => {
     setReviewErr(null);
@@ -97,9 +123,11 @@ export function DailyReview() {
     setReviewLoading(true);
     setReview("");
     const prompt =
-      `以下是今天 A 股大盘的客观数据：\n${dataSummary}\n\n` +
-      "请用中文做一段当天大盘复盘：整体涨跌、主要指数表现、盘面值得注意的点。" +
-      "只做客观陈述与多视角分析，不预测涨跌、不推荐任何标的、不构成投资建议。";
+      `以下是这一屏的全部客观数据（含业务日与各块读法护栏）：\n${dataSummary}\n\n` +
+      "请用中文做当天复盘：整体涨跌、指数表现、情绪与资金面值得注意的点。\n" +
+      "🔴 硬要求：① 标了【缺口】的块**不要就它下任何结论**，如实说这块没取到；" +
+      "② 引用数字时带上它的读法护栏（【读法·xx】那几行），不要把口径丢掉；" +
+      "③ 只做客观陈述与多视角分析，不预测涨跌、不推荐任何标的、不构成投资建议。";
     try {
       await chatStream([{ role: "user", content: prompt }], `今日大盘数据：${dataSummary}`, {
         onDelta: (t) => setReview((r) => r + t),
@@ -126,6 +154,48 @@ export function DailyReview() {
     { k: "活跃度", v: sentiment.active, up: null },
   ] : []).filter((c) => c.v !== null && c.v !== "" && c.v !== undefined);
 
+  /**
+   * 喂给 AI 的那份数据。
+   *
+   * 🔴 上一版这里**只拼了指数**（名/点位/涨跌幅），而页面下方的市场情绪、连板、成交额、
+   *    板块资金一条都没进提示词 —— 界面上却写着"把当天客观数据打包给 AI"，那句话是不准确的。
+   *    现在把整屏结构化数据都带上，**并且带上每块的读法护栏与状态**：
+   *    只给数字不给读法，等于让模型替上游打包票。
+   */
+  const dataSummary = (() => {
+    const lines: string[] = [];
+    const ctx = pageMeta?.context;
+    if (ctx?.review_date) lines.push(`【业务日】${ctx.review_date}（${ctx.review_reason ?? ctx.session_phase}）`);
+    if (pageMeta?.mixed_ages) {
+      // 🔴 只说"跨了业务日"是**不可操作**的 —— 模型不知道该怀疑哪一块。
+      //    把各块的取数时刻一并给出，它才能在引用时限定"这条是几点的"。
+      const stamps = pageMeta.blocks
+        .filter((b) => b.fetched_at)
+        .map((b) => `${b.title} ${b.fetched_at!.slice(0, 16).replace("T", " ")}`)
+        .join("；");
+      lines.push(`⚠️ 这一屏的数据来自不同业务日，跨日比较要当心。各块取数时刻：${stamps || "未记录"}`);
+    }
+
+    lines.push(indices.length
+      ? `【A股指数】${indices.map((i) => `${i.name} ${i.price}（${i.change_pct > 0 ? "+" : ""}${i.change_pct}%）`).join("；")}`
+      : "【A股指数】未取到");
+    // 拿不到价的那条**不写进去** —— 让模型看到 null 比不给还糟
+    const gi = globalIdx.filter((i) => i.price !== null && i.change_pct !== null);
+    if (gi.length) lines.push(`【海外指数】${gi.map((i) => `${i.name} ${i.price}（${(i.change_pct ?? 0) > 0 ? "+" : ""}${i.change_pct}%）`).join("；")}`);
+    if (sentCells.length) lines.push(`【市场情绪】${sentCells.map((c) => `${c.k} ${c.v}`).join("；")}`);
+    if (emotion) lines.push(`【短线情绪】${JSON.stringify(emotion).slice(0, 400)}`);
+    if (sectors.length) lines.push(`【板块资金】${sectors.slice(0, 12).map((x) => `${x.name} ${x.net}`).join("；")}`);
+    if (turnover?.stocks?.length) lines.push(`【成交额居前】${turnover.stocks.slice(0, 10).map((r) => r.name).join("、")}`);
+
+    // 取数层写的读法护栏 + 哪些块没取到 —— 两样都要让模型知道
+    for (const b of pageMeta?.blocks ?? []) {
+      if (b.note) lines.push(`【读法·${b.title}】${b.note}`);
+      if (b.status === "failed") lines.push(`【缺口】${b.title} 这次没取到，不要就它下结论`);
+      else if (b.status === "partial") lines.push(`【不完整】${b.title} 只取到一部分`);
+    }
+    return lines.join("\n");
+  })();
+
   // 右上角那个 AI 按钮聊的就是这一页（登记处见 core/ai/pageContext）
   useAiPage({
     key: "daily-review",
@@ -136,10 +206,47 @@ export function DailyReview() {
 
   return (
     <div>
+      {/* 🔴 标题里的日期用 **Core 算出的业务日**,不用浏览器本地"今天" ——
+          周末 / 休市 / 盘前回退上一个交易日时,两者会差一天,而同屏出现两个日期口径
+          比没有日期更容易误读。业务日还没拿到就先不写日期,别先写一个再改。 */}
       <PageHeader
         title="每日复盘"
-        subtitle={`${today} · 大盘 / 情绪 / 板块资金一屏看全，交给你的 AI 做复盘`}
+        subtitle={`${bizDay ? `${bizDay} · ` : ""}大盘 / 情绪 / 板块资金一屏看全，交给你的 AI 做复盘`}
       />
+
+      {pageErr && (
+        <div className="mb-4 rounded-lg border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive">
+          这一屏没取到：{pageErr}
+          <span className="ml-1 text-destructive/80">—— 业务日与缺口提示都不可用，下面的数字不要当今天的看。</span>
+        </div>
+      )}
+
+      {/*
+        🔴 **这一屏在看哪一天，要写在屏上**。
+           Core 会算「盘中看进行时 / 收盘后看今天 / 非交易日回退上一个交易日」，
+           但页面此前没显示，用户默认以为都是"今天" —— 实测出现过同一屏里
+           标题是 08-27、某一块却是 08-26，而**界面上看不出任何异常**。
+        🔴 缺了哪块也要说：没取到就说没取到，别让空白被读成"今天没有"。
+      */}
+      {pageMeta && (
+        <div className="mb-4 flex flex-wrap items-center gap-x-4 gap-y-1.5 rounded-lg border border-border/60 bg-muted/20 px-3 py-2 text-xs">
+          <span className="text-muted-foreground">
+            业务日 <span className="font-medium text-foreground">{pageMeta.context.review_date ?? pageMeta.context.last_trading_day}</span>
+            {pageMeta.context.review_reason && <span className="ml-1 text-muted-foreground/70">（{pageMeta.context.review_reason}）</span>}
+          </span>
+          {pageMeta.mixed_ages && (
+            <span className="text-destructive">⚠️ 这一屏的数据来自不同业务日，跨日比较要当心</span>
+          )}
+          {pageMeta.blocks.filter((b) => b.status === "failed").map((b) => (
+            <span key={b.id} className="text-muted-foreground">
+              <span className="text-destructive">缺</span> {b.title}（这次没取到）
+            </span>
+          ))}
+          {pageMeta.blocks.filter((b) => b.status === "partial").map((b) => (
+            <span key={b.id} className="text-muted-foreground">{b.title} 只取到一部分</span>
+          ))}
+        </div>
+      )}
 
       {/* 1. 大盘指数（实时） */}
       <div className="mb-3 flex items-center justify-between">
@@ -255,7 +362,7 @@ export function DailyReview() {
         {review ? (
           <>
             <div className="prose prose-sm dark:prose-invert mt-4 max-w-none text-foreground"><ReactMarkdown remarkPlugins={[remarkGfm]}>{review}</ReactMarkdown></div>
-            {!reviewLoading && <div className="mt-3"><SaveNoteButton kind="复盘" title={`每日复盘 ${today}`} content={review} /></div>}
+            {!reviewLoading && <div className="mt-3"><SaveNoteButton kind="复盘" title={`每日复盘 ${bizDay ?? "（业务日未知）"}`} content={review} /></div>}
           </>
         ) : !needConfig && !reviewErr && !reviewLoading ? (
           <p className="mt-3 text-sm text-muted-foreground">点上方按钮，系统把当天客观数据打包给你的 AI，由它生成复盘。<b className="text-foreground">分析是它给的，我们只负责喂数据。</b></p>
@@ -453,8 +560,12 @@ export function DailyReview() {
       </div>
       <div className="mb-2 grid gap-4 md:grid-cols-2">
         {[
-          { title: "流入 Top", icon: TrendingUp, color: "text-danger", rows: sectors.slice(0, 6) },
-          { title: "流出 Top", icon: TrendingDown, color: "text-success", rows: [...sectors].slice(-6).reverse() },
+          // 🔴 判据是**净额的正负**，不是"在列表的哪一头"。
+          //    旧写法 `slice(-6)` 把列表末尾当流出 —— 取回来的板块若全是净流入，
+          //    末尾那几个照样是正数，于是「流出 Top」第一名显示 **+8.04 亿**（实测）。
+          //    一个正数排在流出榜里，而**页面上看不出这是错的**。
+          { title: "流入 Top", icon: TrendingUp, color: "text-danger", rows: sectors.filter((s) => s.net > 0).slice(0, 6) },
+          { title: "流出 Top", icon: TrendingDown, color: "text-success", rows: sectors.filter((s) => s.net < 0).sort((a, b) => a.net - b.net).slice(0, 6) },
         ].map((col) => (
           <GlassCard key={col.title}>
             <h4 className={cn("mb-3 flex items-center gap-1.5 text-sm font-semibold", col.color)}><col.icon className="h-4 w-4" /> {col.title}</h4>

@@ -29,10 +29,19 @@ export const FINANCE_PAGE_CONTEXT: PageContextDef = {
     const facts = calendarFromEnvelope(envelope as never);
     if (!facts) return null;
     const s = resolveSession(facts);
-    // 参数名是 `date`(端点 args 白名单里就叫这个);**哪些块吃它由各块自己声明 `injectContext`**。
-    // ⚠️ 第一版是无差别注入给每一块 —— 不接受这个参数的端点全被参数校验拒掉,一屏五块全 missing。
-    //    (错了会响、不会静默,正是靠这一点当场发现的。)
-    return { values: { ...s }, inject: { date: s.review_date } };
+    /**
+     * 同一个"看哪一天",**产出两种写法**,由各块用 `injectAs` 显式挑:
+     *   `date`         → `YYYY-MM-DD`(全市场龙虎榜要这个)
+     *   `date_compact` → `YYYYMMDD` (涨停情绪 / 涨停梯队要这个)
+     *
+     * 🔴 写法挑错**不会报错**:上游返回空集,端点如实报「四池皆空」「池为空」
+     *    「无龙虎榜数据(非交易日或盘后未更新)」—— 三句都读起来像真实行情,
+     *    不像格式不对。实测涨停 77 家因此被显示成 **0 家**,而页面上看不出异常。
+     * ⚠️ 哪个端点要哪种,只能真跑一次比证据条数;签名核不出取值写法。
+     * ⚠️ 声明了 `injectAs` 就**只注入列出的键** —— 否则多出来的那个会被参数白名单拒掉。
+     */
+    const compact = s.review_date ? s.review_date.replace(/-/g, "") : s.review_date;
+    return { values: { ...s }, inject: { date: s.review_date, date_compact: compact } };
   },
 };
 
@@ -55,9 +64,9 @@ export const FINANCE_PAGE_QUERIES: Record<string, PageQueryDef> = {
     // 🔴 盘中打开 → 上一个交易日;盘后 → 今天。由后端解析,不让前端按本地时间猜。
     needsContext: true,
     blocks: [
-      { id: "sentiment", title: "情绪", note: "涨停 / 炸板 / 跌停三个计数", endpoint: "em_limit_up_sentiment", injectContext: true },
-      { id: "reason", title: "强势股原因", note: "同花顺的题材归因:是市场叙事,不是核验过的因果", endpoint: "ths_hot_reason", injectContext: true },
-      { id: "zt_pool", title: "涨停梯队", note: "按连板数排;说明栏是取数层原文(含首封时间)", endpoint: "em_zt_pool", injectContext: true },
+      { id: "sentiment", title: "情绪", note: "涨停 / 炸板 / 跌停三个计数", endpoint: "em_limit_up_sentiment", injectContext: true, injectAs: { date_compact: "date" } },
+      { id: "reason", title: "强势股原因", note: "同花顺的题材归因:是市场叙事,不是核验过的因果", endpoint: "ths_hot_reason", injectContext: true, injectAs: { date: "date" } },
+      { id: "zt_pool", title: "涨停梯队", note: "按连板数排;说明栏是取数层原文(含首封时间)", endpoint: "em_zt_pool", injectContext: true, injectAs: { date_compact: "date" } },
       // ⚠️ 这个源**只给当日**(period 只有 today / 5d / 10d,没有"指定某一天")——
       //    所以盘中打开时它是**今天的进行时**,与本页其余几块的业务日期不是同一天。
       //    如实写在 note 里,别让人以为整页都是同一天(这正是 mixed_ages 要提醒的那类问题)。
@@ -65,7 +74,9 @@ export const FINANCE_PAGE_QUERIES: Record<string, PageQueryDef> = {
       // ⚠️ 要的是**市场级日榜** `em_daily_dragon_tiger`(symbol_kind=none);
       //    `em_dragon_tiger` 是**单只主体**的上榜记录,需要 symbol,放在这一页会永远缺 symbol 报错。
       //    (我先前正是拿错了那个,把它当成"这一页不该有龙虎榜"给删了 —— 删错了。)
-      { id: "dragon", title: "龙虎榜", note: "按净买额排;同一只标的可能因多条上榜理由重复出现", endpoint: "em_daily_dragon_tiger", injectContext: true },
+      // ⚠️ 这个端点的参数叫 `trade_date`,不是 `date` —— 整包注入过去会 TypeError,
+      //    信封 failed、证据 0 条。(它就这么静默失败过一段时间。)
+      { id: "dragon", title: "龙虎榜", note: "按净买额排;同一只标的可能因多条上榜理由重复出现", endpoint: "em_daily_dragon_tiger", injectContext: true, injectAs: { date: "trade_date" } },
     ],
   },
 

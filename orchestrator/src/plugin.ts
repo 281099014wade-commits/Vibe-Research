@@ -406,6 +406,20 @@ export interface PageBlockDef {
    */
   readonly injectContext?: boolean;
   /**
+   * 注入键的**选取 + 改名表**(`注入时的键 → 这个端点要的参数名`)。
+   * **只注入列出的这些键**。吃上下文(`injectContext`)就必须声明它 —— 注册期强制。
+   *
+   * 🔴 为什么需要:同一个概念,各端点的**参数名**和**取值写法**都不一样。
+   *    ① 名字:同一屏里三个端点收 `date`,第四个收 `trade_date` ——
+   *       整包注入过去后者当场 `TypeError`,信封 failed、证据 0 条。
+   *    ② 写法:同一个日期,有的端点要 `YYYYMMDD`,有的要 `YYYY-MM-DD`。
+   *       ⚠️ **写错格式不报错** —— 上游返回空集,端点如实报"池为空 / 无数据",
+   *       读起来像真实状况(今天没有),而不像格式不对。**这一类只能靠真跑发现。**
+   *    ⇒ 上下文可以同时产出同一概念的多种写法,由各块**显式挑**自己要的那一种。
+   * ⚠️ 注册期只校验形状与参数名;**取值写法对不对没人能替你查**,加新块要真跑一次看证据条数。
+   */
+  readonly injectAs?: Readonly<Record<string, string>>;
+  /**
    * 默认收起。一屏块多时,不常看的先收着 ——
    * ⚠️ **收起不等于不取**:数据照常一次取回,收的只是显示。
    *    真想省取数就别把这一块放进这个查询。
@@ -646,6 +660,7 @@ export const PLUGIN_SCHEMA = {
                 title: NONBLANK, note: { type: "string" },
                 endpoint: NONBLANK, symbol: { type: "string" },
                 args: { type: "object" }, required: { type: "boolean" }, injectContext: { type: "boolean" }, collapsed: { type: "boolean" },
+                injectAs: { type: "object", additionalProperties: { type: "string", minLength: 1 }, propertyNames: { minLength: 1 } },
                 userArgs: strArray({ uniqueItems: true }),
               },
             },
@@ -1130,6 +1145,32 @@ function register(plugin: Plugin): void {
     if (typeof pc.resolve !== "function") throw new Error("Plugin.pageContext.resolve 必须是函数");
     if (!pc.unavailable || typeof pc.unavailable !== "string") {
       throw new Error("Plugin.pageContext.unavailable 必须是非空字符串(拿不到上下文时给用户看的话)");
+    }
+  }
+  /**
+   * 吃上下文的块**必须显式声明 `injectAs`**(要哪些键、改成什么名)。
+   *
+   * 🔴 不能留"不声明就整包注入"这条默认:上下文会同时产出同一概念的多种写法
+   *    (日期的 `YYYY-MM-DD` 与 `YYYYMMDD`),整包塞过去,多出来的键会被参数白名单拒掉
+   *    —— 而新加的块作者不会知道这件事,**表现是这一块整个 missing**。
+   *    ⇒ 与其让它在运行时炸,不如注册期就要求写清楚。
+   */
+  if (plugin.pageQueries !== undefined) {
+    for (const [q, def] of Object.entries(plugin.pageQueries)) {
+      for (const b of def.blocks) {
+        if (!b.injectContext) continue;
+        const m = b.injectAs;
+        if (!m || typeof m !== "object" || Object.keys(m).length === 0) {
+          throw new Error(`Plugin.pageQueries.${q} 的块 ${b.id} 声明了 injectContext,就必须声明 injectAs 说明要哪些上下文键、改成端点认的什么名`);
+        }
+        // 🔴 两个源键映射到同一个参数名 → 运行时后一个**静默覆盖**前一个,
+        //    最终用哪种写法取决于对象枚举顺序 —— 正好是"写法错了还不报错"那一类。
+        const targets = Object.values(m);
+        const dup = targets.filter((t, i) => targets.indexOf(t) !== i);
+        if (dup.length) {
+          throw new Error(`Plugin.pageQueries.${q} 的块 ${b.id} 的 injectAs 把多个上下文键映射到了同一个参数名 ${dup.join(", ")} —— 后一个会静默覆盖前一个`);
+        }
+      }
     }
   }
   // gate 里有 RegExp,ajv 表达不了 ⇒ 手查。**必填** —— 没有它红线就是没有,不能"缺了就当空表"

@@ -1,10 +1,8 @@
 import { useEffect, useState } from "react";
 import { Link, Outlet, useLocation } from "react-router-dom";
 import {
-  Activity, Radar, LayoutGrid, Wallet, Settings, Search, NotebookPen,
-  Moon, Sun, ChevronsLeft, ChevronsRight, ChevronDown, LineChart, Github, UserRound,
-  Cog, Cpu, Star, FileText, Swords, Thermometer, Gauge,
-  Rss, Newspaper, TrendingUp, Sparkles, FlaskConical } from "lucide-react";
+  Activity, ChevronDown, ChevronsLeft, ChevronsRight, Cog, Cpu, FileText, FlaskConical, Gauge, Github, LayoutGrid, LineChart, Microscope, Moon, Newspaper, NotebookPen, Radar, Rss, Search, Settings, Sparkles, Star, Sun, Swords, Thermometer, TrendingUp, UserRound, Wallet,
+} from "lucide-react";
 import { cn } from "@/lib/utils";
 import { AiPageProvider } from "../../../../core/ai/pageContext";
 import { FinanceAiConsole, FinanceAiDock } from "@/components/ui/FinanceAiDock";
@@ -32,6 +30,9 @@ const NAV = [
   { to: "/backtest", icon: FlaskConical, label: "回测" },
   { to: "/watchlist", icon: Star, label: "自选股" },
   { to: "/portfolio", icon: Wallet, label: "我的持仓" },
+  // 六阶段研究引擎的入口。⚠️ 与下面「我的研报」不是一回事：
+  //    那一页是上传外部文件的归档柜，这一页是产品自己跑出带证据链与裁决点的研究。
+  { to: "/research", icon: Microscope, label: "深度研究" },
   { to: "/my-reports", icon: FileText, label: "我的研报" },
   { to: "/notes", icon: NotebookPen, label: "研究记录" },
   { to: "/settings", icon: Settings, label: "接入 AI" },

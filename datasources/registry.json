@@ -346,6 +346,7 @@
       "title": "全市场龙虎榜",
       "layer": "3 信号",
       "function": "daily_dragon_tiger",
+      "args": { "trade_date": null, "min_net_buy": null },
       "mapper": "em_daily_dragon_tiger",
       "endpoint_label": "datacenter/RPT_DAILYBILLBOARD_DETAILSNEW 全市场"
     },
