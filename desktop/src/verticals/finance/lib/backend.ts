@@ -146,7 +146,8 @@ export const backend = {
    */
   runTool: <T>(name: string, body: unknown, signal?: AbortSignal) =>
     call<T>(`/tool/${encodeURIComponent(name)}`, { method: "POST", body: JSON.stringify(body), signal }),
-  debateStart: (symbol: string) => call<DebateState>("/debate", { method: "POST", body: JSON.stringify({ symbol }) }),
+  debateStart: (symbol: string, depth?: string) =>
+    call<DebateState>("/debate", { method: "POST", body: JSON.stringify({ symbol, ...(depth ? { depth } : {}) }) }),
   debateAdvance: (id: string) =>
     call<DebateState>(`/debate/${encodeURIComponent(id)}/advance`, { method: "POST", body: "{}" }),
 

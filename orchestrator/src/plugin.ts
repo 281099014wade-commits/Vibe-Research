@@ -331,6 +331,15 @@ export interface Plugin {
   readonly debate?: {
     readonly dossierEndpoints: readonly string[];
     readonly stages: readonly DebateStageDef[];
+    /**
+     * **深度档位** → 这一档真正要跑哪几个阶段(按 id)。
+     * 🔴 界面上那个"一轮 / 两轮"原来是**装饰性的**:选了没有任何效果,永远跑完整五阶段,
+     *    而旁边的耗时与调用次数提示还跟着档位变 —— 于是它**告诉你 100 秒 / 3 次调用,
+     *    实际跑 6 分钟 / 5 次**。控件说一套、系统做一套,比没有这个控件更糟。
+     * ⚠️ 档位怎么分是**垂类的事**(Core 不知道"轮"是什么),所以放在契约里。
+     *    不声明 = 只有一档,永远跑全部阶段。
+     */
+    readonly depths?: Readonly<Record<string, readonly string[]>>;
   };
   /** 页面业务上下文的解析方式(见 `PageContextDef`)。没有就没有,不是每个垂类都需要 */
   readonly pageContext?: PageContextDef;
@@ -617,6 +626,7 @@ export const PLUGIN_SCHEMA = {
             },
           },
         },
+        depths: { type: "object", additionalProperties: strArray({ minItems: 1, uniqueItems: true }) },
       },
     },
     pageQueries: {
@@ -963,8 +973,14 @@ function checkRelations(d: Decl): void {
   // 🔴 指向后面的阶段永远读不到内容(那时它还没跑)—— 而产出照样是一篇像样的文章,
   //    看不出这一环其实是瞎写的。所以这条必须在注册期挡住。
   {
-    const dbg = (d as { debate?: { stages: { id: string; sees: readonly string[] }[] } }).debate;
+    const dbg = (d as { debate?: { stages: { id: string; sees: readonly string[] }[]; depths?: Record<string, string[]> } }).debate;
     if (dbg) {
+      const allIds = dbg.stages.map((x) => x.id);
+      for (const [depth, ids] of Object.entries((dbg as { depths?: Record<string, string[]> }).depths ?? {})) {
+        for (const id of ids) {
+          if (!allIds.includes(id)) throw new Error(`Plugin.debate.depths.${depth} 里的阶段 ${id} 不存在(拼错了?)`);
+        }
+      }
       const seenIds: string[] = [];
       for (const st of dbg.stages) {
         if (seenIds.includes(st.id)) throw new Error(`Plugin.debate.stages 里的 id 重复:${st.id}`);

@@ -211,7 +211,12 @@ export function Debate() {
           <div className="flex flex-col items-center gap-2 py-10 text-center text-sm text-muted-foreground">
             <Swords className="h-8 w-8 text-muted-foreground/40" />
             输入一个代码开始。后端会先拉一份客观事实底稿，再让多方 / 空方基于同一份数据互相质疑。
-            <span className="text-xs">产出的是「分歧点 + 验证清单」，不是买卖建议。</span>
+            <span className="text-xs">产出的是「分歧点 + 验证清单」，不是买卖建议。<br />
+            {/* 🔴 实测挖出来的:引用的数(带 ev-id)与资料包逐个核对过是对的,
+                但**算出来的数没有任何校验** —— 见过同比算反方向、拿隔年的数当去年基数,
+                而它们就摆在正确引用的数字旁边,看着一样可信。这条必须说在前面。 */}
+            <b className="text-warning/80">带 [ev-…] 的数字来自资料包、可溯源；而同比、差额这类
+            <u>算出来的数没有经过校验</u>——看到百分比请自己按它给的算式核一遍。</b></span>
           </div>
         </GlassCard>
       )}

@@ -148,12 +148,26 @@ export function renderDossier(envelopes: { script?: string; evidence?: unknown[]
   return { text, count, truncated };
 }
 
+
+/** 按深度档位挑出这一场要跑的阶段。认不出的档位 → 全部阶段。 */
+function pickStages(
+  def: { stages: readonly DebateStageDef[]; depths?: Readonly<Record<string, readonly string[]>> },
+  depth?: string,
+): readonly DebateStageDef[] {
+  const ids = depth ? def.depths?.[depth] : undefined;
+  if (!ids) return def.stages;
+  // 保持契约里的顺序,不按 depths 数组的顺序 —— 顺序错了 `sees` 会读到还没跑的阶段
+  return def.stages.filter((st) => ids.includes(st.id));
+}
+
 /** 开一场辩论。资料包在这一刻拉一次,之后所有角色**共用这一份**。 */
 export function startDebate(req: {
   id: string;
   symbol: string;
   envelopes: { script?: string; evidence?: unknown[] }[];
   gaps: string[];
+  /** 深度档位(见 `Plugin.debate.depths`)。不给 / 认不出 = 跑全部阶段 */
+  depth?: string;
 }): DebateState {
   sweep();
   const def = debateDef();
@@ -171,7 +185,9 @@ export function startDebate(req: {
     symbol: req.symbol,
     evidence_count: count,
     gaps,
-    stages: def.stages.map((st) => ({ id: st.id, label: st.label, status: "pending" as const, text: "" })),
+    // 按档位挑阶段。🔴 认不出的档位**跑全部**,不是跑零个 —— 少跑等于悄悄换了一个更弱的产物。
+    //    `sees` 那边本来就按"这一场里存不存在且已完成"过滤,所以少几个阶段不用另外处理。
+    stages: pickStages(def, req.depth).map((st) => ({ id: st.id, label: st.label, status: "pending" as const, text: "" })),
     done: false,
     dossier: text,
     lastUsed: Date.now(),

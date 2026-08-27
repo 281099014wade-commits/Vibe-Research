@@ -393,3 +393,35 @@ test("🔴 schema 里声明、垂类也设了的槽位，必须都活到 current
   assert.deepEqual(lost, [],
     `这些槽位垂类声明了、却没活到 currentPlugin()（多半漏了某处投影）：${lost.join(" / ")}`);
 });
+
+/* ===== 辩论深度档位（2026-08-27 实测挖出来的） ===== */
+
+test("🔴 界面上的深度档位必须真的少跑阶段", () => {
+  // 原来那个「一轮 / 两轮」下拉框是**装饰性的**：适配层把参数命名成 `_rounds`
+  // （下划线 = 声明我不用它），于是选了没有任何效果、永远跑完整五阶段，
+  // 而旁边的耗时提示还跟着档位变 —— 告诉你 100 秒 / 3 次调用，实际 6 分钟 / 5 次。
+  const d = currentPlugin().debate;
+  assert.ok(d?.depths, "垂类没声明深度档位");
+  const one = d!.depths!["1"]!;
+  const two = d!.depths!["2"]!;
+  assert.ok(one.length < two.length, "一轮必须比两轮少跑阶段，否则档位没有意义");
+  assert.ok(!one.includes("bull_rebut") && !one.includes("bear_rebut"), "一轮不该有交叉反驳");
+  assert.equal(two.length, d!.stages.length, "两轮应当覆盖全部阶段");
+});
+
+test("深度档位里的阶段 id 必须真实存在", () => {
+  const d = currentPlugin().debate!;
+  const ids = d.stages.map((s) => s.id);
+  for (const [depth, list] of Object.entries(d.depths ?? {})) {
+    for (const id of list) assert.ok(ids.includes(id), `档位 ${depth} 里的 ${id} 不是真实阶段`);
+  }
+});
+
+test("每个档位都要有裁判（少了它就只剩两段各说各话）", () => {
+  const d = currentPlugin().debate!;
+  // 最后一个阶段（sees 最多的那个）就是裁判
+  const referee = d.stages[d.stages.length - 1]!.id;
+  for (const [depth, list] of Object.entries(d.depths ?? {})) {
+    assert.ok(list.includes(referee), `档位 ${depth} 少了裁判 ${referee}`);
+  }
+});

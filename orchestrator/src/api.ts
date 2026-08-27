@@ -156,8 +156,12 @@ export function createApiServer(ctx: ServiceContext, opts: { token: string; cook
         return send(res, 200, await runTool(ctx, parts[1], b));
       }
       if (req.method === "POST" && url.pathname === "/debate") {
-        const b = (await readBody(req)) as { symbol?: string; session?: string };
-        return send(res, 200, await debateStart(ctx, { symbol: String(b?.symbol ?? ""), ...(b?.session ? { session: b.session } : {}) }));
+        const b = (await readBody(req)) as { symbol?: string; session?: string; depth?: string };
+        return send(res, 200, await debateStart(ctx, {
+          symbol: String(b?.symbol ?? ""),
+          ...(b?.session ? { session: b.session } : {}),
+          ...(b?.depth ? { depth: String(b.depth) } : {}),
+        }));
       }
       if (req.method === "POST" && parts[0] === "debate" && parts[1] && parts[2] === "advance") {
         return send(res, 200, await debateAdvance(ctx, { id: parts[1] }));

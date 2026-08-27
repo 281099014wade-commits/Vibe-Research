@@ -706,7 +706,7 @@ export function productInfo(ctx: ServiceContext): Record<string, unknown> {
  * ⚠️ 单个端点取失败**不中止**:记进 gaps 一起交给双方("这些没取到,别当它们不存在")。
  *    全部失败才拒开(见 debate.startDebate)。
  */
-export async function debateStart(ctx: ServiceContext, req: { symbol: string; session?: string }): Promise<DebateState> {
+export async function debateStart(ctx: ServiceContext, req: { symbol: string; session?: string; depth?: string }): Promise<DebateState> {
   const def = currentPlugin().debate;
   if (!def) throw new ServiceError("not_supported", "这个垂类没有声明辩论");
   const symbol = assertSymbol(req.symbol, "cn6");
@@ -728,7 +728,7 @@ export async function debateStart(ctx: ServiceContext, req: { symbol: string; se
     }
   }
   try {
-    return startDebate({ id, symbol, envelopes, gaps });
+    return startDebate({ id, symbol, envelopes, gaps, ...(req.depth ? { depth: req.depth } : {}) });
   } catch (e) {
     if (e instanceof DebateError) throw new ServiceError(e.code, e.message);
     throw e;

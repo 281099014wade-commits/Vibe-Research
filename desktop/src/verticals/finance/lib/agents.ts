@@ -32,7 +32,13 @@ export interface DebateHandlers {
  */
 export async function debateStream(
   code: string,
-  _rounds: number,
+  /**
+   * 深度档位。🔴 原来这里叫 `_rounds` —— 下划线前缀声明「我不用它」,
+   *    于是界面上那个"一轮 / 两轮"**选了没有任何效果**,永远跑完整五阶段,
+   *    而旁边的耗时提示还跟着档位变:告诉你 100 秒 / 3 次调用,实际 6 分钟 / 5 次。
+   *    控件说一套、系统做一套,比没有这个控件更糟。
+   */
+  rounds: number,
   handlers: DebateHandlers = {},
   signal?: AbortSignal,
 ): Promise<void> {
@@ -63,7 +69,7 @@ export async function debateStream(
 
   try {
     handlers.onStatus?.("正在现拉资料包(五个角色共用同一份)…");
-    let st = await backend.debateStart(code);
+    let st = await backend.debateStart(code, String(rounds));
     if (signal?.aborted) return;
     handlers.onDossierReady?.([{ title: `资料包 ${st.evidence_count} 条证据`, tool: "取数层" }], st.gaps);
     handlers.onStatus?.(st.gaps.length ? "资料包就绪(有缺口,已告知双方),辩论开始" : "资料包就绪,辩论开始");
