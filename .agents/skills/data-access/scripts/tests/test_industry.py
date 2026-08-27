@@ -134,7 +134,15 @@ def test_gpu_rent_three_way_and_mapper(monkeypatch):
     spot = fields[("gpu_spot_median_usd_per_gpu_hr", "B200")]
     assert spot["market"] == "US" and spot["currency"] == "USD" and spot["unit"] == "美元/卡时" and spot["value"] == 6.4
     assert spot["raw_ref"] == "raw/b200.json" and "折旧参考线" in spot["note"] and "asof_ts=172800" in spot["note"]
-    assert fields[("gpu_available_count", "A100 SXM4")]["value"] == 0
+    # 🔴 现货的资料期 = **曲线末点自己的日期**,不是取数日。
+    #    标成取数日的话,上游停更几天后陈旧读数会看着像当天的 —— 而这个温度计的用处
+    #    正是判"还热不热"。ts=172800 → 1970-01-03（UTC）
+    assert spot["period"] == "1970-01-03" and spot["as_of"] == "1970-01-03"
+    # 🔴 没有统计序列的卡:发 status 型证据,**不发 `gpu_available_count = 0`**。
+    #    上游只说了"没有序列",没说"当前可租 0 张" —— 0 是一个我们并不知道成不成立的断言。
+    assert ("gpu_available_count", "A100 SXM4") not in fields, "未覆盖不能造出一个数值证据"
+    st = fields[("gpu_spot_status", "A100 SXM4")]
+    assert st["value"] == "unavailable" and st["unit"] == "status" and "未覆盖≠可租 0 张" in st["note"]
     assert fields[("gpu_forward_p_below_lowest_strike", "B200")]["value"] == 0.35
     # 曲线走 extra(它是序列不是证据),且带上来源与天数
     hx = m["extra"]["history"]
@@ -158,6 +166,20 @@ def test_gpu_rent_failure_modes(monkeypatch):
     monkeypatch.setattr(industry, "http_get", lambda url, **k: R(200, _farm([[1, "NaN"], [2, "Inf"]])) if "500.farm" in url else R(200, {"markets": []}))
     g2 = industry.gpu_rent_thermometer(now=NOW)
     assert "无一个点可解析" in g2["history"][0]["error"] and "error" in g2["spot"][0]
+
+
+def test_forward_unavailable_does_not_claim_zero_rungs():
+    """🔴 远期阶梯没取到时**不发 `gpu_forward_rung_count = 0`**。
+
+    能确定的只是"没取到有效阶梯"（未开盘 / 无成交），不是"真实档数为 0"。
+    发 0 的话下游会把它当一条正常证据展示，而它是一个我们并不知道成不成立的断言。
+    """
+    m = mappers_industry.gpu_rent_thermometer_map(
+        {"checked_at": "2026-08-27", "spot": [], "forward": {"unavailable": True}}, _ctx())
+    fields = {e["field"]: e for e in m["evidence"]}
+    assert "gpu_forward_rung_count" not in fields, "未覆盖不能造出一个数值证据"
+    st = fields["gpu_forward_status"]
+    assert st["value"] == "unavailable" and st["unit"] == "status" and "未覆盖≠档数为 0" in st["note"]
 
 
 def test_registry_endpoints_and_tag_table():

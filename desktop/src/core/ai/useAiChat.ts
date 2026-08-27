@@ -145,6 +145,14 @@ export function useAiChat(key: string, send: AiSend): AiChat {
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
+  /**
+   * 提交权的**同步**锁。
+   * 🔴 不能只靠 `loading`：它是 state，同一事件里连点两次两个闭包看到的都是 false，
+   *    第二次会中止第一次，而第一次的 catch 判定为"被接管"不做清理 ——
+   *    界面上就留下一轮永远转圈的空气泡。ref 是同步的，抢得住。
+   */
+  /** 存**持有者**而不是布尔：布尔的话旧请求的 finally 会把新请求刚拿到的锁清掉。 */
+  const submittingRef = useRef<AbortController | null>(null);
   const keyRef = useRef(key);
   keyRef.current = key;
   const sendRef = useRef(send);
@@ -160,6 +168,7 @@ export function useAiChat(key: string, send: AiSend): AiChat {
   useEffect(() => {
     abortRef.current?.abort();
     abortRef.current = null;
+    submittingRef.current = null;
     setLoading(false);
     setErr(null);
     setEpoch(Number(readText(EPOCH_KEY + key) ?? 0) || 0);
@@ -177,6 +186,7 @@ export function useAiChat(key: string, send: AiSend): AiChat {
   const abort = useCallback(() => {
     abortRef.current?.abort();
     abortRef.current = null;
+    submittingRef.current = null;    // 不放锁的话，切走再切回来会永远发不出去
     setLoading(false);
   }, []);
 
@@ -199,7 +209,9 @@ export function useAiChat(key: string, send: AiSend): AiChat {
   const submit = useCallback(
     async (text: string, decorate?: (q: string) => string) => {
       const q = text.trim();
-      if (!q || loading) return;
+      if (!q || loading || submittingRef.current) return;
+      const ac = new AbortController();
+      submittingRef.current = ac;      // 抢到提交权的是这一次
       setErr(null);
       setMsgs((m) => [...m, { role: "user", content: q }, { role: "assistant", content: "", partial: true }]);
       setLoading(true);
@@ -208,7 +220,6 @@ export function useAiChat(key: string, send: AiSend): AiChat {
         setMsgs((m) => m.map((msg, i) => (i === m.length - 1 && msg.role === "assistant" ? fn(msg) : msg)));
 
       abortRef.current?.abort();
-      const ac = new AbortController();
       abortRef.current = ac;
       const startedKey = keyRef.current;
       const alive = () => abortRef.current === ac && !ac.signal.aborted;
@@ -220,6 +231,10 @@ export function useAiChat(key: string, send: AiSend): AiChat {
           signal: ac.signal,
         });
         if (alive()) {
+          // 🔴 **空回答不算回答**。后端解析失败 / 空响应 / 降级都可能返回 ""，
+          //    照原样收下就会在界面上出现一个"正常结束的空气泡"，还会落盘、
+          //    并作为完整历史进入下一轮 —— 典型的把「没取到」渲染成正常结果。
+          if (!reply.trim()) throw new Error("模型没有返回内容（空回答）");
           patchLast((m) => {
             const { partial: _drop, ...rest } = m;
             return { ...rest, content: reply };
@@ -239,6 +254,10 @@ export function useAiChat(key: string, send: AiSend): AiChat {
           if (!ac.signal.aborted) setErr(e instanceof Error ? e.message : "对话失败");
         }
       } finally {
+        // 🔴 只放**自己**那把锁。无条件放的话：A 被 abort → 锁已放 → B 上锁 →
+        //    A 的 finally 迟到，把 B 的锁也清了 → 又能重复提交，竞态原样回来。
+        //    （与 useArchiveThenRefresh 的 busyRun 是同一条规矩。）
+        if (submittingRef.current === ac) submittingRef.current = null;
         if (abortRef.current === ac) {
           abortRef.current = null;
           setLoading(false);

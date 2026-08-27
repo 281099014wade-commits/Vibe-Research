@@ -5,6 +5,7 @@ from __future__ import annotations
 import calendar
 import os
 import sys
+from datetime import datetime, timezone
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from common import today_str  # noqa: E402
@@ -59,6 +60,14 @@ def tw_monthly_revenue_map(result: dict, ctx: dict) -> dict:
                missing=missing_metrics, status=status, degraded=degraded)
 
 
+def _ts_day(ts) -> str:
+    """秒级时间戳 → YYYY-MM-DD。给不出来就返回空串，由调用方回退到取数日。"""
+    try:
+        return datetime.fromtimestamp(float(ts), tz=timezone.utc).strftime("%Y-%m-%d")
+    except (TypeError, ValueError, OSError, OverflowError):
+        return ""
+
+
 def gpu_rent_thermometer_map(result: dict, ctx: dict) -> dict:
     result = result or {}
     day = result.get("checked_at") or today_str()
@@ -68,15 +77,23 @@ def gpu_rent_thermometer_map(result: dict, ctx: dict) -> dict:
         sctx = {**ctx, "symbol": s["gpu"], "market": "US"}
         if "median_usd_per_gpu_hr" in s:
             # 现货 = 曲线最后一个点 ⇒ note 里带上那一点的时间戳与挂单卡数（规模读数，可能为 None）
-            evs.append(ev(sctx, "gpu_spot_median_usd_per_gpu_hr", s["median_usd_per_gpu_hr"], "美元/卡时", day, currency="USD", as_of=day, record_key=s["gpu"], raw_ref=s.get("raw_ref"),
+            # 🔴 **资料期用那一点自己的日期,不是取数日**。上游最后一个有效采样可能停在几天前,
+            #    标成今天就是让陈旧数据看着像当天的 —— 而这个温度计的用处正是判"还热不热"。
+            sday = _ts_day(s.get("asof_ts")) or day
+            evs.append(ev(sctx, "gpu_spot_median_usd_per_gpu_hr", s["median_usd_per_gpu_hr"], "美元/卡时", sday, currency="USD", as_of=sday, record_key=s["gpu"], raw_ref=s.get("raw_ref"),
                           note=f"gpu={s['gpu']};asof_ts={s.get('asof_ts')};available_gpus={s.get('available_gpus')};total_gpus={s.get('total_gpus')};"
                                f"depreciation_line_usd={line};below_line={s['below_depreciation_line']};{GPU_GUARD}"))
             if s.get("available_gpus") is not None:
-                evs.append(ev(sctx, "gpu_available_count", s["available_gpus"], "张", day, currency="n/a", as_of=day, record_key=s["gpu"], raw_ref=s.get("raw_ref"),
+                evs.append(ev(sctx, "gpu_available_count", s["available_gpus"], "张", sday, currency="n/a", as_of=sday, record_key=s["gpu"], raw_ref=s.get("raw_ref"),
                               note=f"gpu={s['gpu']};当前可租挂单卡数(规模读数,不是信号本体);total={s.get('total_gpus')};{GPU_GUARD}"))
         elif s.get("unavailable"):
             unavailable.append(s["gpu"])
-            evs.append(ev(sctx, "gpu_available_count", 0, "张", day, currency="n/a", as_of=day, record_key=s["gpu"], raw_ref=s.get("raw_ref"), note=f"gpu={s['gpu']};{s.get('note') or '暂无统计序列(市场状态不是故障)'};{GPU_GUARD}"))
+            # 🔴 **不发 `gpu_available_count = 0`**：上游只说了"没有统计序列",
+            #    没说"当前可租 0 张"。0 是一个断言,而我们并不知道它成不成立。
+            #    改用 status 型证据（与管制与准入层同一套写法）—— 界面照样看得到这张卡,
+            #    但看到的是「未覆盖」而不是一个假的零。
+            evs.append(ev(sctx, "gpu_spot_status", "unavailable", "status", day, currency="n/a", as_of=day, record_key=s["gpu"], raw_ref=s.get("raw_ref"),
+                          note=f"gpu={s['gpu']};{s.get('note') or '暂无统计序列(市场状态不是故障)'};未覆盖≠可租 0 张;{GPU_GUARD}"))
         else:
             errs.append(f"{s['gpu']}: {s.get('error')}")
     f = result.get("forward") or {}
@@ -89,7 +106,9 @@ def gpu_rent_thermometer_map(result: dict, ctx: dict) -> dict:
                       note=f"contract_month={cm};lowest_strike_usd={f['lowest_strike']};n_rungs={f['n_rungs']};other_months={f.get('other_months')};ladder={f.get('ladder')};{FWD_GUARD};{GPU_GUARD}"))
         evs.append(ev(fctx, "gpu_forward_lowest_strike_usd", f["lowest_strike"], "美元/卡时", fper, currency="USD", as_of=day, record_key=rk, raw_ref=f.get("raw_ref"), note=f"contract_month={cm};Kalshi KXB200MS 阶梯最低档;{FWD_GUARD};{GPU_GUARD}"))
     elif f.get("unavailable"):
-        evs.append(ev(fctx, "gpu_forward_rung_count", 0, "档", day, currency="n/a", as_of=day, record_key="KXB200MS", raw_ref=f.get("raw_ref"), note=f"阶梯市场无有效报价(未开盘或无成交,市场状态不是故障);{FWD_GUARD}"))
+        # 同上：能确定的是"没取到有效阶梯",不是"真实档数为 0"
+        evs.append(ev(fctx, "gpu_forward_status", "unavailable", "status", day, currency="n/a", as_of=day, record_key="KXB200MS", raw_ref=f.get("raw_ref"),
+                      note=f"阶梯市场无有效报价(未开盘或无成交,市场状态不是故障);未覆盖≠档数为 0;{FWD_GUARD}"))
     elif f.get("error"):
         errs.append(f"forward: {f['error']}")
     status, degraded = "ok", None

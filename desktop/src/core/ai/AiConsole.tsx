@@ -62,6 +62,13 @@ export function AiConsole({ open, onClose, send, configured, copy, renderReplyAc
   const chat = useAiChat(threadId, send);
   const [height, setHeight] = useState(readH);
   const dragRef = useRef<{ y: number; h: number } | null>(null);
+  // 🔴 落盘要用**最后一次算出来的**高度：`mouseup` 拿的是 effect 闭包里的 `height`，
+  //    而最后一次 mousemove 的 setState 可能还没提交 —— 屏幕上已经是新高度，
+  //    存进去的却是上一帧的旧值，下次打开就"回弹"一点点，看不出是 bug。
+  const hRef = useRef(height);
+  hRef.current = height;
+  /** `chat.msgs` 现在属不属于选中的这条。换条那一帧是 false —— 那一帧的内容是**上一条的**。 */
+  const inSync = chat.key === threadId;
 
   /**
    * 有内容了就把这条记进目录（标题取第一句话）。
@@ -85,13 +92,15 @@ export function AiConsole({ open, onClose, send, configured, copy, renderReplyAc
     const move = (e: MouseEvent) => {
       const d = dragRef.current;
       if (!d) return;
-      setHeight(Math.min(Math.max(d.h + (d.y - e.clientY), MIN_H), window.innerHeight * MAX_H_RATIO));
+      const next = Math.min(Math.max(d.h + (d.y - e.clientY), MIN_H), window.innerHeight * MAX_H_RATIO);
+      hRef.current = next;
+      setHeight(next);
     };
     const up = () => {
       if (!dragRef.current) return;
       dragRef.current = null;
       try {
-        localStorage.setItem(HEIGHT_KEY, String(height));
+        localStorage.setItem(HEIGHT_KEY, String(hRef.current));
       } catch {
         /* 存不下就下次回默认高度，不影响用 */
       }
@@ -102,7 +111,8 @@ export function AiConsole({ open, onClose, send, configured, copy, renderReplyAc
       window.removeEventListener("mousemove", move);
       window.removeEventListener("mouseup", up);
     };
-  }, [height]);
+    // 高度经 hRef 读，不放依赖 —— 放了会每帧重挂监听
+  }, []);
 
   const { abort } = chat;
   const close = useCallback(() => {
@@ -154,7 +164,7 @@ export function AiConsole({ open, onClose, send, configured, copy, renderReplyAc
           )}
         </span>
         <div className="flex shrink-0 items-center gap-1">
-          {chat.msgs.length > 0 && (
+          {inSync && chat.msgs.length > 0 && (
             <button onClick={chat.clear} title="清空当前这条对话" aria-label="清空当前这条对话"
               className="text-muted-foreground hover:text-foreground">
               <Trash2 className="h-4 w-4" />
@@ -217,19 +227,21 @@ export function AiConsole({ open, onClose, send, configured, copy, renderReplyAc
 
           {/* 右：当前这条对话 */}
           <div className="flex min-w-0 flex-1 flex-col">
+            {/* 🔴 换条那一帧 msgs 还是上一条的 —— 门控住，否则旧消息会显示在新选中的
+                条目下，而且此刻还能发送 / 清空，等于对着错的那条动手。 */}
             <AiMessages
-              msgs={chat.msgs}
-              loading={chat.loading}
+              msgs={inSync ? chat.msgs : []}
+              loading={chat.loading || !inSync}
               err={chat.err}
               notice={copy.notice}
               suggestions={copy.suggestions}
-              onPick={(x) => void chat.submit(x, decorate)}
+              onPick={(x) => inSync && void chat.submit(x, decorate)}
               renderReplyActions={renderReplyActions}
             />
             <AiComposer
               placeholder={copy.placeholder}
-              disabled={chat.loading}
-              onSend={(t) => void chat.submit(t, decorate)}
+              disabled={chat.loading || !inSync}
+              onSend={(t) => inSync && void chat.submit(t, decorate)}
             />
           </div>
         </div>

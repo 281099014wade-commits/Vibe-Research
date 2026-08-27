@@ -9,9 +9,9 @@ import { useLiveQuotes, isTradingHours } from "@/hooks/useLiveQuotes";
 import { cn } from "@/lib/utils";
 
 // A 股红涨绿跌（与整个看板一致）。
-const color = (v: number | undefined) =>
+const color = (v: number | null | undefined) =>
   v == null ? "text-muted-foreground" : v > 0 ? "text-danger" : v < 0 ? "text-success" : "text-muted-foreground";
-const pct = (v: number | undefined) => (v == null ? "—" : `${v > 0 ? "+" : ""}${v}%`);
+const pct = (v: number | null | undefined) => (v == null ? "—" : `${v > 0 ? "+" : ""}${v}%`);
 
 const LIVE_KEY = "vr-watchlist-live";
 
@@ -74,7 +74,7 @@ export function Watchlist() {
             .map((c) => {
               const q = quotes[c];
               return q
-                ? `${q.name}(${c}) 现价${q.price} ${pct(q.change_pct)} PE(TTM)${q.pe_ttm ?? "—"} 换手${q.turnover_pct ?? "—"}%`
+                ? `${q.name}(${c}) 现价${q.price ?? "未取到"} ${pct(q.change_pct)} PE(TTM)${q.pe_ttm ?? "—"} 换手${q.turnover_pct ?? "—"}%`
                 : `${c}（行情未取到）`;
             })
             .join("\n")
@@ -204,7 +204,7 @@ export function Watchlist() {
                     <tr key={c} className="border-b border-border/30">
                       <td className="px-2 py-2.5 font-medium">{q?.name || "—"}</td>
                       <td className="px-2 py-2.5 font-mono text-xs text-muted-foreground">{c}</td>
-                      <td className={cn("px-2 py-2.5 font-mono", color(q?.change_pct))}>{q ? q.price : "—"}</td>
+                      <td className={cn("px-2 py-2.5 font-mono", color(q?.change_pct))}>{q?.price ?? "—"}</td>
                       <td className={cn("px-2 py-2.5 font-mono", color(q?.change_pct))}>{q ? pct(q.change_pct) : "—"}</td>
                       <td className="px-2 py-2.5 font-mono text-muted-foreground">{q?.pe_ttm ?? "—"}</td>
                       <td className="px-2 py-2.5 font-mono text-muted-foreground">{q?.pb ?? "—"}</td>

@@ -48,12 +48,18 @@ export function useArchiveThenRefresh<T>(
   loadRef.current = load;
   // 卸载 / 换 deps 之后到达的结果一律丢弃：否则会写进已经不属于它的那一屏
   const runRef = useRef(0);
-  // 已经在刷了就别再叠一次（用户狂点刷新 / effect 重入）
-  const busyRef = useRef(false);
+  /**
+   * 谁占着刷新。
+   * 🔴 存的是 **run 号**不是布尔:布尔会让"切到新查询"被上一次的在途请求锁死 ——
+   *    新的那次直接 return,于是要么只显示旧存档、连刷新都没发生(且不报错),
+   *    要么(新对象没有存档时)`loading` **永远是 true**。
+   *    旧请求的结果本来就会被 run 号挡掉,不需要它顺带锁住新请求。
+   */
+  const busyRun = useRef<number | null>(null);
 
   const doRefresh = useCallback(async (run: number) => {
-    if (busyRef.current) return;
-    busyRef.current = true;
+    if (busyRun.current === run) return;   // 只拦同一 run 的重入(狂点刷新)
+    busyRun.current = run;
     setRefreshing(true);
     try {
       const fresh = await loadRef.current(true);
@@ -70,7 +76,8 @@ export function useArchiveThenRefresh<T>(
         return prev;
       });
     } finally {
-      busyRef.current = false;
+      // 只放**自己**那把锁:新 run 已经接管时别把它的锁一起清了
+      if (busyRun.current === run) busyRun.current = null;
       if (runRef.current === run) {
         setRefreshing(false);
         setLoading(false);

@@ -101,6 +101,10 @@ export function AiComposer({
         <textarea
           ref={ref}
           onKeyDown={(e) => {
+            // 🔴 中文输入法**选字期间**的 Enter 是"确认候选词"，不是"发送"。
+            //    不挡的话，打到一半按回车会把没成词的拼音直接发出去并清空输入框 ——
+            //    对中文用户是每天都会撞到的。`isComposing` 只在原生事件上有。
+            if (e.nativeEvent.isComposing) return;
             if (e.key === "Enter" && !e.shiftKey) {
               e.preventDefault();
               fire();

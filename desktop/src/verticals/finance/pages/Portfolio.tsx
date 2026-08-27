@@ -8,10 +8,12 @@ import { api, ApiError, type PortfolioData } from "@/lib/api";
 import { cn } from "@/lib/utils";
 
 const REFRESH_MS = 30 * 60 * 1000; // 每半小时自动刷新
-const pnlColor = (v: number) => (v > 0 ? "text-danger" : v < 0 ? "text-success" : "text-muted-foreground");
-const fmt = (v: number) => v.toLocaleString("zh-CN", { maximumFractionDigits: 2 });
+// 🔴 容 null:行情拉不到时这些是 null,显示「—」而不是 0 —— 0 会看着像"正好不赚不亏"
+const pnlColor = (v: number | null) =>
+  v == null ? "text-muted-foreground/40" : v > 0 ? "text-danger" : v < 0 ? "text-success" : "text-muted-foreground";
+const fmt = (v: number | null) => (v == null ? "—" : v.toLocaleString("zh-CN", { maximumFractionDigits: 2 }));
 // 单价类（现价/成本/清仓价）最多 4 位小数：ETF/基金常见 3-4 位，截断成 2 位会与市值/盈亏对不上账
-const fmtPx = (v: number) => v.toLocaleString("zh-CN", { maximumFractionDigits: 4 });
+const fmtPx = (v: number | null) => (v == null ? "—" : v.toLocaleString("zh-CN", { maximumFractionDigits: 4 }));
 
 export function Portfolio() {
   const [data, setData] = useState<PortfolioData | null>(null);
@@ -202,8 +204,8 @@ export function Portfolio() {
                     <td className="px-2 py-2.5 font-mono text-muted-foreground">{fmt(h.shares)}</td>
                     <td className="px-2 py-2.5 font-mono text-muted-foreground">{fmtPx(h.cost)}</td>
                     <td className="px-2 py-2.5 font-mono">{fmt(h.market_value)}</td>
-                    <td className={cn("px-2 py-2.5 font-mono", pnlColor(h.pnl))}>{h.pnl > 0 ? "+" : ""}{fmt(h.pnl)}</td>
-                    <td className={cn("px-2 py-2.5 font-mono", pnlColor(h.pnl))}>{h.pnl_pct > 0 ? "+" : ""}{h.pnl_pct}%</td>
+                    <td className={cn("px-2 py-2.5 font-mono", pnlColor(h.pnl))}>{h.pnl != null && h.pnl > 0 ? "+" : ""}{fmt(h.pnl)}</td>
+                    <td className={cn("px-2 py-2.5 font-mono", pnlColor(h.pnl))}>{h.pnl_pct == null ? "—" : `${h.pnl_pct > 0 ? "+" : ""}${h.pnl_pct}%`}</td>
                     <td className="px-2 py-2.5">
                       <button onClick={() => remove(h.code)} className="text-muted-foreground/50 hover:text-destructive" title="删除">
                         <Trash2 className="h-3.5 w-3.5" />

@@ -15,7 +15,7 @@ import { Sparkles, Trash2, X } from "lucide-react";
 
 import { cn } from "../lib/cn";
 import { AiComposer, AiMessages } from "./AiMessages";
-import { useCurrentAiPage } from "./pageContext";
+import { useAiWired, useCurrentAiPage } from "./pageContext";
 import { type AiSend, useAiChat } from "./useAiChat";
 
 export interface AiDockCopy {
@@ -45,6 +45,7 @@ export interface AiDockProps {
 }
 
 export function AiDock({ send, configured, copy, renderReplyActions, renderSetup }: AiDockProps) {
+  const wired = useAiWired();
   const page = useCurrentAiPage();
   const [open, setOpen] = useState(false);
   const chat = useAiChat(page?.key ?? "", send);
@@ -67,15 +68,26 @@ export function AiDock({ send, configured, copy, renderReplyActions, renderSetup
 
   // 每轮都把本页内容带上：后端那条线程是进程内的，服务重启后它什么都不记得，
   // 而用户不会知道服务重启过 —— 带着上下文问，重启前后都答得上来。
-  const decorate = (q: string) =>
-    page?.context ? `【当前页面：${page.title}】\n${page.context}\n\n【问题】\n${q}` : q;
+  // 🔴 登记了页面但上下文是空串时,**要说出来**,不能发一个裸问题:
+  //    那样模型会凭自己的知识答一段看着正常的话,而用户以为它读的是这一页的数据。
+  const decorate = (q: string) => {
+    if (!page) return q;                       // 按钮本就点不动,兜底而已
+    const body = page.context
+      ? page.context
+      : "（这一页的数据还没取到 / 是空的。请如实说明看不到本页数据，不要凭一般知识作答。）";
+    return `【当前页面：${page.title}】\n${body}\n\n【问题】\n${q}`;
+  };
 
   return (
     <>
       <button
         onClick={() => setOpen(true)}
         disabled={!page}
-        title={page ? `${copy.trigger} · ${page.title}` : "这一页还没有可聊的内容"}
+        title={
+          !wired ? "AI 入口没接上（AiPageProvider 未挂载）"
+            : page ? `${copy.trigger} · ${page.title}${page.context ? "" : "（本页数据还没取到）"}`
+            : "这一页还没有可聊的内容"
+        }
         className={cn(
           "fixed right-5 top-4 z-40 inline-flex items-center gap-1.5 rounded-full px-3.5 py-2",
           "text-sm font-medium shadow-glow backdrop-blur transition-all",

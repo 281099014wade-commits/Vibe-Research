@@ -15,7 +15,9 @@ import { cn } from "@/lib/utils";
 
 // A股红涨绿跌。全球市场（美股/港股指数）**也沿用红涨**——与整个看板及东财等中国平台一致，
 // 对中国用户最不易看错（Simon 2026-07-05 确认；非国际绿涨惯例，是有意选择，勿改）。
-const pctColor = (p: number) => (p > 0 ? "text-danger" : p < 0 ? "text-success" : "text-muted-foreground");
+// 容 null:同上,行情缺项时显示灰色的「—」,不套涨跌色
+const pctColor = (p: number | null | undefined) =>
+  p == null ? "text-muted-foreground/40" : p > 0 ? "text-danger" : p < 0 ? "text-success" : "text-muted-foreground";
 const fmt = (v: number) => v.toLocaleString("zh-CN", { maximumFractionDigits: 2 });
 const yi = (v: number | null) => (v == null ? "—" : `${fmt(v / 1e8)} 亿`); // 元 → 亿
 
@@ -218,9 +220,9 @@ export function DailyReview() {
                     <X className="h-3.5 w-3.5" />
                   </button>
                   <p className="truncate text-xs text-muted-foreground">{q?.name || c}</p>
-                  <p className={cn("mt-1 font-mono text-lg font-bold", q ? pctColor(q.change_pct) : "text-muted-foreground/40")}>{q ? q.price : "—"}</p>
+                  <p className={cn("mt-1 font-mono text-lg font-bold", q ? pctColor(q.change_pct) : "text-muted-foreground/40")}>{q?.price ?? "—"}</p>
                   <p className={cn("text-xs", q ? pctColor(q.change_pct) : "text-muted-foreground/40")}>
-                    {q ? `${q.change_pct > 0 ? "+" : ""}${q.change_pct}%` : c}
+                    {q?.change_pct == null ? c : `${q.change_pct > 0 ? "+" : ""}${q.change_pct}%`}
                   </p>
                 </div>
               );

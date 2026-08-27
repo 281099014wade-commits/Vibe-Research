@@ -36,9 +36,15 @@ export async function downloadReport(_id: string, _name: string): Promise<void> 
 }
 
 export interface Quote {
-  name: string; price: number; last_close: number; change_pct: number;
-  pe_ttm: number; pb: number; mcap_yi: number; turnover_pct: number;
-  limit_up: number; limit_down: number;
+  /**
+   * 🔴 **全部可为 null**。原来这些走 `n0` 兜成 0,于是"端点没给这一项"在界面上
+   *    变成「0.00 元 / 0.00 倍 / 0.00%」—— 与真实的 0 分不开,而且看着完全正常。
+   *    上方那条规则本来就写着"取不到的数给 null 不给 0",只是当时只在新加的两个字段上执行了。
+   *    改成可空之后,类型系统会**逼着每一处调用点表态**(实测 12 处)。
+   */
+  name: string; price: number | null; last_close: number | null; change_pct: number | null;
+  pe_ttm: number | null; pb: number | null; mcap_yi: number | null; turnover_pct: number | null;
+  limit_up: number | null; limit_down: number | null;
   /**
    * 🔴 **单位写进字段名**。行情端点给的是「亿元 / 万元」，而页面的 `yi()` 吃的是「元」——
    *    两边都叫 `amount` 的话，少乘一次 1e4 就会把 186 亿显示成 0.02 亿，而且不会报错。
@@ -208,8 +214,12 @@ export interface MacroProbability {
 }
 
 export interface Holding {
-  code: string; name: string; price: number; shares: number; cost: number;
-  market_value: number; pnl: number; pnl_pct: number;
+  code: string; name: string; shares: number; cost: number;
+  /** 🔴 行情派生的四项**可为 null**:拉不到行情时显示「—」,不是 0。
+   *  写死成 number 的话,一只取不到行情的持仓会整行显示「现价 0.00 / 市值 0.00 / 浮盈 0.00」,
+   *  排版完全正常,看不出是没取到。 */
+  price: number | null; market_value: number | null;
+  pnl: number | null; pnl_pct: number | null;
 }
 export interface ClosedPosition {
   code: string; name: string; date: string; price: number; shares: number; cost: number;
@@ -294,15 +304,15 @@ async function quoteMap(codes: string[]): Promise<Record<string, Quote>> {
   for (const r of rows(e)) {
     out[r.key] = {
       name: str(r.fields.security_name),
-      price: n0(r.fields.price),
-      last_close: n0(r.fields.last_close),
-      change_pct: n0(r.fields.change_pct),
-      pe_ttm: n0(r.fields.pe_ttm),
-      pb: n0(r.fields.pb),
-      mcap_yi: n0(r.fields.market_cap),
-      turnover_pct: n0(r.fields.turnover_rate),
-      limit_up: n0(r.fields.limit_up_price),
-      limit_down: n0(r.fields.limit_down_price),
+      price: num(r.fields.price),
+      last_close: num(r.fields.last_close),
+      change_pct: num(r.fields.change_pct),
+      pe_ttm: num(r.fields.pe_ttm),
+      pb: num(r.fields.pb),
+      mcap_yi: num(r.fields.market_cap),
+      turnover_pct: num(r.fields.turnover_rate),
+      limit_up: num(r.fields.limit_up_price),
+      limit_down: num(r.fields.limit_down_price),
       float_mcap_yi: num(r.fields.float_market_cap),                        // 端点单位：亿元
       amount_yuan: mul(num(r.fields.turnover_amount), 1e4),                 // 端点单位：万元 → 元
     };
@@ -783,7 +793,7 @@ async function turnoverTopOf(): Promise<TurnoverTop> {
         // 🔴 给**元**原值 —— 页面自己换算成亿(`yi()`)。这里先除一遍,显示出来就是 0 亿
         amount: amt,
         // ⚠️ 行情给的是亿元，`yi()` 吃元 ⇒ ×1e8；取不到就是 null(显示"—")，不拿 0 冒充
-        mcap: m?.[2] && q[m[2]] ? q[m[2]]!.mcap_yi * 1e8 : null,
+        mcap: mul(m?.[2] ? q[m[2]]?.mcap_yi ?? null : null, 1e8),
         float_cap: mul(m?.[2] ? q[m[2]]?.float_mcap_yi ?? null : null, 1e8),
         industry: m?.[3] ?? "",
       };
@@ -870,7 +880,11 @@ async function gpuRentOf(refresh = false): Promise<GpuRentData> {
     return v === undefined || v === "" || v === "None" || !Number.isFinite(n) ? null : n;
   };
   const spot = rows(e)
-    .filter((r) => r.fields.gpu_spot_median_usd_per_gpu_hr || r.fields.gpu_available_count)
+    // 🔴 三种情况都要出卡片：有中位价 / 只有挂单卡数 / **未覆盖**（status 型证据）。
+    //    漏掉最后一种的话，取不到序列的那张卡会**整张消失** —— 用户看到的是"只有两张卡"，
+    //    而不是"第三张没覆盖到"，与"把没取到渲染成正常结果"是同一个坑的另一面。
+    .filter((r) => r.fields.gpu_spot_median_usd_per_gpu_hr || r.fields.gpu_available_count
+                || r.fields.gpu_spot_status)
     .map((r) => {
       const kv = noteKV(r.note);
       const median = num(r.fields.gpu_spot_median_usd_per_gpu_hr);
@@ -1048,25 +1062,26 @@ async function portfolioOf(): Promise<PortfolioData> {
     const shares = Number(r.shares ?? 0);
     const cost = Number(r.cost ?? 0);
     const q = quotes[code];
-    // 🔴 拉不到行情时**不拿成本冒充现价** —— 那会把浮盈算成 0 并看着像"正好不赚不亏"
-    const price = q ? q.price : 0;
-    const mv = q ? price * shares : 0;
-    const pnl = q ? (price - cost) * shares : 0;
+    // 🔴 拉不到行情(整只票缺席,或缺了 price 这一项)时一律 null —— 不拿成本冒充现价,
+    //    也不填 0:那会把浮盈显示成"正好不赚不亏",而它其实是没取到。
+    const price = q?.price ?? null;
+    const mv = price === null ? null : price * shares;
+    const pnl = price === null ? null : (price - cost) * shares;
     return {
       code,
       name: String(r.name ?? q?.name ?? ""),
       price,
       shares,
       cost,
-      market_value: round2(mv)!,
-      pnl: round2(pnl)!,
-      pnl_pct: q && cost > 0 ? round2(((price - cost) / cost) * 100)! : 0,
+      market_value: round2(mv),
+      pnl: round2(pnl),
+      pnl_pct: price !== null && cost > 0 ? round2(((price - cost) / cost) * 100) : null,
     };
   });
 
   // 合计只累加**拿到行情的那些** —— 取不到的当 0 加进去,合计就成了假数
-  const priced = holdings.filter((h) => quotes[h.code]);
-  const mv = priced.reduce((a, h) => a + h.market_value, 0);
+  const priced = holdings.filter((h) => h.market_value !== null);
+  const mv = priced.reduce((a, h) => a + (h.market_value ?? 0), 0);
   const costSum = priced.reduce((a, h) => a + h.cost * h.shares, 0);
   return {
     holdings,

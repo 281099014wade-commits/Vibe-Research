@@ -21,29 +21,64 @@ export interface AiThread {
   updatedAt: number;
 }
 
-const read = (): AiThread[] => {
+/**
+ * 读目录的结果。
+ * 🔴 **"真的空" 与 "读不出来" 必须分开**：两者都返回 `[]` 的话，下一次
+ *    `touchThread` 会把目录写成只剩当前这一条 —— 之前那些对话的**内容还在**，
+ *    但目录里没有了，永远读不到。这是静默数据丢失，而界面只表现为"记录变少了"。
+ */
+type ReadResult =
+  | { ok: true; list: AiThread[] }
+  | { ok: false; why: "corrupt" | "unavailable" };
+
+const isThread = (t: unknown): t is AiThread =>
+  !!t && typeof t === "object" &&
+  typeof (t as AiThread).id === "string" &&
+  typeof (t as AiThread).title === "string" &&
+  typeof (t as AiThread).updatedAt === "number";
+
+const readResult = (): ReadResult => {
+  let raw: string | null;
   try {
-    const raw = localStorage.getItem(LIST_KEY);
-    if (!raw) return [];
-    const parsed: unknown = JSON.parse(raw);
-    if (!Array.isArray(parsed)) return [];   // 被改坏 / 旧版本：当没有，别让页面崩
-    return parsed.filter(
-      (t): t is AiThread =>
-        !!t && typeof t === "object" &&
-        typeof (t as AiThread).id === "string" &&
-        typeof (t as AiThread).title === "string" &&
-        typeof (t as AiThread).updatedAt === "number",
-    );
+    raw = localStorage.getItem(LIST_KEY);
   } catch {
-    return [];
+    return { ok: false, why: "unavailable" };   // 隐私模式 / WebView 故障：**不是**空目录
+  }
+  // 🔴 只有 `null` 才是"还没建过目录"。空字符串是**写坏了**——
+  //    当成空目录的话，下一次写入会把整份目录覆盖掉。
+  if (raw === null) return { ok: true, list: [] };
+  if (raw === "") return { ok: false, why: "corrupt" };
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return { ok: false, why: "corrupt" };
+    // 🔴 **不能 filter 掉格式异常的条目再往下走**：过滤后的结果会被写回去，
+    //    那些条目的入口就永久没了，而它们的对话内容还躺在存储里。
+    //    有一条不认识 = 整份目录当损坏，什么都别写。
+    if (!parsed.every(isThread)) return { ok: false, why: "corrupt" };
+    return { ok: true, list: parsed };
+  } catch {
+    return { ok: false, why: "corrupt" };
   }
 };
 
-const write = (list: AiThread[]): void => {
+/** 读不出来时给空数组供界面渲染 —— 但**写路径不能用它**，要用 readResult。 */
+const read = (): AiThread[] => {
+  const r = readResult();
+  return r.ok ? r.list : [];
+};
+
+/** 目录当前读不读得出来。界面可以据此提示"记录暂时读不到"，而不是显示成"没有记录"。 */
+export function directoryReadable(): boolean {
+  return readResult().ok;
+}
+
+/** 写目录。**返回是否成功** —— 调用方要据此决定删不删内容。 */
+const write = (list: AiThread[]): boolean => {
   try {
     localStorage.setItem(LIST_KEY, JSON.stringify(list));
+    return true;
   } catch {
-    /* 存不下就这次不记；不影响当前这条对话能不能用 */
+    return false;   // 配额满 / 隐私模式：这次没记住
   }
 };
 
@@ -62,7 +97,11 @@ export function newThreadId(): string {
  * 用第一句话当标题，后面再聊也不改，免得列表里的名字一直在变、找不回昨天那条。
  */
 export function touchThread(id: string, title: string, now = Date.now()): AiThread[] {
-  const list = read();
+  const cur = readResult();
+  // 🔴 读不出来就**什么都不写**。照空数组写回去，会把目录压成只剩这一条，
+  //    而之前那些对话的内容还躺在 localStorage 里、再也找不到入口。
+  if (!cur.ok) return [];
+  const list = cur.list;
   const i = list.findIndex((t) => t.id === id);
   const clean = title.replace(/\s+/g, " ").trim().slice(0, TITLE_MAX);
   if (i >= 0) {
@@ -71,16 +110,20 @@ export function touchThread(id: string, title: string, now = Date.now()): AiThre
     list.push({ id, title: clean, updatedAt: now });
   }
   const kept = list.sort((a, b) => b.updatedAt - a.updatedAt);
-  // 超出上限的连同内容一起删（见文件头：目录与内容必须同进同退）
-  for (const gone of kept.slice(MAX_THREADS)) dropChat(gone.id);
   const head = kept.slice(0, MAX_THREADS);
-  write(head);
+  // 🔴 **先提交目录，成功了再删内容**。反过来的话，目录写失败（配额满 / 隐私模式）时
+  //    内容已经没了，旧目录还留着那些条目 —— 点开是一片空白，而且看不出内容已丢。
+  if (!write(head)) return kept;   // 没写成：目录仍是旧的，内容一个都别动
+  for (const gone of kept.slice(MAX_THREADS)) dropChat(gone.id);
   return head;
 }
 
 export function removeThread(id: string): AiThread[] {
-  const left = read().filter((t) => t.id !== id);
-  write(left);
+  const cur = readResult();
+  if (!cur.ok) return [];                       // 同上：读不出来就不动任何东西
+  const left = cur.list.filter((t) => t.id !== id);
+  // 同 touchThread：先提交目录，成功了才删内容
+  if (!write(left)) return cur.list.sort((a, b) => b.updatedAt - a.updatedAt);
   dropChat(id);
   return left.sort((a, b) => b.updatedAt - a.updatedAt);
 }
