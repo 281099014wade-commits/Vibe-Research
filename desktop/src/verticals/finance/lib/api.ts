@@ -227,7 +227,7 @@ export interface ClosedPosition {
 }
 export interface PortfolioData {
   holdings: Holding[];
-  totals: { market_value: number; cost: number; pnl: number; pnl_pct: number };
+  totals: { market_value: number; cost: number; pnl: number; pnl_pct: number | null };
   closed: ClosedPosition[];
   realized_pnl: number;
   updated: string; last_refresh: string | null;
@@ -1102,7 +1102,11 @@ async function portfolioOf(): Promise<PortfolioData> {
       market_value: round2(mv)!,
       cost: round2(costSum)!,
       pnl: round2(mv - costSum)!,
-      pnl_pct: costSum > 0 ? round2(((mv - costSum) / costSum) * 100)! : 0,
+      // 🔴 成本和 ≤ 0 时**没有百分比可言**，要给 null 不能给 0 ——
+      //    0 是一个具体的数、读作"不赚不亏"，而真相是"这个比例算不出来"。
+      //    成本可以为负（分红送转吃够了），负数当分母还会**把赚的显示成亏的**：
+      //    成本 −1.5、现价 10 ⇒ (10−(−1.5))/(−1.5) = −766%，明明大赚。
+      pnl_pct: costSum > 0 ? round2(((mv - costSum) / costSum) * 100)! : null,
     },
     closed: [],
     realized_pnl: 0,

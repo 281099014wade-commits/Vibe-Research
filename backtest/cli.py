@@ -30,6 +30,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from backtest.gate import Plan, plan_backtest  # noqa: E402
 from backtest.run import BacktestNotValid, Result, run  # noqa: E402
 from backtest.strategies import BUILTIN  # noqa: E402
+from backtest.stdio_utf8 import force_utf8_stdio  # noqa: E402
 
 
 def _catalog() -> dict:
@@ -96,6 +97,9 @@ def _result_view(r: Result) -> dict:
 
 
 def main() -> None:
+    # 🔴 **必须在打任何 JSON 之前**：中文 Windows 的管道默认 GBK，
+    #    含 \xa0 会当场崩、其余中文会变成 Node 按 UTF-8 读不懂的字节（上游 issue #27）。
+    force_utf8_stdio()
     raw = sys.stdin.read()
     try:
         req: dict[str, Any] = json.loads(raw or "{}")

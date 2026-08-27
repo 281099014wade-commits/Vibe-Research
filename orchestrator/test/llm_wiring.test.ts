@@ -109,3 +109,15 @@ test("🔴 前端「这份配置能不能用」的口径必须与后端一致 �
     assert.equal(front, back, `口径不一致:${JSON.stringify(c)} 前端=${front} 后端=${back}`);
   }
 });
+
+test("🔴 成本和 ≤ 0 时的盈亏比例给 null，不给 0 —— 0 是个具体的数，读作「不赚不亏」", () => {
+  const api = fs.readFileSync(path.join(LIB, "api.ts"), "utf8");
+  const m = /pnl_pct:\s*costSum > 0[^\n]*/.exec(api);
+  assert.ok(m, "没解析到合计盈亏比例那一行，断言等于没做");
+  // 成本可以为负（分红送转吃够了）。负数当分母还会**把赚的显示成亏的**：
+  // 成本 −1.5、现价 10 ⇒ (10−(−1.5))/(−1.5) = −766%，明明大赚。
+  assert.ok(/:\s*null,?\s*$/.test(m[0]), `算不出时必须给 null：${m[0]}`);
+
+  const page = fs.readFileSync(path.join(LIB, "..", "pages", "Portfolio.tsx"), "utf8");
+  assert.ok(/totals\.pnl_pct == null \? "—"/.test(page), "界面要把算不出如实渲染成「—」");
+});

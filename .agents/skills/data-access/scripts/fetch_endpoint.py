@@ -20,6 +20,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 from common import atomic_write_json, finish, lib_versions, norm_ticker, now_iso, record_error, redact_text, result_skeleton  # noqa: E402
 from sources._http import DataNotAvailable, assert_us_ticker, capture, norm_hk  # noqa: E402
+from core.stdio_utf8 import force_utf8_stdio
 
 REPO_ROOT = os.path.abspath(os.path.join(HERE, "..", "..", "..", ".."))
 REGISTRY_PATH = os.path.join(REPO_ROOT, "datasources", "registry.json")
@@ -57,6 +58,9 @@ def resolve_symbol(ep: dict, symbol: str) -> tuple[str, str]:
 
 
 def main() -> None:
+    # 🔴 **必须在打任何 JSON 之前**：中文 Windows 的管道默认 GBK，
+    #    含 \xa0 会当场崩、其余中文会变成 Node 按 UTF-8 读不懂的字节（上游 issue #27）。
+    force_utf8_stdio()
     p = argparse.ArgumentParser(description="通用取数器(registry 驱动)")
     p.add_argument("--endpoint", required=True)
     p.add_argument("--symbol", default="MARKET")

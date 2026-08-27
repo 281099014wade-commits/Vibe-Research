@@ -59,7 +59,11 @@ export const FINANCE_LEDGER_KINDS: Record<string, LedgerKindDef> = {
       name: TEXT(40),
       account: TEXT(40),
       shares: { type: "number", minimum: 0 },
-      cost: { type: "number", minimum: 0 },
+      // 🔴 **成本不设下限**：分红 / 送转吃够了之后，成本价变成负数是真实存在的持仓状态
+      //    （开源版 Vibe-Research issue #3 就是用户拿这个来报的）。卡一个 `minimum: 0`
+      //    的后果是这类持仓**根本录不进来**，而盈亏本来就按 (现价 − 成本) × 股数 算，
+      //    成本为负照样算得出正确结果 —— 拦它换不来任何正确性。
+      cost: { type: "number" },
       opened_at: DATE,
       note: TEXT(1000),
     },

@@ -39,6 +39,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from calc import formulas, indicators, series  # noqa: E402
 from calc.formulas import CALC_VERSION  # noqa: E402
 from calc.display import attach_display  # noqa: E402
+from calc.stdio_utf8 import force_utf8_stdio  # noqa: E402
 
 FUNCTIONS = {
     "pe_deducted_annualized": formulas.pe_deducted_annualized,
@@ -302,6 +303,9 @@ def _dump(obj) -> str:
 
 
 def main() -> None:
+    # 🔴 **必须在打任何 JSON 之前**：中文 Windows 的管道默认 GBK，
+    #    含 \xa0 会当场崩、其余中文会变成 Node 按 UTF-8 读不懂的字节（上游 issue #27）。
+    force_utf8_stdio()
     p = argparse.ArgumentParser(description="确定性估值计算入口")
     p.add_argument("function", help="函数名,或 list 列出全部")
     p.add_argument("--args", default=None, help="JSON 对象字符串")

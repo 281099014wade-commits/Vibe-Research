@@ -336,3 +336,14 @@ test("回读复核比的是**整条内容**,不只是 id 与时间戳(并发覆�
     (fs as unknown as { renameSync: typeof fs.renameSync }).renameSync = orig;
   }
 });
+
+test("🔴 持仓成本允许为负 —— 分红 / 送转吃够了之后是真实存在的状态", () => {
+  const root = tmpRoot();
+  // 上游 Vibe-Research issue #3：用户拿这个来报的。卡 minimum:0 的后果是这类持仓录不进来，
+  // 而盈亏本来就按 (现价 − 成本) × 股数 算，成本为负照样算得对。
+  const r = upsertRecord(root, "position", { symbol: "600519", name: "负成本", shares: 100, cost: -1.5 });
+  assert.equal(r.cost, -1.5);
+  // 股数仍不许为负(做空是另一回事,没有证据说要支持,不顺手放开)
+  assert.throws(() => upsertRecord(root, "position", { symbol: "600519", shares: -1, cost: 10 }), /shares/);
+  fs.rmSync(root, { recursive: true, force: true });
+});

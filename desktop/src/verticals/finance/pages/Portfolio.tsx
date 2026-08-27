@@ -94,7 +94,7 @@ export function Portfolio() {
 
   const aiContext = totals
     ? `我的持仓（本地数据）：\n` + holdings.map((h) => `${h.name}(${h.code}) ${h.shares}股 成本${h.cost} 现价${h.price} 浮盈${h.pnl}(${h.pnl_pct}%)`).join("\n") +
-      `\n汇总：市值${totals.market_value} 总浮盈${totals.pnl}(${totals.pnl_pct}%)`
+      `\n汇总：市值${totals.market_value} 总浮盈${totals.pnl}(${totals.pnl_pct == null ? "比例算不出：成本和 ≤ 0" : `${totals.pnl_pct}%`})`
     : "我的持仓：暂无记录。";
 
   useAiPage({
@@ -132,7 +132,12 @@ export function Portfolio() {
             { k: "总市值", v: fmt(totals.market_value), c: "text-foreground" },
             { k: "总成本", v: fmt(totals.cost), c: "text-foreground" },
             { k: "浮动盈亏", v: (totals.pnl > 0 ? "+" : "") + fmt(totals.pnl), c: pnlColor(totals.pnl) },
-            { k: "盈亏比例", v: (totals.pnl_pct > 0 ? "+" : "") + totals.pnl_pct + "%", c: pnlColor(totals.pnl) },
+            {
+              k: "盈亏比例",
+              // 成本和 ≤ 0 时这个比例没有意义（见 api.ts）——如实标出来，别显示成 0%
+              v: totals.pnl_pct == null ? "—" : (totals.pnl_pct > 0 ? "+" : "") + totals.pnl_pct + "%",
+              c: pnlColor(totals.pnl),
+            },
           ].map((m) => (
             <GlassCard key={m.k} className="p-3">
               <p className="text-xs text-muted-foreground">{m.k}</p>
