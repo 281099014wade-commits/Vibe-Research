@@ -6,14 +6,14 @@
  *    后端把它拼进一个临时 env 交给引擎。**配置文件 / 日志 / 账本一个字节都碰不到。**
  *
  * ⚠️ 上一版的口径是「密钥只从环境变量读，界面只读」。那在终端里启动时没问题，
- *    但**装机版（访达双击）根本没有 shell 环境** —— 等于除了在终端里启动的人，
- *    没有人能把产品用起来。「不进配置文件」这条纪律在新做法下照样成立
- *    （localStorage 不是仓库文件，key 也不落盘），换来的是装机版真的能配。
+ *    但只依赖启动服务前配置 shell 环境，浏览器 UI 里就没有可操作的接入入口。
+ *    「不进配置文件」这条纪律在新做法下照样成立（localStorage 不是仓库文件，key 也不进后端落盘）。
  *
  * ⚠️ 没配用户配置时**回落到后端默认**（`.local/config.json` + 环境变量那一套）——
  *    Simon 自己在终端里跑的那条路不受影响。
  */
 import { ApiError, backend, type ProductInfo } from "./backend";
+import { parseHeadlineTranslations, type HeadlineTranslationInput } from "./headlineTranslation";
 import { clearUserLlm, loadUserLlm, saveUserLlm, type LlmConfig } from "./llmStore";
 
 export type { LlmConfig };
@@ -126,4 +126,21 @@ export async function chatStream(
 
 export function chat(messages: ChatMsg[], context: string): Promise<ChatResult> {
   return chatStream(messages, context);
+}
+
+/**
+ * Investment News 的专用标题翻译。
+ *
+ * 不复用 `default` 对话会话：后端为每一批开独立线程，并把翻译规则放在
+ * developer 指令层，RSS 标题只作为 JSON 数据进入用户层。
+ */
+export async function translateHeadlineBatch(
+  items: HeadlineTranslationInput[],
+  signal?: AbortSignal,
+): Promise<Map<string, string>> {
+  if (!items.length) return new Map();
+  const r = await backend.translateHeadlines(items, signal);
+  // 后端已经逐条移除触发红线的译文；其余安全条目必须保留，不能因一条而丢整批。
+  // 被移除的 id 自然缺席，页面会把那几条保留成英文并显示 partial。
+  return parseHeadlineTranslations(JSON.stringify({ items: r.items }), items);
 }

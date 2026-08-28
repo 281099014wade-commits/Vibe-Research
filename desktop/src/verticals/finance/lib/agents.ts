@@ -41,7 +41,7 @@ export async function debateStream(
   rounds: number,
   handlers: DebateHandlers = {},
   signal?: AbortSignal,
-): Promise<void> {
+): Promise<DebateState | undefined> {
   // 每个事件只发一次 —— 我们是轮询式推进,不去重的话每轮都会把已完成的阶段重发一遍
   const emitted = new Set<string>();
   const push = (st: DebateState) => {
@@ -70,22 +70,24 @@ export async function debateStream(
   try {
     handlers.onStatus?.("正在现拉资料包(五个角色共用同一份)…");
     let st = await backend.debateStart(code, String(rounds));
-    if (signal?.aborted) return;
+    if (signal?.aborted) return undefined;
     handlers.onDossierReady?.([{ title: `资料包 ${st.evidence_count} 条证据`, tool: "取数层" }], st.gaps);
     handlers.onStatus?.(st.gaps.length ? "资料包就绪(有缺口,已告知双方),辩论开始" : "资料包就绪,辩论开始");
     push(st);
 
     while (!st.done) {
-      if (signal?.aborted) return;
+      if (signal?.aborted) return undefined;
       st = await backend.debateAdvance(st.id);
       push(st);
     }
     // 🔴 全挂了要说全挂了 —— 只看 done 会把"五段全空"读成"辩论正常完成"
     if (st.outcome === "failed") handlers.onError?.("所有阶段都失败了:不是「没有分歧」,是根本没跑起来");
     else handlers.onStatus?.(st.outcome === "completed_with_errors" ? "跑完了,但有环节没打上" : "辩论结束");
+    return st;
   } catch (e) {
-    if (signal?.aborted) return;
+    if (signal?.aborted) return undefined;
     handlers.onError?.(e instanceof ApiError ? e.message : String(e));
+    return undefined;
   }
 }
 

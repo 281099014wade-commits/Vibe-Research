@@ -3,11 +3,11 @@
  *
  * 🔴 与「密钥只从环境变量读」并不冲突：这里收到的 key **一个字节都不落盘**，
  *    只被拼进一个**临时的 env 对象**交给引擎；配置文件、日志、账本都碰不到它。
- *    ⇒ 「不进配置文件」这条纪律保住了，而装机版用户终于能自己配。
+ *    ⇒ 「不进配置文件」这条纪律保住了，浏览器 UI 用户也能在本机自己配。
  *
  * ⚠️ 原来的口径是「只认进程环境变量」。那条在终端里启动时没问题，
- *    但**从访达双击启动的 App 根本没有 shell 环境** —— 等于除了在终端里启动的人，
- *    没有人能把这个产品用起来。开源版（已被真实用户验证）的做法是让用户自己粘 key，
+ *    但只依赖启动服务前配置 shell 环境，会让浏览器 UI 用户找不到可操作的入口。
+ *    开源版（已被真实用户验证）的做法是让用户自己粘 key，
  *    这一层就是把那条路接过来。
  */
 import fs from "node:fs";
@@ -26,13 +26,21 @@ export interface LlmOverride {
   model?: string;
 }
 
-export interface ResolvedRuntimeProvider {
-  profile: ProviderProfileFile;
-  auth: AuthMode;
-  model: string | null;
-  /** 交给引擎的环境。**只在内存里**，含用户这次给的 key */
-  env: NodeJS.ProcessEnv;
-}
+export type ResolvedRuntimeProvider =
+  | {
+      runtime: "codex";
+      profile: ProviderProfileFile;
+      auth: AuthMode;
+      model: string | null;
+      /** 交给引擎的环境。**只在内存里**，含用户这次给的 key */
+      env: NodeJS.ProcessEnv;
+    }
+  | {
+      runtime: "local-agent";
+      agent: "claude";
+      model: null;
+      env: NodeJS.ProcessEnv;
+    };
 
 export class RuntimeProviderError extends Error {
   // ⚠️ 不用构造函数参数属性:`erasableSyntaxOnly` 下那不是可擦除语法(Node 剥类型跑不了)
@@ -47,14 +55,15 @@ export class RuntimeProviderError extends Error {
 export const isCliProvider = (p: string): boolean => p.startsWith("cli-");
 
 /**
- * 订阅档里**真正接得上**的只有产品自带的那台引擎。
+ * 订阅档必须明确映射到真实 runtime。当前是产品自带 Codex + 本机 Claude Code；
+ * 其余 CLI 没有安全适配器就拒绝。
  *
- * 🔴 界面上还列了 Claude Code / Qwen Code 等（标着"开发中"），
- *    但**列出来 ≠ 接得上**。如果这里对所有 `cli-*` 一律回落到自带引擎，
+ * 🔴 界面只列已经有真实适配器的 Codex / Claude；旧 localStorage 或手工请求仍可能
+ *    带来 Qwen / DeepSeek 等 `cli-*`。如果这里对所有 CLI 一律回落到自带引擎，
  *    用户选了 Claude、答案却出自 Codex —— 而且**界面上一个字都不会提示**。
  *    这正是本文件开头那条纪律说的"账单和产出来自别处"。⇒ 认不出的一律报错。
  */
-const SUPPORTED_CLI = new Set(["cli-codex"]);
+const LOCAL_AGENT_BY_PROVIDER = Object.freeze({ "cli-claude": "claude" } as const);
 
 /** 自定义端点用的固定 env 变量名 —— 只存在于内存里的这一份 env */
 const RUNTIME_KEY_VAR = "VRA_RUNTIME_API_KEY";
@@ -73,18 +82,22 @@ export function resolveRuntimeProvider(
 
   // ① CLI 订阅：走本机已登录态，免 key
   if (isCliProvider(id)) {
-    if (!SUPPORTED_CLI.has(id)) {
-      throw new RuntimeProviderError("unsupported_cli", `订阅档暂时只支持产品自带引擎，接不上 ${id}`);
+    if (id === "cli-codex") {
+      return {
+        runtime: "codex",
+        profile: BUILTIN_OPENAI_PROFILE,
+        auth: "chatgpt_login",
+        // 🔴 订阅档**不转发模型名**：模型由登录态决定，界面上那个 id 只是显示用的标签。
+        model: null,
+        env: baseEnv,
+      };
     }
-    return {
-      profile: BUILTIN_OPENAI_PROFILE,
-      auth: "chatgpt_login",
-      // 🔴 订阅档**不转发模型名**：模型由登录态决定，界面上那个 id 只是显示用的标签。
-      //    真拿它当模型名发出去，会收到 "The 'x' model is not supported when using
-      //    Codex with a ChatGPT account" —— 实测撞过一次。
-      model: null,
-      env: baseEnv,
-    };
+    if (id in LOCAL_AGENT_BY_PROVIDER) {
+      return { runtime: "local-agent", agent: LOCAL_AGENT_BY_PROVIDER[id as keyof typeof LOCAL_AGENT_BY_PROVIDER], model: null, env: baseEnv };
+    }
+    {
+      throw new RuntimeProviderError("unsupported_cli", `订阅档当前只支持 Codex 与 Claude Code，接不上 ${id}`);
+    }
   }
 
   const key = String(llm.apiKey ?? "").trim();
@@ -113,6 +126,7 @@ export function resolveRuntimeProvider(
       "用户自填端点",
     );
     return {
+      runtime: "codex",
       profile: synthesized,
       auth: "api_key",
       model: llm.model?.trim() || null,
@@ -146,6 +160,7 @@ export function resolveRuntimeProvider(
     throw new RuntimeProviderError("bad_template", raw);
   }
   return {
+    runtime: "codex",
     profile,
     auth: "api_key",
     model: llm.model?.trim() || profile.default_model,

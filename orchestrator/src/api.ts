@@ -15,7 +15,8 @@ import path from "node:path";
 
 import crypto from "node:crypto";
 
-import { IMPORT_MAX_TOTAL_BYTES, ServiceError, chatSend, evidenceAlerts, listTools, runTool, fetchEndpoint, ingestFiles, debateAdvance, debateStart, ledgerKinds, ledgerLabels, ledgerList, productInfo, ledgerRemove, ledgerSnapshot, ledgerUpsert, pageQuery, getEvidence, getReport, knowledgeRecall, listEndpoints, listRuns, readRunFile, redact, researchStatus, safePath, serviceContext, startResearch, thermoSeries, type ServiceContext } from "./service.ts";
+import { IMPORT_MAX_TOTAL_BYTES, ServiceError, chatSend, translateHeadlines, evidenceAlerts, guidedToolTurn, listTools, runTool, fetchEndpoint, ingestFiles, debateAdvance, debateStart, ledgerKinds, ledgerLabels, ledgerList, localAgents, productInfo, ledgerRemove, ledgerSnapshot, ledgerUpsert, pageQuery, getEvidence, getReport, knowledgeRecall, listEndpoints, listRuns, readRunFile, redact, reportDelete, reportDownload, reportUpload, reportsList, researchStatus, safePath, serviceContext, startCodexSubscriptionLogin, startResearch, thermoSeries, type ServiceContext } from "./service.ts";
+import { REPORT_MAX_BYTES } from "./report_library.ts";
 
 
 // **composition root**:插件在入口注册,Core 模块一律不 import 它
@@ -28,6 +29,35 @@ function send(res: http.ServerResponse, code: number, body: unknown, type = "app
   const csp = type.startsWith("text/html") ? { "Content-Security-Policy": HTML_CSP } : {};
   res.writeHead(code, { "Content-Type": type, "Content-Length": Buffer.byteLength(data), ...SECURITY_HEADERS, ...csp });
   res.end(data);
+}
+
+function sendFile(res: http.ServerResponse, file: string, name: string, type: string): void {
+  // 校验和打开必须落在同一个文件描述符上；若在 lstat 与读取之间把文件换成符号链接，
+  // 仅靠路径检查仍可能把资料库之外的文件下载出去。
+  const fd = fs.openSync(file, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
+  try {
+    const stat = fs.fstatSync(fd);
+    if (!stat.isFile()) throw new Error("download target is not a regular file");
+    res.writeHead(200, {
+      "Content-Type": type,
+      "Content-Length": stat.size,
+      "Content-Disposition": `attachment; filename*=UTF-8''${encodeURIComponent(name)}`,
+      ...SECURITY_HEADERS,
+    });
+    const stream = fs.createReadStream(file, { fd, autoClose: true });
+    stream.on("error", () => res.destroy());
+    stream.pipe(res);
+  } catch (e) {
+    fs.closeSync(fd);
+    throw e;
+  }
+}
+
+function reportMime(ext: string): string {
+  if (ext === "PDF") return "application/pdf";
+  if (ext === "DOCX") return "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+  if (ext === "CSV") return "text/csv; charset=utf-8";
+  return "text/plain; charset=utf-8";
 }
 
 /** 所有响应统一带:不缓存、不发 Referer(登录 URL 含 token)、禁止 MIME 嗅探 */
@@ -110,6 +140,26 @@ function uiRun(ctx: ServiceContext, id: string): string | null {
   return `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><title>Vibe Research · ${esc(id)}</title><style>${UI_CSS}</style></head><body><header><h1>${esc(st.run_id)} · <span class="tag ${esc(st.status)}">${esc(st.status)}</span></h1><div><a style="color:#9cf" href="/ui">← 运行列表</a> · 证据 ${st.evidence_count ?? "-"} · 计算 ${st.calculation_count ?? "-"} · ${st.viewer ? `<a style="color:#9cf" href="/runs/${esc(id)}/viewer">打开证据查看器</a>` : "无查看器"}</div></header><main><h2>阶段</h2><ul>${stages}</ul><h2>report.md</h2><pre>${esc(rep.report ?? "(无报告)")}</pre></main></body></html>`;
 }
 
+/** 把浏览器主动停止 / 连接中断变成模型调用的 AbortSignal，避免页面停了后台仍继续计费。 */
+async function withRequestAbort<T>(
+  req: http.IncomingMessage,
+  res: http.ServerResponse,
+  run: (signal: AbortSignal) => Promise<T>,
+): Promise<T> {
+  const ac = new AbortController();
+  const abort = () => ac.abort();
+  const responseClosed = () => { if (!res.writableEnded) abort(); };
+  req.once("aborted", abort);
+  res.once("close", responseClosed);
+  try {
+    if (req.aborted) ac.abort();
+    return await run(ac.signal);
+  } finally {
+    req.removeListener("aborted", abort);
+    res.removeListener("close", responseClosed);
+  }
+}
+
 export function createApiServer(ctx: ServiceContext, opts: { token: string; cookieLogin?: boolean }): http.Server {
   if (!opts.token || opts.token.length < 16) throw new Error("API token 必须 ≥ 16 字符(默认随机生成并写入 .local/api.token)");
   const cookieLogin = opts.cookieLogin !== false;  // 非本机绑定(明文 HTTP)时由 main 关闭:cookie 会被网络观察者截获
@@ -135,6 +185,11 @@ export function createApiServer(ctx: ServiceContext, opts: { token: string; cook
       if (req.method === "GET" && url.pathname === "/health") return send(res, 200, { ok: true, version: productVersion() });
       // 设置页要看的有效配置。**只读** —— 不提供任何写入密钥的入口(见 service.productInfo)
       if (req.method === "GET" && url.pathname === "/product") return send(res, 200, productInfo(ctx));
+      if (req.method === "GET" && url.pathname === "/local-agents") return send(res, 200, await localAgents(ctx));
+      if (req.method === "POST" && url.pathname === "/local-agents/codex/login") {
+        await readBody(req);
+        return send(res, 202, startCodexSubscriptionLogin(ctx));
+      }
       if (req.method === "GET" && url.pathname === "/endpoints") return send(res, 200, listEndpoints(ctx, { layer: q.layer, market: q.market, q: q.q, enabled_only: q.enabled_only === "1", for_ui: q.all !== "1" }));
       // 界面查询:页面按**名字**要一屏数据,不点名物理端点(见 service.pageQuery)
       if (req.method === "GET" && parts[0] === "page" && parts[1] && parts.length === 2) {
@@ -155,6 +210,13 @@ export function createApiServer(ctx: ServiceContext, opts: { token: string; cook
         const b = await readBody(req);
         return send(res, 200, await runTool(ctx, parts[1], b));
       }
+      // 对话式工具：Agent 负责补问和组参数；条件齐备后仍由上面的同一条工具执行链真实运行。
+      if (req.method === "POST" && parts[0] === "guided-tool" && parts[1] && parts.length === 2) {
+        return await withRequestAbort(req, res, async (signal) => {
+          const b = await readBody(req);
+          return send(res, 200, await guidedToolTurn(ctx, parts[1], b as never, signal));
+        });
+      }
       if (req.method === "POST" && url.pathname === "/debate") {
         const b = (await readBody(req)) as { symbol?: string; session?: string; depth?: string };
         return send(res, 200, await debateStart(ctx, {
@@ -171,14 +233,37 @@ export function createApiServer(ctx: ServiceContext, opts: { token: string; cook
       if (req.method === "POST" && url.pathname === "/chat") {
         // body 里可带 `llm`(界面上选的模型 + 用户自己的 key)。
         // 🔴 key 只在这一次请求的内存里流转 —— 不写配置、不进日志、不入账本。
-        const b = await readBody(req);
-        return send(res, 200, await chatSend(ctx, b as never));
+        return await withRequestAbort(req, res, async (signal) => {
+          const b = await readBody(req);
+          return send(res, 200, await chatSend(ctx, b as never, signal));
+        });
+      }
+      // 外部 RSS 标题翻译：与自由对话分开，后端固定 developer 指令、schema 与一次性线程。
+      if (req.method === "POST" && url.pathname === "/translate-headlines") {
+        return await withRequestAbort(req, res, async (signal) => {
+          const b = await readBody(req);
+          return send(res, 200, await translateHeadlines(ctx, b as never, signal));
+        });
       }
       // 资料导入:上传截图 / 文本 → agent 转写成台账**草稿**(不直接落库,见 ingest.ts)。
       // base64 会把体积放大约 1/3,再留些余量给 JSON 外壳
       if (req.method === "POST" && url.pathname === "/import") {
         const b = await readBody(req, Math.ceil(IMPORT_MAX_TOTAL_BYTES * 1.4));
         return send(res, 200, await ingestFiles(ctx, b as never));
+      }
+      // 用户资料:上传后先提取正文并建立本地索引，成功才出现在列表。
+      if (req.method === "GET" && url.pathname === "/reports") return send(res, 200, reportsList(ctx));
+      if (req.method === "POST" && url.pathname === "/reports") {
+        const b = await readBody(req, Math.ceil(REPORT_MAX_BYTES * 1.4) + 16 * 1024);
+        return send(res, 200, await reportUpload(ctx, b));
+      }
+      if (req.method === "POST" && parts[0] === "reports" && parts[1] && parts[2] === "delete" && parts.length === 3) {
+        await readBody(req);
+        return send(res, 200, await reportDelete(ctx, { id: parts[1] }));
+      }
+      if (req.method === "GET" && parts[0] === "reports" && parts[1] && parts[2] === "download" && parts.length === 3) {
+        const found = reportDownload(ctx, parts[1]);
+        return found ? sendFile(res, found.path, found.report.name, reportMime(found.report.ext)) : send(res, 404, { error: "no_such_report" });
       }
       if (req.method === "POST" && url.pathname === "/research") { const b = await readBody(req); return send(res, 202, startResearch(ctx, b as never)); }
       if (req.method === "GET" && url.pathname === "/runs") return send(res, 200, listRuns(ctx, q.limit ? Number(q.limit) : undefined));
@@ -268,7 +353,7 @@ export function isLoopbackHost(host: string): boolean {
 
 /**
  * 解析 `--port`。
- * 🔴 **必须能接受 0**（0 = 让系统分配一个空闲端口，桌面版就靠它避开"端口被占"）。
+ * 🔴 **必须能接受 0**（0 = 让系统分配一个空闲端口，嵌入式启动方可用它避开"端口被占"）。
  *    原来写的是 `Number(x || 8765) || 8765` —— `0` 是 falsy，两个 `||` 各吃掉它一次,
  *    于是 `--port 0` 会**静默变成 8765**：不报错、看着正常、绑到了另一个端口。
  */
@@ -283,8 +368,7 @@ export function parsePortArg(args: readonly string[], fallback = 8765): number {
 
 /**
  * 这个文件是不是被当入口跑的。
- * 🔴 装机版跑的是**编译后的 `api.js`** —— 只认 `.ts` 的话打包出来的产品
- *    会「什么都不做地正常退出」，是最难查的那种失败。
+ * 源码开发走 `api.ts`，若以后部署编译产物也要识别 `api.js` / `api.mjs` / `api.cjs`。
  */
 export function isEntryPath(argv1: string | undefined): boolean {
   return /[\\/]api\.(ts|js|mjs|cjs)$/.test(argv1 ?? "");

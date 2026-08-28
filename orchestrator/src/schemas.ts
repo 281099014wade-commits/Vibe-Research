@@ -216,6 +216,8 @@ export const manifestSchema = () => ({
     quote_decision: { type: ["string", "null"] },
     endpoint_scope: { type: "string", enum: ["core", "full"] }, registry_version: { type: ["string", "null"] },
     knowledge_recalled: { type: ["object", "null"], additionalProperties: false, required: ["path", "as_of", "status", "truncated"], properties: { path: { type: "string" }, as_of: { type: "string" }, status: { type: "string" }, truncated: { type: "boolean" } } },
+    user_reports: { type: "array", maxItems: 5, items: { type: "object", additionalProperties: false, required: ["id", "name", "page"],
+      properties: { id: { type: "string", pattern: "^[0-9a-f]{32}$" }, name: { type: "string", minLength: 1, maxLength: 240 }, page: { type: ["integer", "null"], minimum: 1 } } } },
     test_scenario: { type: "boolean" },
     // 夹具播种运行:非 null 即**不是**一次完整的真实研究(见 fixture.ts)
     seeded_from: { type: ["object", "null"], additionalProperties: false,

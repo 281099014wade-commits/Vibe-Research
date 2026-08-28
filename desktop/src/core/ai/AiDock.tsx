@@ -27,6 +27,8 @@ export interface AiDockCopy {
   placeholder: string;
   /** 空对话时那条说明（免责声明一类，行业相关） */
   notice: string;
+  /** 运行时身份，例如 Codex Harness · 本地运行 */
+  runtime?: string;
 }
 
 export interface AiDockProps {
@@ -105,10 +107,18 @@ export function AiDock({ send, configured, copy, renderReplyActions, renderSetup
           <div className="absolute inset-0 bg-black/50" onClick={close} />
           <aside className="glass relative m-3 flex w-full max-w-md flex-col rounded-2xl">
             <div className="flex items-center justify-between gap-2 border-b border-border/60 p-4">
-              <span className="flex min-w-0 items-center gap-2 font-semibold text-glow">
-                <Sparkles className="h-4 w-4 shrink-0 text-primary" />
-                <span className="truncate">{copy.panel} · {page.title}</span>
-              </span>
+              <div className="min-w-0">
+                <span className="flex min-w-0 items-center gap-2 font-semibold text-glow">
+                  <Sparkles className="h-4 w-4 shrink-0 text-primary" />
+                  <span className="truncate">{copy.panel} · {page.title}</span>
+                </span>
+                {copy.runtime && (
+                  <span data-agent-runtime className="mt-1 flex items-center gap-1.5 pl-6 text-[10px] font-medium tracking-wide text-muted-foreground">
+                    <span className="h-1.5 w-1.5 rounded-full bg-success shadow-[0_0_7px_hsl(var(--success)/0.65)]" />
+                    {copy.runtime}
+                  </span>
+                )}
+              </div>
               <div className="flex shrink-0 items-center gap-1">
                 {chat.msgs.length > 0 && (
                   <button onClick={chat.clear} title="清空本页对话" aria-label="清空本页对话"

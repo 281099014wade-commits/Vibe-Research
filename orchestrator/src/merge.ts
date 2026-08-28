@@ -166,6 +166,8 @@ export interface Manifest {
   registry_version?: string | null;
   /** M2:召回的知识档案(null = 无 / 关闭)与归档 / 查看器产物路径 */
   knowledge_recalled?: { path: string; as_of: string; status: string; truncated: boolean } | null;
+  /** 本次运行实际注入的用户资料片段；最终报告的资料引用据此做机器校验。 */
+  user_reports?: { id: string; name: string; page: number | null }[];
   knowledge_archived?: { latest: string; run_file: string; gate_removed: number } | null;
   /** 温度计历史序列归档结果(null = 未归档:scenario / failed / 未开 archive) */
   thermo_archived?: { endpoints: string[]; appended: number; skipped: number; corrupt_moved: number } | null;

@@ -5,6 +5,7 @@ import { useAiPage } from "../../../core/ai/pageContext";
 import { GlassCard } from "@/components/ui/GlassCard";
 import { Disclaimer } from "@/components/ui/Disclaimer";
 import { api, ApiError, type PortfolioData } from "@/lib/api";
+import { normalizeMarketSymbol } from "@/lib/marketSymbol";
 import { cn } from "@/lib/utils";
 
 const REFRESH_MS = 30 * 60 * 1000; // 每半小时自动刷新
@@ -50,12 +51,13 @@ export function Portfolio() {
   }, [load]);
 
   const add = async () => {
-    if (!/^\d{6}$/.test(code.trim())) { setErr("请输入 6 位股票代码"); return; }
+    const symbol = normalizeMarketSymbol(code);
+    if (!symbol) { setErr("请输入 A 股、港股或美股代码"); return; }
     const s = parseFloat(shares), c = parseFloat(cost);
     if (!(s > 0) || !Number.isFinite(c)) { setErr("数量须大于 0，成本价请填数字（可为负）"); return; }
     setAdding(true); setErr(null);
     try {
-      setData(await api.addHolding(code.trim(), s, c));
+      setData(await api.addHolding(symbol, s, c));
       setCode(""); setShares(""); setCost("");
     } catch (e) {
       setErr(e instanceof ApiError ? e.message : "添加失败");
@@ -69,13 +71,14 @@ export function Portfolio() {
   };
 
   const addClose = async () => {
-    if (!/^\d{6}$/.test(cCode.trim())) { setErr("清仓记录：请输入 6 位代码"); return; }
+    const symbol = normalizeMarketSymbol(cCode);
+    if (!symbol) { setErr("清仓记录：请输入 A 股、港股或美股代码"); return; }
     const p = parseFloat(cPrice), s = parseFloat(cShares), c = parseFloat(cCost);
     if (!cDate) { setErr("请选清仓日期"); return; }
     if (!(p > 0) || !(s > 0) || !Number.isFinite(c)) { setErr("清仓价 / 股数须大于 0，成本请填数字（可为负）"); return; }
     setClosing(true); setErr(null);
     try {
-      setData(await api.closePosition(cCode.trim(), cDate, p, s, c));
+      setData(await api.closePosition(symbol, cDate, p, s, c));
       setCCode(""); setCDate(""); setCPrice(""); setCShares(""); setCCost("");
     } catch (e) {
       setErr(e instanceof ApiError ? e.message : "添加清仓记录失败");
@@ -89,12 +92,12 @@ export function Portfolio() {
   };
 
   const holdings = data?.holdings || [];
-  const totals = data?.totals;
+  const totals = data?.totals ?? [];
   const closed = data?.closed || [];
 
-  const aiContext = totals
-    ? `我的持仓（本地数据）：\n` + holdings.map((h) => `${h.name}(${h.code}) ${h.shares}股 成本${h.cost} 现价${h.price} 浮盈${h.pnl}(${h.pnl_pct}%)`).join("\n") +
-      `\n汇总：市值${totals.market_value} 总浮盈${totals.pnl}(${totals.pnl_pct == null ? "比例算不出：成本和 ≤ 0" : `${totals.pnl_pct}%`})`
+  const aiContext = holdings.length
+    ? `我的持仓（本地数据）：\n` + holdings.map((h) => `${h.name}(${h.code},${h.currency}) ${h.shares}股 成本${h.cost} 现价${h.price} 浮盈${h.pnl}(${h.pnl_pct}%)`).join("\n") +
+      `\n分币种汇总：\n${totals.map((t) => `${t.label} ${t.currency}：市值${t.market_value} 浮盈${t.pnl}(${t.pnl_pct == null ? "比例算不出：成本和 ≤ 0" : `${t.pnl_pct}%`})`).join("\n")}`
     : "我的持仓：暂无记录。";
 
   useAiPage({
@@ -126,22 +129,31 @@ export function Portfolio() {
       </div>
 
       {/* 汇总 */}
-      {totals && holdings.length > 0 && (
-        <div className="mb-4 grid grid-cols-2 gap-3 sm:grid-cols-4">
-          {[
-            { k: "总市值", v: fmt(totals.market_value), c: "text-foreground" },
-            { k: "总成本", v: fmt(totals.cost), c: "text-foreground" },
-            { k: "浮动盈亏", v: (totals.pnl > 0 ? "+" : "") + fmt(totals.pnl), c: pnlColor(totals.pnl) },
-            {
-              k: "盈亏比例",
-              // 成本和 ≤ 0 时这个比例没有意义（见 api.ts）——如实标出来，别显示成 0%
-              v: totals.pnl_pct == null ? "—" : (totals.pnl_pct > 0 ? "+" : "") + totals.pnl_pct + "%",
-              c: pnlColor(totals.pnl),
-            },
-          ].map((m) => (
-            <GlassCard key={m.k} className="p-3">
-              <p className="text-xs text-muted-foreground">{m.k}</p>
-              <p className={cn("mt-1 font-mono text-lg font-bold", m.c)}>{m.v}</p>
+      {totals.length > 0 && holdings.length > 0 && (
+        <div className="mb-4 grid gap-3 xl:grid-cols-3">
+          {totals.map((total) => (
+            <GlassCard key={total.currency} className="p-3">
+              <div className="mb-3 flex items-center justify-between">
+                <p className="font-semibold">{total.label}账户</p>
+                <span className="rounded-full border border-border px-2 py-0.5 font-mono text-[11px] text-muted-foreground">{total.currency}</span>
+              </div>
+              <div className="grid grid-cols-2 gap-3 sm:grid-cols-4 xl:grid-cols-2">
+                {[
+                  { k: "市值", v: fmt(total.market_value), c: "text-foreground" },
+                  { k: "成本", v: fmt(total.cost), c: "text-foreground" },
+                  { k: "浮动盈亏", v: (total.pnl > 0 ? "+" : "") + fmt(total.pnl), c: pnlColor(total.pnl) },
+                  {
+                    k: "盈亏比例",
+                    v: total.pnl_pct == null ? "—" : (total.pnl_pct > 0 ? "+" : "") + total.pnl_pct + "%",
+                    c: pnlColor(total.pnl),
+                  },
+                ].map((m) => (
+                  <div key={m.k}>
+                    <p className="text-[11px] text-muted-foreground">{m.k}</p>
+                    <p className={cn("mt-0.5 font-mono text-base font-bold", m.c)}>{m.v}</p>
+                  </div>
+                ))}
+              </div>
             </GlassCard>
           ))}
         </div>
@@ -153,8 +165,8 @@ export function Portfolio() {
         <div className="flex flex-wrap items-end gap-2">
           <div>
             <label className="mb-1 block text-xs text-muted-foreground">股票代码</label>
-            <input value={code} onChange={(e) => setCode(e.target.value.replace(/\D/g, "").slice(0, 6))} placeholder="6 位代码"
-              className="w-28 rounded-lg border border-border bg-black/20 px-3 py-2 text-sm outline-none focus:border-primary/50" />
+            <input value={code} onChange={(e) => setCode(e.target.value)} placeholder="600519 / AAPL / 00700.HK"
+              autoCapitalize="characters" className="w-52 rounded-lg border border-border bg-black/20 px-3 py-2 text-sm outline-none focus:border-primary/50" />
           </div>
           <div>
             <label className="mb-1 block text-xs text-muted-foreground">数量（股）</label>
@@ -171,7 +183,7 @@ export function Portfolio() {
             {adding ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />} 添加
           </button>
         </div>
-        <p className="mt-2 text-[11px] text-muted-foreground/60">同一代码再次添加会按加权平均成本合并（加仓）。</p>
+        <p className="mt-2 text-[11px] text-muted-foreground/60">支持 A 股、港股和美股。同一代码再次添加会按加权平均成本合并（加仓）。</p>
       </GlassCard>
 
       {err && (
@@ -204,6 +216,7 @@ export function Portfolio() {
                     <td className="px-2 py-2.5">
                       <span className="font-medium">{h.name}</span>
                       <span className="ml-1.5 font-mono text-xs text-muted-foreground/60">{h.code}</span>
+                      <span className="ml-1.5 rounded border border-border px-1 py-0.5 font-mono text-[10px] text-muted-foreground">{h.currency}</span>
                     </td>
                     <td className="px-2 py-2.5 font-mono">{fmtPx(h.price)}</td>
                     <td className="px-2 py-2.5 font-mono text-muted-foreground">{fmt(h.shares)}</td>
@@ -230,8 +243,8 @@ export function Portfolio() {
         <div className="flex flex-wrap items-end gap-2">
           <div>
             <label className="mb-1 block text-xs text-muted-foreground">股票代码</label>
-            <input value={cCode} onChange={(e) => setCCode(e.target.value.replace(/\D/g, "").slice(0, 6))} placeholder="6 位代码"
-              className="w-24 rounded-lg border border-border bg-black/20 px-3 py-2 text-sm outline-none focus:border-primary/50" />
+            <input value={cCode} onChange={(e) => setCCode(e.target.value)} placeholder="600519 / AAPL / 00700.HK"
+              autoCapitalize="characters" className="w-52 rounded-lg border border-border bg-black/20 px-3 py-2 text-sm outline-none focus:border-primary/50" />
           </div>
           <div>
             <label className="mb-1 block text-xs text-muted-foreground">清仓日期</label>

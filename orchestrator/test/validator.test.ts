@@ -360,7 +360,12 @@ test("report 阶段:章节 / 引用 / 状态 / gate", () => {
   fs.writeFileSync(path.join(d, "report.md"), good.replace("- 增长已兑现", "- 建议建仓"));
   let r = validateStage("report", loadRun(d));
   assert.ok(r.errors.some((e) => e.includes("合规 gate")));
+  const reportId = "a".repeat(32);
+  writeJson(path.join(d, "manifest.json"), { user_reports: [{ id: reportId, name: "研究.pdf", page: 3 }] });
   fs.writeFileSync(path.join(d, "report.md"), good);
+  r = validateStage("report", loadRun(d));
+  assert.ok(r.errors.some((e) => e.includes("用户资料引用不合格") && e.includes("没有保留任何")), r.errors.join("\n"));
+  fs.writeFileSync(path.join(d, "report.md"), good.replace("- 增长已兑现", `- 增长已兑现 [资料:${reportId} p.3]`));
   r = validateStage("report", loadRun(d));
   assert.deepEqual(r.errors, []);
   fs.writeFileSync(path.join(d, "report.md"), "# X 研究报告\n## 结论摘要\n- 引用 ev-abcdef\n");

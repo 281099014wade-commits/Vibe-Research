@@ -13,17 +13,21 @@ import { fileURLToPath } from "node:url";
 import { FETCH_ENV_KEYS, RUN_ID_RE, stages as packStages, fetchEnv } from "./config.ts";
 import { runAlerts, type AlertDiff } from "./alerts.ts";
 import { nowIso, readJsonIfExists } from "./fsutil.ts";
-import { ChatError, chatSend as chatSendCore, type ChatTurnResult } from "./chat.ts";
+import { ChatError, chatSend as chatSendCore, translateHeadlines as translateHeadlinesCore, type ChatTurnResult, type HeadlineTranslationResult } from "./chat.ts";
 import { templateMatrix, type LlmOverride } from "./runtime_provider.ts";
 import { DebateError, advanceDebate, startDebate, type DebateState } from "./debate.ts";
 import { IngestError, MAX_TOTAL_BYTES, ingestFiles as ingestFilesCore, type IngestFileInput, type IngestResult } from "./ingest.ts";
 import { LedgerError, kinds as ledgerKindDefs, labels as ledgerLabelDefs, listRecordsChecked, listRecords as listRecordsOf, removeRecord as removeLedgerRecord, upsertRecord as upsertLedgerRecord, type LedgerIssue, type LedgerRecord } from "./ledger.ts";
 import { recallKnowledge, type KnowledgeRecall } from "./knowledge.ts";
 import { loadProductConfig } from "./productConfig.ts";
-import { REGISTRY_REL, fetchArgv, loadRegistry, type EndpointDef } from "./registry.ts";
+import { REGISTRY_REL, buildStagePlan, fetchArgv, loadRegistry, type EndpointDef } from "./registry.ts";
 import { productVersion } from "./version.ts";
 import { DEFAULT_CONSISTENCY, readSnapshot, snapshotKey, snapshotUsable, writeSnapshot, type Consistency } from "./snapshot.ts";
 import { currentPlugin } from "./plugin.ts";
+import { ReportLibraryError, addReport, listReports as listStoredReports, removeReport, reportCitations, reportContext, reportFile, type ReportRecord } from "./report_library.ts";
+import { GuidedToolError, guidedToolTurn as guidedToolTurnCore, type GuidedToolReply } from "./guided_tool.ts";
+import { LocalAgentError, probeClaude, probeCodex, startCodexLogin, type LocalAgentStatus } from "./local_agent_runtime.ts";
+import { sdkCodexVersion } from "./runner.ts";
 
 
 export interface ServiceContext { repoRoot: string; dataRoot: string; python: string; node: string; providerEnvKey: string | null }
@@ -375,6 +379,20 @@ export function startResearch(ctx: ServiceContext, req: { symbol: string; market
   for (const s of stages) if (!packStages().includes(s)) throw new ServiceError("bad_stage", `未知阶段 ${show(s)}`);
   const scope = assertScope(req.endpoints);
   const kn = assertKnowledgeFlag(req.knowledge);
+  // 用户入口不能启动一条“六个阶段都在、实际一个必需取数端点都没有”的空研究。
+  // 这不是按市场名写死：换垂类后仍按它自己的注册表与阶段计划判断。
+  const reg = loadRegistry(ctx.repoRoot);
+  if (reg) {
+    const selected = stages.length ? stages : packStages();
+    const plan = buildStagePlan(reg, selected, { market, scope });
+    const required = selected.reduce((n, stage) => n + (plan[stage]?.required.length ?? 0), 0);
+    if (required === 0) {
+      throw new ServiceError(
+        "unsupported_market",
+        "当前研究底座还没有这个市场的完整取数链；已上传资料仍可在 Agent 对话中检索，但不会启动空研究消耗模型额度",
+      );
+    }
+  }
   const runId = req.run_id !== undefined ? assertRunId(req.run_id) : `${new Date().toISOString().replace(/[-:T]/g, "").slice(0, 15)}-${symbol}-svc`;
   const runDir = safePath(ctx, "runs", runId);
   fs.mkdirSync(safePath(ctx, "logs"), { recursive: true });
@@ -488,7 +506,26 @@ export function evidenceAlerts(
   }
 }
 
-export function listRuns(ctx: ServiceContext, limit = 50): { run_id: string; status: string | null; symbol: string | null; market: string | null; started_at: string | null; finished_at: string | null; stages_done: number | null; stages_total: number | null; test_scenario: boolean }[] {
+/**
+ * 从已落盘的公司画像证据取简称。归档不为了显示名称再发网络请求，
+ * 也不从 agent 写的 summary 里用正则猜。坏文件 / 链接 / 异常形状一律降级为 null。
+ */
+function runCompanyName(ctx: ServiceContext, runId: string): string | null {
+  try {
+    const file = safePath(ctx, "runs", runId, "fetch", "fetch_profile.json");
+    if (!fs.existsSync(file) || !fs.lstatSync(file).isFile()) return null;
+    const envelope = readJsonIfExists<{ evidence?: unknown }>(file);
+    if (!Array.isArray(envelope?.evidence)) return null;
+    const hit = (envelope.evidence as { field?: unknown; value?: unknown }[])
+      .find((e) => e?.field === "security_name" && typeof e.value === "string");
+    const name = typeof hit?.value === "string" ? hit.value.trim() : "";
+    return name && name.length <= 80 && !/[\u0000-\u001f\u007f]/.test(name) ? name : null;
+  } catch {
+    return null;
+  }
+}
+
+export function listRuns(ctx: ServiceContext, limit = 50): { run_id: string; status: string | null; symbol: string | null; name: string | null; market: string | null; started_at: string | null; finished_at: string | null; stages_done: number | null; stages_total: number | null; test_scenario: boolean }[] {
   const root = path.join(path.resolve(ctx.dataRoot), "runs");
   if (!fs.existsSync(root)) return [];
   const n = Math.min(Math.max(Number(limit) || 50, 1), 500);
@@ -501,6 +538,7 @@ export function listRuns(ctx: ServiceContext, limit = 50): { run_id: string; sta
       run_id: d,
       status: (m?.status as string) ?? null,
       symbol: (m?.symbol as string) ?? null,
+      name: runCompanyName(ctx, d),
       // 🔴 市场要一起给：同一代码不同市场**不是时间序列**，比较两次运行必须同市场
       //    （alerts 那条链路会为此报错）。前端猜不出来，只能由这里下发。
       market: (m?.market as string) ?? null,
@@ -798,6 +836,30 @@ export function productInfo(ctx: ServiceContext): Record<string, unknown> {
   };
 }
 
+/** 设置页的真实本机运行时状态。只返回可公开的版本与布尔状态，不返回路径、账号或组织。 */
+export async function localAgents(ctx: ServiceContext, env: NodeJS.ProcessEnv = process.env): Promise<LocalAgentStatus[]> {
+  const pc = loadProductConfig(ctx.repoRoot, { requireAuth: false, env });
+  const codexBin = pc.resolved.codexPath ?? sdkCodexVersion().binary;
+  return await Promise.all([
+    probeCodex(codexBin, pc.resolved.codexHome, env),
+    probeClaude(env),
+  ]);
+}
+
+/** 启动产品隔离 CODEX_HOME 的官方浏览器登录；绝不复用或改写用户全局 ~/.codex。 */
+export function startCodexSubscriptionLogin(
+  ctx: ServiceContext, env: NodeJS.ProcessEnv = process.env,
+): { state: "started" | "pending" } {
+  const pc = loadProductConfig(ctx.repoRoot, { requireAuth: false, env });
+  const codexBin = pc.resolved.codexPath ?? sdkCodexVersion().binary;
+  try {
+    return startCodexLogin(codexBin, pc.resolved.codexHome, env);
+  } catch (e) {
+    if (e instanceof LocalAgentError) throw new ServiceError(e.code, e.message);
+    throw e;
+  }
+}
+
 /**
  * 开一场多空辩论:**现在**把资料包拉一次,之后所有角色共用这一份。
  *
@@ -958,12 +1020,89 @@ function checkLlmShape(llm: unknown): LlmOverride | undefined {
   return o as unknown as LlmOverride;
 }
 
-export async function chatSend(ctx: ServiceContext, req: { session?: string; message: string; llm?: LlmOverride }): Promise<ChatTurnResult> {
+export interface ChatServiceResult extends ChatTurnResult {
+  report_sources: { id: string; name: string; page: number | null }[];
+}
+
+export async function chatSend(
+  ctx: ServiceContext,
+  req: { session?: string; message: string; llm?: LlmOverride },
+  signal?: AbortSignal,
+): Promise<ChatServiceResult> {
   const llm = checkLlmShape(req.llm);
   try {
-    return await chatSendCore(
-      { repoRoot: ctx.repoRoot, dataRoot: ctx.dataRoot, python: ctx.python },
+    const reports = reportContext(ctx.dataRoot, String(req.message ?? ""), { limit: 5 });
+    const turn = await chatSendCore(
+      {
+        repoRoot: ctx.repoRoot,
+        dataRoot: ctx.dataRoot,
+        python: ctx.python,
+        signal,
+        ...(reports ? {
+          contextText: reports.text,
+          reportSources: reports.hits.map((x) => ({ id: x.id, name: x.name, page: x.page })),
+        } : {}),
+      },
       { ...req, ...(llm ? { llm } : {}) },
+    );
+    const used = new Set(reportCitations(turn.reply).map((x) => `${x.id}\u0000${x.page ?? "-"}`));
+    return {
+      ...turn,
+      report_sources: reports?.hits
+        .filter((x) => used.has(`${x.id}\u0000${x.page ?? "-"}`))
+        .map((x) => ({ id: x.id, name: x.name, page: x.page })) ?? [],
+    };
+  } catch (e) {
+    if (e instanceof ChatError) throw new ServiceError(e.code, e.message);
+    if (e instanceof ReportLibraryError) throw new ServiceError(e.code, e.message);
+    throw e;
+  }
+}
+
+// ---------------- 用户资料库 ----------------
+// 原文件与提取文本都在用户数据根；API 只返回展示字段，不回传 sha256 / 磁盘路径。
+export interface ReportSummary {
+  id: string; name: string; size: number; ext: string; ts: number; uploaded_at: string;
+  chars: number; pages: number | null; truncated: boolean; symbols: string[];
+}
+
+const reportSummary = (r: ReportRecord): ReportSummary => ({
+  id: r.id, name: r.name, size: r.size, ext: r.ext.replace(/^\./, "").toUpperCase(), ts: r.ts, uploaded_at: r.uploaded_at,
+  chars: r.chars, pages: r.pages, truncated: r.truncated, symbols: [...r.symbols],
+});
+
+export function reportsList(ctx: ServiceContext): ReportSummary[] {
+  try { return listStoredReports(ctx.dataRoot).map(reportSummary); }
+  catch (e) { if (e instanceof ReportLibraryError) throw new ServiceError(e.code, e.message); throw e; }
+}
+
+export async function reportUpload(ctx: ServiceContext, req: { name?: unknown; content?: unknown }): Promise<ReportSummary> {
+  try { return reportSummary(await addReport(ctx.dataRoot, { name: req?.name, content: req?.content })); }
+  catch (e) { if (e instanceof ReportLibraryError) throw new ServiceError(e.code, e.message); throw e; }
+}
+
+export async function reportDelete(ctx: ServiceContext, req: { id?: unknown }): Promise<{ removed: boolean }> {
+  try { return { removed: await removeReport(ctx.dataRoot, req?.id) }; }
+  catch (e) { if (e instanceof ReportLibraryError) throw new ServiceError(e.code, e.message); throw e; }
+}
+
+export function reportDownload(ctx: ServiceContext, id: unknown): { report: ReportSummary; path: string } | null {
+  try { const found = reportFile(ctx.dataRoot, id); return found ? { report: reportSummary(found.record), path: found.path } : null; }
+  catch (e) { if (e instanceof ReportLibraryError) throw new ServiceError(e.code, e.message); throw e; }
+}
+
+/** 标题翻译专用入口：固定 developer 指令 + schema + 一次性线程，不能退化成普通对话。 */
+export async function translateHeadlines(
+  ctx: ServiceContext,
+  req: { items: { id: string; title: string }[]; llm?: LlmOverride },
+  signal?: AbortSignal,
+): Promise<HeadlineTranslationResult> {
+  if (!req || typeof req !== "object" || Array.isArray(req)) throw new ServiceError("bad_translation_items", "标题翻译请求必须是对象");
+  const llm = checkLlmShape(req.llm);
+  try {
+    return await translateHeadlinesCore(
+      { repoRoot: ctx.repoRoot, dataRoot: ctx.dataRoot, python: ctx.python, signal },
+      { items: req.items, ...(llm ? { llm } : {}) },
     );
   } catch (e) {
     if (e instanceof ChatError) throw new ServiceError(e.code, e.message);
@@ -1031,4 +1170,34 @@ export async function runTool(
 /** 界面要用的工具清单(名字 + 显示名),由垂类下发 —— 前端不写死一份 */
 export function listTools(): { name: string; label: string }[] {
   return Object.entries(currentPlugin().tools ?? {}).map(([name, t]) => ({ name, label: t.label }));
+}
+
+/** 对话引导 → 参数齐备 → 跑垂类工具 → 生成报告。Core 不认识具体工具参数。 */
+export async function guidedToolTurn(
+  ctx: ServiceContext,
+  name: string,
+  req: { session?: unknown; message?: unknown; llm?: unknown },
+  signal?: AbortSignal,
+): Promise<GuidedToolReply> {
+  const spec = Object.prototype.hasOwnProperty.call(currentPlugin().tools ?? {}, name)
+    ? currentPlugin().tools?.[name]
+    : undefined;
+  if (!spec) throw new ServiceError("not_found", `没有这个工具:${name}`);
+  const llm = checkLlmShape(req.llm);
+  try {
+    return await guidedToolTurnCore(
+      { repoRoot: ctx.repoRoot, dataRoot: ctx.dataRoot, python: ctx.python, signal },
+      {
+        name,
+        label: spec.label,
+        session: String(req.session ?? ""),
+        message: String(req.message ?? ""),
+        ...(llm ? { llm } : {}),
+      },
+      { chat: chatSendCore, runTool: (tool, body) => runTool(ctx, tool, body) },
+    );
+  } catch (e) {
+    if (e instanceof GuidedToolError) throw new ServiceError(e.code, e.message);
+    throw e;
+  }
 }

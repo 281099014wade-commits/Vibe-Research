@@ -251,27 +251,3 @@ test("Core 不许出现垂类的阶段名 / 市场代码字面量,也不许 impo
 function stripComments(text: string): string {
   return text.replace(/\/\*[\s\S]*?\*\//g, "").split("\n").map((l) => l.replace(/\/\/.*$/, "")).join("\n");
 }
-
-/**
- * 桌面外壳（`shell/`）也是 Core。
- *
- * 它开窗口、拉起服务、装载界面 —— 换个行业**一行都不该改**。所以同一张词表也管着它。
- * 🔴 单独写一条而不是把 `shell/src` 并进 `coreFiles()`：那会改动上面几条棘轮的取值口径，
- *    而"改棘轮自己"正是最容易把它悄悄弄松的动作。
- * 🔴 先断言"确实扫到了文件" —— 目录改名 / 搬走时，遍历返回空数组会让这条**全绿地什么都没查**
- *    （前端边界棘轮就这么静默失效过一次）。
- */
-test("桌面外壳也是 Core：不许出现行业词", () => {
-  const shellSrc = path.join(HERE, "..", "..", "shell", "src");
-  const files = fs.existsSync(shellSrc)
-    ? fs.readdirSync(shellSrc).filter((f) => f.endsWith(".ts")).sort()
-    : [];
-  assert.ok(files.length >= 5, `没扫到外壳源码（${files.length} 个），路径大概不对：${shellSrc}`);
-  const hits: string[] = [];
-  for (const f of files) {
-    const n = countDomainTerms(fs.readFileSync(path.join(shellSrc, f), "utf8"));
-    const total = Object.values(n).reduce((a, b) => a + b, 0);
-    if (total) hits.push(`${f}: ${Object.entries(n).map(([k, v]) => `${k}×${v}`).join(", ")}`);
-  }
-  assert.deepEqual(hits, [], `外壳里出现了行业词 —— 它换个行业要能原样搬走：\n${hits.join("\n")}`);
-});

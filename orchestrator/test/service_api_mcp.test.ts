@@ -41,6 +41,9 @@ json.dump(env, open(os.path.join(out,'fetch',ep+'.json'),'w')); print(json.dumps
   fs.mkdirSync(path.join(dataRoot, "runs", "r1", "fetch"), { recursive: true });
   writeJson(path.join(dataRoot, "runs", "r1", "manifest.json"), { run_id: "r1", symbol: "300308", status: "complete", exit_code: 0, stages: [{ stage: "profile", status: "complete", attempts: 1 }], evidence_count: 1, calculation_count: 0, started_at: "2026-01-01T00:00:00+08:00", finished_at: "2026-01-01T00:10:00+08:00" });
   writeJson(path.join(dataRoot, "runs", "r1", "evidence.json"), [{ id: "ev-111111", field: "price", value: 9, source: "tencent" }, { id: "ev-222222", field: "pe_ttm", value: 50, source: "tencent" }]);
+  writeJson(path.join(dataRoot, "runs", "r1", "fetch", "fetch_profile.json"), {
+    evidence: [{ id: "ev-name", field: "security_name", value: "中际旭创" }],
+  });
   fs.writeFileSync(path.join(dataRoot, "runs", "r1", "report.md"), "# 报告\n");
   fs.writeFileSync(path.join(dataRoot, "runs", "r1", "viewer.html"), "<html></html>");
   fs.writeFileSync(path.join(dataRoot, "runs", "r1", "events.jsonl"), JSON.stringify({ type: "run.done" }) + "\n");
@@ -92,7 +95,7 @@ test("service:端点列表 / 取数(子进程 + 落 .local/mcp,只带 auth_env,s
   assert.equal(getReport(ctx, "r1").report, "# 报告\n");
   assert.equal(getEvidence(ctx, "r1", { field: "pe_ttm" }).total, 1);
   assert.equal(getEvidence(ctx, "r1", { q: "tencent" }).total, 2);
-  assert.equal(listRuns(ctx)[0].run_id, "r1");
+  assert.deepEqual({ run_id: listRuns(ctx)[0].run_id, name: listRuns(ctx)[0].name }, { run_id: "r1", name: "中际旭创" });
   assert.equal(knowledgeRecall(ctx, "300308", "SZ"), null);
   assert.throws(() => knowledgeRecall(ctx, "300308", "XX"), (e: unknown) => e instanceof ServiceError && e.code === "bad_market");
   const red = redact("x ?token=abc&key=def https://h/p?sig=1 api_key: sk-1");
@@ -138,6 +141,16 @@ test("service:startResearch 立即返回相对路径;子进程最小环境(resea
   assert.equal(r.log, "logs/svc-test-1.log");
   noAbs(r, ctx);
   assert.ok(fs.existsSync(path.join(ctx.dataRoot, r.log)));
+  assert.throws(
+    () => startResearch(ctx, { symbol: "00700", market: "HK", no_agent: true, run_id: "svc-hk" }),
+    (e: unknown) => e instanceof ServiceError && e.code === "unsupported_market",
+    "港股没有完整必需取数链时不应空跑并消耗模型额度",
+  );
+  assert.throws(
+    () => startResearch(ctx, { symbol: "NVDA", market: "US", no_agent: true, run_id: "svc-us" }),
+    (e: unknown) => e instanceof ServiceError && e.code === "unsupported_market",
+    "美股没有完整必需取数链时不应空跑并消耗模型额度",
+  );
   const env = researchEnv(ctx, { PATH: "/bin", HOME: "/h", OPENAI_API_KEY: "sk-prov", VRA_SEC_CONTACT: "c", AWS_SECRET_ACCESS_KEY: "leak", GITHUB_TOKEN: "leak", CODEX_API_KEY: "leak", HTTPS_PROXY: "p" });
   assert.deepEqual(Object.keys(env).sort(), ["HOME", "HTTPS_PROXY", "OPENAI_API_KEY", "PATH", "VRA_SEC_CONTACT"]);
   assert.throws(() => startResearch(ctx, { symbol: "300308", market: "XX" }), (e: unknown) => e instanceof ServiceError && e.code === "bad_market");
@@ -169,6 +182,10 @@ test("HTTP API:token 必需 / 非本机 Origin 403 / 跨站 403 / 非 JSON POST 
     assert.equal((await call("POST", "/fetch", { endpoint: "em_reports", symbol: "300308" }, { "Sec-Fetch-Site": "cross-site" })).code, 403);
     assert.equal((await call("POST", "/fetch", "{}", { "Content-Type": "text/plain" })).code, 415);
     assert.equal((await call("GET", "/health", undefined, { Origin: "http://localhost:5173" })).code, 200);
+    const agents = await call("GET", "/local-agents");
+    assert.equal(agents.code, 200);
+    assert.deepEqual((agents.json as { provider: string }[]).map((x) => x.provider), ["cli-codex", "cli-claude"]);
+    assert.ok(!agents.text.includes(ctx.repoRoot) && !agents.text.includes(ctx.dataRoot) && !agents.text.includes("@"), "运行时探针不应回传路径或账号");
     const eps = await call("GET", "/endpoints?market=US&q=yahoo");
     assert.equal(eps.code, 200);
     assert.ok((eps.json as unknown[]).length >= 1);
@@ -186,6 +203,21 @@ test("HTTP API:token 必需 / 非本机 Origin 403 / 跨站 403 / 非 JSON POST 
     assert.equal((await call("GET", "/runs/nope/viewer")).code, 404);
     assert.equal((await call("GET", "/runs/..%2Fx/status")).code, 400);
     assert.equal((await call("GET", "/knowledge/SZ/300308")).code, 200);
+    // 用户研报：上传即提取正文并建索引；列表不泄露磁盘路径 / sha；原文件可下载；删除走 POST。
+    const reportBody = Buffer.from("300308 中际旭创研报：高速光模块需求增长", "utf8");
+    const up = await call("POST", "/reports", { name: "300308-test.md", content: `data:text/markdown;base64,${reportBody.toString("base64")}` });
+    assert.equal(up.code, 200);
+    const reportId = (up.json as { id: string }).id;
+    assert.match(reportId, /^[0-9a-f]{32}$/);
+    const reportList = await call("GET", "/reports");
+    assert.equal(reportList.code, 200);
+    assert.equal((reportList.json as unknown[]).length, 1);
+    assert.ok(!reportList.text.includes(ctx.dataRoot) && !reportList.text.includes("sha256") && !reportList.text.includes("text_file"));
+    const dl = await call("GET", `/reports/${reportId}/download`);
+    assert.equal(dl.code, 200); assert.equal(dl.text, reportBody.toString("utf8"));
+    const del = await call("POST", `/reports/${reportId}/delete`, { id: "ffffffffffffffffffffffffffffffff" });
+    assert.equal(del.code, 200); assert.deepEqual(del.json, { removed: true }, "删除必须认 URL 里的 id，不能被请求体覆盖");
+    assert.equal(((await call("GET", "/reports")).json as unknown[]).length, 0);
     assert.equal((await call("GET", "/nope")).code, 404);
     // 薄 UI:/login 用 token 换 Cookie;Cookie 只对只读 GET 有效;POST 仍只认 Bearer
     const login = await new Promise<{ code: number; cookie: string; loc: string }>((resolve, reject) => {
@@ -421,14 +453,6 @@ test("displayUrl 剥掉用户名 / 密码 / 查询串 / 片段", () => {
   assert.ok(!displayUrl("https://h.example/v1?x=1\n\nSECRET")!.includes("SECRET"));
 });
 
-test("🔴 researchEnv 透传 ELECTRON_RUN_AS_NODE：装机版的 node 就是 Electron 二进制,丢了它子进程会去开窗口", () => {
-  const env = { ELECTRON_RUN_AS_NODE: "1", PATH: "/usr/bin", HOME: "/Users/x", MIMO_API_KEY: "k", RANDOM_SECRET: "s" };
-  const out = researchEnv({ providerEnvKey: "MIMO_API_KEY" }, env);
-  assert.equal(out.ELECTRON_RUN_AS_NODE, "1");
-  assert.equal(out.MIMO_API_KEY, "k");
-  assert.equal(out.RANDOM_SECRET, undefined, "不相干的变量仍然不透传");
-});
-
 test("🔴 /chat 的 llm 在**边界**上校验形状 —— 畸形负载给可读的 400，不是 500", async () => {
   const ctx: ServiceContext = { repoRoot: REPO, dataRoot: fs.mkdtempSync(path.join(os.tmpdir(), "vra-llmshape-")), python: "python3", node: process.execPath, providerEnvKey: null };
   const bad: [unknown, string][] = [
@@ -450,4 +474,51 @@ test("🔴 /chat 的 llm 在**边界**上校验形状 —— 畸形负载给可�
     );
   }
   fs.rmSync(ctx.dataRoot, { recursive: true, force: true });
+});
+
+test("浏览器断开 /chat 后，API 会把取消信号传到底层并结束本机 Claude 进程", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "vra-api-abort-"));
+  const bin = path.join(root, "claude");
+  const pidFile = path.join(root, "claude.pid");
+  fs.writeFileSync(bin, `#!${process.execPath}
+const fs=require('node:fs');
+fs.writeFileSync(process.env.TEST_CLAUDE_PID,String(process.pid));
+setInterval(()=>{},1000);
+`, { mode: 0o700 });
+  const ctx: ServiceContext = {
+    repoRoot: REPO, dataRoot: path.join(root, "data"), python: "python3",
+    node: process.execPath, providerEnvKey: null,
+  };
+  fs.mkdirSync(ctx.dataRoot, { recursive: true });
+  const oldBin = process.env.CLAUDE_BIN;
+  const oldPid = process.env.TEST_CLAUDE_PID;
+  process.env.CLAUDE_BIN = bin;
+  process.env.TEST_CLAUDE_PID = pidFile;
+  const server = createApiServer(ctx, { token: TOKEN });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const port = (server.address() as { port: number }).port;
+    const request = http.request({
+      host: "127.0.0.1", port, path: "/chat", method: "POST",
+      headers: { Authorization: `Bearer ${TOKEN}`, "Content-Type": "application/json" },
+    });
+    request.on("error", () => { /* 主动 destroy 的预期结果 */ });
+    request.end(JSON.stringify({ session: "abort-live", message: "等待", llm: { provider: "cli-claude" } }));
+    for (let i = 0; i < 50 && !fs.existsSync(pidFile); i += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    assert.ok(fs.existsSync(pidFile), "假 Claude 必须真的启动，才能证明取消链路");
+    const pid = Number(fs.readFileSync(pidFile, "utf8"));
+    request.destroy();
+    for (let i = 0; i < 100; i += 1) {
+      try { process.kill(pid, 0); } catch { break; }
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    assert.throws(() => process.kill(pid, 0), /ESRCH/);
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    if (oldBin === undefined) delete process.env.CLAUDE_BIN; else process.env.CLAUDE_BIN = oldBin;
+    if (oldPid === undefined) delete process.env.TEST_CLAUDE_PID; else process.env.TEST_CLAUDE_PID = oldPid;
+    fs.rmSync(root, { recursive: true, force: true });
+  }
 });

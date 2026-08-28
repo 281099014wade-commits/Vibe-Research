@@ -14,6 +14,7 @@ const KIND_COLOR: Record<string, string> = {
   复盘: "bg-primary/15 text-primary",
   今日要点: "bg-warning/15 text-warning",
   问AI: "bg-success/15 text-success",
+  "问 Agent": "bg-success/15 text-success",
   多空辩论: "bg-sky-500/15 text-sky-400",
   反思审计: "bg-violet-500/15 text-violet-400",
 };
@@ -74,7 +75,7 @@ export function Notes() {
     <div>
       <PageHeader
         title="研究记录"
-        subtitle="把 AI 复盘 / 要点 / 问答沉淀在本地，随时回看。数据只存本地、不上传。"
+        subtitle="把 Agent 复盘 / 要点 / 问答沉淀在本地，随时回看。数据只存本地、不上传。"
         actions={notes.length > 0 && (
           <button onClick={async () => {
               if (!confirm("清空所有研究记录？")) return;
@@ -91,7 +92,7 @@ export function Notes() {
         <GlassCard>
           <div className="flex flex-col items-center gap-2 py-10 text-center text-sm text-muted-foreground">
             <NotebookPen className="h-8 w-8 text-muted-foreground/40" />
-            还没有记录。在「每日复盘」「资讯雷达」或「问 AI」里点 <b className="text-foreground">「存入沉淀」</b> 保存分析结果。
+            还没有记录。在「每日复盘」「资讯雷达」或「问 Agent」里点 <b className="text-foreground">「存入沉淀」</b> 保存分析结果。
           </div>
         </GlassCard>
       ) : (
@@ -124,7 +125,7 @@ export function Notes() {
                         {reflecting && reflectId === n.id ? "审计中…" : "反思审计"}
                       </button>
                       <span className="text-[11px] text-muted-foreground/70">
-                        让 AI 回头审这段推理：哪些有数据撑着、哪些是脑补、最脆弱的一环在哪
+                        让 Agent 回头审这段推理：哪些有数据撑着、哪些是脑补、最脆弱的一环在哪
                       </span>
                     </div>
 

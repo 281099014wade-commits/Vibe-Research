@@ -20,7 +20,7 @@ const HERE = path.dirname(fileURLToPath(import.meta.url));
 const REPO = path.join(HERE, "..", "..");
 
 /** 扫这些目录下的文本源码。构建产物与依赖不扫。 */
-const ROOTS = ["orchestrator/src", "orchestrator/test", "desktop/src", "shell/src", "shell/test",
+const ROOTS = ["orchestrator/src", "orchestrator/test", "desktop/src",
                "backtest", "calc", "datasources", "scripts", ".agents/skills"];
 const SKIP = new Set(["node_modules", "__pycache__", ".pytest_cache", "dist", "build",
                       ".venv", "payload", "release", ".local", "fixtures"]);
@@ -47,6 +47,11 @@ test("每个根目录都真的扫到了东西 —— 目录改名后这条棘轮
   //    而"某一个根扫出 0"才是真正要抓的那种失效 —— 总数阈值放得宽一点就漏掉了。
   const empty = [...byRoot].filter(([, v]) => v.length === 0).map(([k]) => k);
   assert.deepEqual(empty, [], `这些根一个文件都没扫到,路径是不是改了:${empty.join(", ")}`);
+});
+
+test("源码发行只保留浏览器 UI，不带 Electron/DMG 客户端", () => {
+  assert.equal(fs.existsSync(path.join(REPO, "shell")), false,
+    "shell/ 是已停用的 Electron 客户端；浏览器 UI 只在 desktop/ 维护");
 });
 
 test("🔴 源码里不许有裸 NUL 字节 —— git 会把文件判成二进制,而编译器不报错", () => {

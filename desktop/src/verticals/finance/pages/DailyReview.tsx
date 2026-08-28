@@ -211,7 +211,7 @@ export function DailyReview() {
           比没有日期更容易误读。业务日还没拿到就先不写日期,别先写一个再改。 */}
       <PageHeader
         title="每日复盘"
-        subtitle={`${bizDay ? `${bizDay} · ` : ""}大盘 / 情绪 / 板块资金一屏看全，交给你的 AI 做复盘`}
+        subtitle={`${bizDay ? `${bizDay} · ` : ""}大盘 / 情绪 / 板块资金一屏看全，交给本地 Agent 做复盘`}
       />
 
       {pageErr && (
@@ -304,9 +304,9 @@ export function DailyReview() {
         <div className="mb-3 flex gap-2">
           <input
             value={watchInput}
-            onChange={(e) => setWatchInput(e.target.value.replace(/[^\d,\s]/g, "").slice(0, 80))}
+            onChange={(e) => setWatchInput(e.target.value.slice(0, 80))}
             onKeyDown={(e) => e.key === "Enter" && addWatch()}
-            placeholder="加自选：可批量，如 600519 000858"
+            placeholder="加自选：600519 AAPL 00700.HK"
             className="w-60 rounded-lg border border-border bg-black/20 px-3 py-2 text-sm outline-none focus:border-primary/50"
           />
           <button onClick={addWatch}
@@ -326,7 +326,10 @@ export function DailyReview() {
                     className="absolute right-1.5 top-1.5 text-muted-foreground/40 opacity-0 transition-opacity hover:text-destructive group-hover:opacity-100">
                     <X className="h-3.5 w-3.5" />
                   </button>
-                  <p className="truncate text-xs text-muted-foreground">{q?.name || c}</p>
+                  <p className="truncate text-xs text-muted-foreground">
+                    {q?.name || c}
+                    {q && <span className="ml-1.5 rounded border border-border px-1 py-0.5 font-mono text-[9px]">{q.currency}</span>}
+                  </p>
                   <p className={cn("mt-1 font-mono text-lg font-bold", q ? pctColor(q.change_pct) : "text-muted-foreground/40")}>{q?.price ?? "—"}</p>
                   <p className={cn("text-xs", q ? pctColor(q.change_pct) : "text-muted-foreground/40")}>
                     {q?.change_pct == null ? c : `${q.change_pct > 0 ? "+" : ""}${q.change_pct}%`}
@@ -338,20 +341,20 @@ export function DailyReview() {
         )}
       </GlassCard>
 
-      {/* 3. AI 当日复盘 */}
+      {/* 3. Agent 当日复盘 */}
       <GlassCard glow className="mb-6">
         <div className="flex items-center justify-between">
-          <h3 className="flex items-center gap-1.5 font-semibold"><Sparkles className="h-4 w-4 text-primary" /> AI 当日复盘</h3>
+          <h3 className="flex items-center gap-1.5 font-semibold"><Sparkles className="h-4 w-4 text-primary" /> Agent 当日复盘</h3>
           <button onClick={runReview} disabled={reviewLoading}
             className="inline-flex items-center gap-1.5 rounded-lg bg-primary/15 px-4 py-2 text-sm font-medium text-primary shadow-glow hover:bg-primary/25 disabled:opacity-50">
             {reviewLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Sparkles className="h-4 w-4" />}
-            {review ? "重新复盘" : "让 AI 复盘今天"}
+            {review ? "重新复盘" : "让 Agent 复盘今天"}
           </button>
         </div>
         {needConfig && (
           <div className="mt-3 flex items-center gap-2 rounded-lg border border-warning/30 bg-warning/5 p-3 text-sm text-muted-foreground">
             <AlertCircle className="h-4 w-4 shrink-0 text-warning" />
-            还没接入 AI。<Link to="/settings" className="text-primary">先去接入你的 AI</Link>，之后一键出复盘。
+            Agent 还没有可用模型。<Link to="/settings" className="text-primary">先为 Agent 选择模型</Link>，之后一键出复盘。
           </div>
         )}
         {reviewErr && (
@@ -365,7 +368,10 @@ export function DailyReview() {
             {!reviewLoading && <div className="mt-3"><SaveNoteButton kind="复盘" title={`每日复盘 ${bizDay ?? "（业务日未知）"}`} content={review} /></div>}
           </>
         ) : !needConfig && !reviewErr && !reviewLoading ? (
-          <p className="mt-3 text-sm text-muted-foreground">点上方按钮，系统把当天客观数据打包给你的 AI，由它生成复盘。<b className="text-foreground">分析是它给的，我们只负责喂数据。</b></p>
+          <p className="mt-3 text-sm text-muted-foreground">
+            快速复盘会把这一屏已经取到的客观数据、缺口与读法护栏交给所选模型整理；它不会启动完整研究工具链。
+            需要完整的多阶段流程，请进入<Link to="/research" className="text-primary hover:underline">个股研究</Link>。
+          </p>
         ) : null}
       </GlassCard>
 

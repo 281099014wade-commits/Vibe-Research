@@ -15,6 +15,7 @@ import { complianceGate, missingSections, referencedIds, reportStatusToken } fro
 import { extraSectionErrors, requiredExtraSections } from "./report_sections.ts";
 import { checkNumberFidelity, quotedHistory } from "./number_fidelity.ts";
 import { resultProjection, type ResultProjectionItem } from "./calc_projection.ts";
+import { reportCitationErrors, type ReportSourceRef } from "./report_library.ts";
 
 /** 复算:对每条 calc 记录用同样的函数 / 实参 / 引用重新调用 calc cli,比对 id / status / value / unit / inputs_resolved 与退出码。*/
 export type CalcVerifier = (cfg: RunConfig, run: RunView) => ValidationResult;
@@ -59,6 +60,8 @@ export interface RunView {
   conflicts: SourceConflict[];
   stage: (s: Stage) => StageOutput | null;
   report: string | null;
+  /** 编排器实际注入本次运行的用户资料片段；最终报告引用必须落在这份清单内。 */
+  reportSources: ReportSourceRef[];
   /** 本次运行的阶段计划 / 关键端点 / 端点定义(正式运行来自 cfg;复核时读 fetch/_plan.json;都没有 → Phase 0 常量) */
   plan: StagePlan<Stage>;
   critical: string[];
@@ -80,6 +83,15 @@ export function loadRun(runDir: string, ledger?: Ledger, planInfo?: PlanInfo): R
   const evidence = new Map(mergeEvidence(fetch).evidence.map((e) => [e.id, e] as const));
   const calcById = new Map(calcs.filter((c) => c.record?.calculation_id).map((c) => [c.record!.calculation_id as string, c.record!] as const));
   const reportPath = path.join(runDir, "report.md");
+  const manifest = readJsonIfExists<{ user_reports?: unknown }>(path.join(runDir, "manifest.json"));
+  const reportSources = Array.isArray(manifest?.user_reports)
+    ? manifest.user_reports.filter((v): v is ReportSourceRef => {
+        if (!v || typeof v !== "object" || Array.isArray(v)) return false;
+        const x = v as Record<string, unknown>;
+        return /^[0-9a-f]{32}$/.test(String(x.id ?? "")) && typeof x.name === "string" &&
+          (x.page === null || (Number.isInteger(x.page) && Number(x.page) >= 1));
+      })
+    : [];
   return {
     runDir,
     fetch,
@@ -92,6 +104,7 @@ export function loadRun(runDir: string, ledger?: Ledger, planInfo?: PlanInfo): R
     conflicts: detectSourceConflicts(fetch),
     stage: (s) => readJsonIfExists<StageOutput>(path.join(runDir, "stages", `${s}.json`)),
     report: fs.existsSync(reportPath) ? fs.readFileSync(reportPath, "utf8") : null,
+    reportSources,
     plan: pi.plan,
     critical: pi.critical,
     endpoints: pi.endpoints,
@@ -538,6 +551,7 @@ export function validateReport(run: RunView, expectedStatus?: RunStatus): Valida
   for (const id of refs.evidence) if (!run.evidenceIds.has(id)) errors.push(`report.md 引用了不存在的 evidence ${id}`);
   for (const id of refs.calculation) if (!run.calcIds.has(id)) errors.push(`report.md 引用了不存在的 calculation ${id}`);
   if (refs.evidence.length === 0) errors.push(`report.md 没有引用任何 evidence id(每个事实数字必须标 ev- id)`);
+  errors.push(...reportCitationErrors(run.report, run.reportSources).map((e) => `report.md 用户资料引用不合格:${e}`));
   const tok = reportStatusToken(run.report);
   if (!tok) errors.push(`report.md 首行缺少状态标记(状态:complete|incomplete|failed|stale)`);
   else if (expectedStatus && tok !== expectedStatus) errors.push(`report.md 首行状态 ${tok} 与编排器推导状态 ${expectedStatus} 不一致`);

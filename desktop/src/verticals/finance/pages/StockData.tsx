@@ -230,7 +230,7 @@ export function StockData() {
       (fin?.revenue ? `财务(${fin.period ?? "—"})：营收 ${fin.revenue}(同比${fin.revenue_yoy ?? "—"})、净利 ${fin.net_profit ?? "—"}(同比${fin.net_profit_yoy ?? "—"})、ROE ${fin.roe ?? "—"}、毛利率 ${fin.gross_margin ?? "—"}\n` : "") +
       (anns.length ? `近期公告：${anns.slice(0, 5).map((a) => a.title.replace(/^[^:：]*[:：]/, "")).join("；")}\n` : "") +
       `近期研报：${reports.slice(0, 5).map((r) => r.title).join("；") || "无"}`
-    : "还没查询个股。输入 6 位代码后可让 AI 基于客观数据帮你分析。";
+    : "还没查询个股。输入 6 位代码后可让 Agent 基于客观数据帮你分析。";
 
   const gAiContext = gstock
     ? `个股（${mktName(gstock.market)}）：${gstock.name}（${gstock.code}）\n` +
@@ -257,7 +257,7 @@ export function StockData() {
     <div>
       <PageHeader
         title="个股研究"
-        subtitle="行情 · 估值 · 研报 · 新闻 —— 客观数据配齐，判断交给你的 AI"
+        subtitle="行情 · 估值 · 研报 · 新闻 —— 客观数据配齐，交给本地 Agent 组织与研判"
       />
 
       {/* 查询框 */}

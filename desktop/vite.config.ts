@@ -4,6 +4,7 @@ import path from "node:path";
 
 import react from "@vitejs/plugin-react";
 import { defineConfig } from "vite";
+import { apiTokenPath } from "./vite-token";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(here, "..");
@@ -18,7 +19,7 @@ const repoRoot = path.resolve(here, "..");
 function apiToken(): string {
   const fromEnv = process.env.VRA_API_TOKEN;
   if (fromEnv && fromEnv.length >= 16) return fromEnv;
-  const file = path.join(repoRoot, ".local", "api.token");
+  const file = apiTokenPath(repoRoot);
   try {
     const t = fs.readFileSync(file, "utf8").trim();
     if (t.length >= 16) return t;

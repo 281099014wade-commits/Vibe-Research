@@ -163,20 +163,8 @@ export const DEFAULT_ALLOWED_PATH_PREFIXES = ["/bin", "/usr", "/opt", "/sbin", "
 /** 只有这些前缀下的仓库外路径才被视为"读取他人文件"(用户主目录);其余绝对路径不扫描,避免 shell 变量误报 */
 export const HOME_PREFIXES = ["/Users/", "/home/", "/root/"];
 
-/**
- * 基础环境(两类子进程共用)。
- *
- * 🔴 `ELECTRON_RUN_AS_NODE` 必须透传:装机版里 `process.execPath` 是 Electron 的二进制,
- *    这个变量决定它**以脚本模式还是以应用模式启动**。丢了它,再拉起来的子进程
- *    (研究运行 `run.ts`、批量)会被当成"又一个 Electron 应用"——多一个 Dock 图标、
- *    多一套应用初始化,而不是一个安静的后台脚本。这是"我是怎么被托管的"这一层的事实,
- *    不是密钥,透传它不违反最小环境的初衷。
- */
-const BASE_ENV_KEYS = ["PATH", "HOME", "USER", "LOGNAME", "SHELL", "TERM", "LANG", "LC_ALL", "LC_CTYPE", "TMPDIR", "TZ", "ELECTRON_RUN_AS_NODE",
-  // 🔴 装机版必须能把它传下去:App 包是**已签名**的,Python 往里写 .pyc 会当场破坏代码签名
-  //    (实测跑两次业务写进 505 个 .pyc,`codesign -v --strict` 随即报 sealed resource missing)。
-  //    置不置位由**外壳**决定(只有它知道自己跑在 .app 里),这里只负责不把它过滤掉。
-  "PYTHONDONTWRITEBYTECODE"];
+/** 基础环境(取数与 Codex 子进程共用)。 */
+const BASE_ENV_KEYS = ["PATH", "HOME", "USER", "LOGNAME", "SHELL", "TERM", "LANG", "LC_ALL", "LC_CTYPE", "TMPDIR", "TZ"];
 /** 取数脚本(联网进程)的最小环境:只加代理与证书;**不含任何 Codex 凭据 / 配置目录**(AGENTS.md §5) */
 export const FETCH_ENV_KEYS = [...BASE_ENV_KEYS, "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "http_proxy", "https_proxy", "no_proxy", "ALL_PROXY", "all_proxy",
   "SSL_CERT_FILE", "REQUESTS_CA_BUNDLE"];
@@ -194,7 +182,7 @@ export function makeConfig(partial: Partial<RunConfig> & { symbol: string; repoR
   //    `~/Library/Application Support/X/runs/…` 只剩 `/Users/…/Library/Application`,与允许前缀永远对不上,
   //    于是 agent 每一条引用运行目录绝对路径的命令都被拒(实测)。
   //    ⇒ 这里**提前拒绝并说清楚**,而不是改扫描器的分词(那会动到已用真实命令语料回归过的规则,风险更大)。
-  //    macOS 上装到 `~/Library/Application Support` 是不行的,用 `~/.vibe-research` 这类无空格路径
+  //    代码目录与数据目录都要选无空格路径,如 `~/.vibe-research` 这类形式
   //    (引擎自己的 `~/.codex` 也是这个风格)。
   for (const [what, p] of [["产品根", repoRoot], ["数据根", dataRoot]] as const) {
     // 根目录本身不行:`dataRoot="/"` 时钩子的边界判定会拼出 `"//"`,而 `/runs/x` 不以它开头 ⇒

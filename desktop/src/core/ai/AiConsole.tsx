@@ -28,6 +28,7 @@ export interface AiConsoleCopy {
   title: string;
   placeholder: string;
   notice: string;
+  runtime?: string;
   suggestions?: string[];
 }
 
@@ -159,6 +160,12 @@ export function AiConsole({ open, onClose, send, configured, copy, renderReplyAc
         <span className="flex min-w-0 items-center gap-2 text-sm font-semibold text-glow">
           <Sparkles className="h-4 w-4 shrink-0 text-primary" />
           <span className="truncate">{copy.title}</span>
+          {copy.runtime && (
+            <span data-agent-runtime className="hidden items-center gap-1.5 rounded-full border border-success/20 bg-success/[0.07] px-2 py-0.5 text-[10px] font-medium tracking-wide text-muted-foreground sm:inline-flex">
+              <span className="h-1.5 w-1.5 rounded-full bg-success shadow-[0_0_7px_hsl(var(--success)/0.65)]" />
+              {copy.runtime}
+            </span>
+          )}
           {page && (
             <span className="truncate text-xs font-normal text-muted-foreground">· 你正在看「{page.title}」</span>
           )}

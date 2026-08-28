@@ -18,9 +18,11 @@ export interface AiMessagesProps {
   loading: boolean;
   err: string | null;
   /** 空对话时那条说明（免责声明一类，行业相关，由垂类给） */
-  notice: string;
+  notice?: string;
   /** 空对话时可点的问题 */
   suggestions?: string[];
+  /** 长任务用两列任务卡；短问题继续用紧凑胶囊。 */
+  suggestionStyle?: "pills" | "tasks";
   onPick?: (s: string) => void;
   /** 每条回答下面挂什么（例如"存进记录"）。Core 不认识这些，垂类给 */
   renderReplyActions?: (reply: string, question: string) => ReactNode;
@@ -28,7 +30,7 @@ export interface AiMessagesProps {
 }
 
 export function AiMessages({
-  msgs, loading, err, notice, suggestions = [], onPick, renderReplyActions, className,
+  msgs, loading, err, notice, suggestions = [], suggestionStyle = "pills", onPick, renderReplyActions, className,
 }: AiMessagesProps) {
   const ref = useRef<HTMLDivElement>(null);
   useEffect(() => {
@@ -37,8 +39,8 @@ export function AiMessages({
 
   return (
     <div ref={ref} className={cn("flex-1 space-y-3 overflow-auto p-4 text-sm", className)}>
-      {msgs.length === 0 && (
-        <div className="rounded-lg border border-warning/30 bg-warning/5 p-3 text-xs text-muted-foreground">
+      {msgs.length === 0 && notice && (
+        <div data-ai-notice className="rounded-lg border border-warning/30 bg-warning/5 p-3 text-xs text-muted-foreground">
           {notice}
         </div>
       )}
@@ -71,10 +73,18 @@ export function AiMessages({
         </div>
       )}
       {msgs.length === 0 && suggestions.length > 0 && (
-        <div className="flex flex-wrap gap-1.5 pt-1">
+        <div className={cn(
+          "pt-1",
+          suggestionStyle === "tasks" ? "grid gap-2 sm:grid-cols-2" : "flex flex-wrap gap-1.5",
+        )}>
           {suggestions.map((s) => (
-            <button key={s} onClick={() => onPick?.(s)}
-              className="rounded-full border border-border bg-muted/40 px-2.5 py-1 text-xs hover:border-primary/40 hover:text-primary">
+            <button key={s} type="button" onClick={() => onPick?.(s)}
+              className={cn(
+                "border border-border bg-muted/35 text-xs transition-colors hover:border-primary/40 hover:bg-primary/[0.06] hover:text-primary",
+                suggestionStyle === "tasks"
+                  ? "rounded-xl px-3 py-2.5 text-left leading-5"
+                  : "rounded-full px-2.5 py-1",
+              )}>
               {s}
             </button>
           ))}
@@ -86,17 +96,29 @@ export function AiMessages({
 
 /** 输入条：两个外壳共用（Enter 发送、Shift+Enter 换行） */
 export function AiComposer({
-  placeholder, disabled, onSend,
-}: { placeholder: string; disabled: boolean; onSend: (text: string) => void }) {
+  placeholder, disabled, onSend, highlighted = false, value, onValueChange,
+}: {
+  placeholder: string;
+  disabled: boolean;
+  onSend: (text: string) => void;
+  highlighted?: boolean;
+  /** 传 value 时变成受控输入；首页用它把任务模板先填进来，而不是点击即发送。 */
+  value?: string;
+  onValueChange?: (text: string) => void;
+}) {
   const ref = useRef<HTMLTextAreaElement>(null);
   const fire = () => {
-    const v = ref.current?.value ?? "";
+    const v = value ?? ref.current?.value ?? "";
     if (!v.trim() || disabled) return;
     onSend(v);
-    if (ref.current) ref.current.value = "";
+    if (value !== undefined) onValueChange?.("");
+    else if (ref.current) ref.current.value = "";
   };
   return (
-    <div className="border-t border-border/60 p-3">
+    <div className={cn(
+      "border-t p-3",
+      highlighted ? "border-warning/30 bg-warning/[0.035]" : "border-border/60",
+    )}>
       <div className="flex items-end gap-2">
         <textarea
           ref={ref}
@@ -111,11 +133,18 @@ export function AiComposer({
             }
           }}
           rows={1}
+          value={value}
+          onChange={(e) => onValueChange?.(e.currentTarget.value)}
           placeholder={placeholder}
-          className="flex-1 resize-none rounded-lg border border-border bg-black/20 px-3 py-2 text-sm outline-none focus:border-primary/50"
+          className={cn(
+            "min-w-0 flex-1 resize-none rounded-lg border px-3 py-2 text-sm outline-none transition-colors",
+            highlighted
+              ? "border-warning/45 bg-warning/[0.075] placeholder:text-muted-foreground focus:border-warning/70 focus:bg-warning/[0.11]"
+              : "border-border bg-background/55 focus:border-primary/50 focus:bg-background/75",
+          )}
         />
-        <button onClick={fire} disabled={disabled}
-          className="rounded-lg bg-primary/15 px-3 py-2 text-primary hover:bg-primary/25 disabled:opacity-40">
+        <button type="button" onClick={fire} disabled={disabled}
+          className="shrink-0 rounded-lg bg-primary/15 px-3 py-2 text-primary hover:bg-primary/25 disabled:opacity-40">
           发送
         </button>
       </div>

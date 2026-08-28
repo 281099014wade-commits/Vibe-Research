@@ -21,7 +21,7 @@ function buildMinimal(kind: string): Record<string, unknown> {
     const p = def.properties[r] as { type?: string; enum?: unknown[]; pattern?: string } | undefined;
     if (p?.enum) out[r] = p.enum[0];
     else if (p?.type === "number") out[r] = 1;
-    else if (p?.pattern === "^[0-9]{6}$") out[r] = "300308";
+    else if (r === "symbol") out[r] = "300308";
     else out[r] = "x";
   }
   return out;
@@ -345,5 +345,29 @@ test("🔴 持仓成本允许为负 —— 分红 / 送转吃够了之后是真�
   assert.equal(r.cost, -1.5);
   // 股数仍不许为负(做空是另一回事,没有证据说要支持,不顺手放开)
   assert.throws(() => upsertRecord(root, "position", { symbol: "600519", shares: -1, cost: 10 }), /shares/);
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
+test("自选与持仓同时接受 A 股 / 港股 / 美股的规范代码", () => {
+  const root = tmpRoot();
+  for (const [i, symbol] of ["600519", "00700.HK", "AAPL", "BRK.B", "USB"].entries()) {
+    const pos = upsertRecord(root, "position", { symbol, shares: i + 1, cost: 10 });
+    const watch = upsertRecord(root, "watch", { symbol });
+    assert.equal(pos.symbol, symbol);
+    assert.equal(watch.symbol, symbol);
+  }
+  for (const bad of [
+    "hk00700", "700.HK", "aapl", "600519.SH", "../AAPL", "AAPL/../../x",
+  ]) {
+    assert.throws(() => upsertRecord(root, "watch", { symbol: bad }), /symbol/, `非规范形应拒绝:${bad}`);
+  }
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
+test("研究记录能完整保存多阶段回测或辩论报告", () => {
+  const root = tmpRoot();
+  const body = "完整报告。".repeat(5_000); // 明显超过旧的 2 万字限制
+  const saved = upsertRecord(root, "note", { category: "debate", title: "长报告", body });
+  assert.equal(saved.body, body);
   fs.rmSync(root, { recursive: true, force: true });
 });

@@ -7,7 +7,7 @@ import { useAiPage } from "../../../core/ai/pageContext";
 import { backend, ApiError, type RunListItem, type ResearchStatus, type AlertDiff } from "@/lib/backend";
 
 /**
- * 「深度研究」—— 六阶段研究引擎的入口。
+ * 「个股研究」—— 六阶段研究引擎的唯一入口。
  *
  * 🔴 为什么新建这一页：这条链路**后端一直都有**（公司画像 → 财务 → 一致预期 → 估值 →
  *    风险 → 成稿，强制季度拆分 / TTM / 预测分歧 / 四情景估值 / 反证 / 裁决点），
@@ -111,7 +111,7 @@ export function Research() {
   const start = async () => {
     setErr(""); setReport(null);
     const code = symbol.trim();
-    if (!/^\d{6}$/.test(code)) { setErr("先填一个 6 位 A 股代码"); return; }
+    if (!/^\d{6}$/.test(code)) { setErr("请输入 6 位 A 股代码"); return; }
     setStarting(true);
     try {
       const r = await backend.startResearch({ symbol: code, endpoints: scope, knowledge: "on" });
@@ -167,12 +167,12 @@ export function Research() {
 
   useAiPage({
     key: "research",
-    title: "深度研究",
+    title: "个股研究",
     context: active
       ? `当前研究运行 ${active.run_id}：状态 ${active.status}｜证据 ${active.evidence_count ?? "—"} 条｜计算 ${active.calculation_count ?? "—"} 项｜` +
         `阶段 ${active.stages.map((s) => `${STAGE_CN[s.stage] ?? s.stage}=${STATUS_CN[s.status] ?? s.status}`).join("、")}` +
         (report?.report ? `\n\n报告全文：\n${report.report.slice(0, 6000)}` : "")
-      : `研究归档共 ${runs.length} 次运行。这一页可以对某只 A 股跑完整的六阶段研究。`,
+      : `研究归档共 ${runs.length} 次运行。当前完整六阶段取数链支持 A 股。`,
     suggestions: ["这份研究的裁决点是什么", "哪些数据有缺口", "反证部分说了什么"],
   });
 
@@ -183,7 +183,7 @@ export function Research() {
   return (
     <div>
       <PageHeader
-        title="深度研究"
+        title="个股研究"
         subtitle="六阶段完整研究：公司画像 → 财务 → 一致预期 → 估值 → 风险 → 成稿。每个数字都带证据来源与裁决点"
       />
 
@@ -198,7 +198,7 @@ export function Research() {
             <input
               value={symbol}
               onChange={(e) => setSymbol(e.target.value)}
-              placeholder="6 位代码"
+              placeholder="例如 600519"
               className="w-40 rounded-lg border border-border bg-background/60 px-3 py-2 font-mono text-sm"
             />
           </label>
@@ -334,17 +334,10 @@ export function Research() {
               <button
                 key={r.run_id}
                 onClick={() => void openReport(r.run_id)}
-                className="flex w-full items-center gap-3 rounded-md border-b border-border/30 px-1 py-2 text-left text-sm last:border-0 hover:bg-muted/30"
+                className="flex w-full items-center gap-3 rounded-md border-b border-border/30 px-1 py-2.5 text-left text-sm last:border-0 hover:bg-muted/30"
               >
-                <span className="font-mono text-xs text-muted-foreground">{r.run_id}</span>
-                {/* 🔴 取不到就如实写"未知"，不编一个 —— 归档列表里一个凭空的状态比空着更糟 */}
-                <span className="font-medium">{r.symbol ?? "—"}</span>
-                <span className={r.status === "complete" ? "text-xs text-primary" : "text-xs text-muted-foreground"}>
-                  {r.status ? (STATUS_CN[r.status] ?? r.status) : "状态未知"}
-                </span>
-                <span className="ml-auto text-xs text-muted-foreground/70">
-                  {String(r.finished_at ?? r.started_at ?? "").slice(0, 16).replace("T", " ")}
-                </span>
+                <span className="font-medium">{r.name ?? "个股"}</span>
+                <span className="font-mono text-xs text-muted-foreground">{r.symbol ?? "—"}</span>
               </button>
             ))}
           </div>

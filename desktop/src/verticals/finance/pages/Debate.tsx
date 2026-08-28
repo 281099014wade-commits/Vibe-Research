@@ -1,14 +1,15 @@
 import { useRef, useState } from "react";
-import { Swords, Play, Square, Save, CheckCircle2, Circle, AlertTriangle } from "lucide-react";
+import { Swords, Play, Square, CheckCircle2, Circle, AlertTriangle } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { useAiPage } from "../../../core/ai/pageContext";
 import { GlassCard } from "@/components/ui/GlassCard";
 import { Disclaimer } from "@/components/ui/Disclaimer";
+import { ReportHistory } from "@/components/ui/ReportHistory";
 import { debateStream, type DebateStage } from "@/lib/agents";
 import type { DebateNumberAudit } from "@/lib/backend";
-import { addNote } from "@/lib/notes";
+import { addNote, loadNotes, type Note } from "@/lib/notes";
 import { ApiError } from "@/lib/api";
 
 interface StageBox {
@@ -72,6 +73,26 @@ function AuditBar({ a }: { a: DebateNumberAudit }) {
   );
 }
 
+function auditMarkdown(a?: DebateNumberAudit): string[] {
+  if (!a) return ["### 数字复核", "", "本阶段没有返回数字复核结果。", ""];
+  const lines = [
+    "### 数字复核",
+    "",
+    `- 数字总数：${a.total}`,
+    `- 与资料包吻合：${a.bound}`,
+    `- 写明算式且重算通过：${a.derived}`,
+    `- 没有交代出处：${a.loose}（不等于错，但未经过核对）`,
+  ];
+  if (a.badMath.length) {
+    lines.push("", `- **算式重算不一致：${a.badMath.length} 处**`);
+    for (const row of a.badMath) {
+      const raw = row.raw.replace(/\s+/g, " ").trim();
+      lines.push(`  - ${raw}；原报告写 ${row.stated}${row.percent ? "%" : ""}，重算为 ${row.recomputed.toFixed(2)}${row.percent ? "%" : ""}`);
+    }
+  }
+  return [...lines, ""];
+}
+
 export function Debate() {
   const [code, setCode] = useState("");
   const [rounds, setRounds] = useState(1);
@@ -82,9 +103,18 @@ export function Debate() {
   const [stages, setStages] = useState<StageBox[]>([]);
   const [error, setError] = useState("");
   const [saved, setSaved] = useState(false);
+  const [notes, setNotes] = useState<Note[]>(loadNotes);
   const abortRef = useRef<AbortController | null>(null);
+  const stagesRef = useRef<StageBox[]>([]);
+
+  const updateStages = (fn: (rows: StageBox[]) => StageBox[]) => setStages((rows) => {
+    const next = fn(rows);
+    stagesRef.current = next;
+    return next;
+  });
 
   const reset = () => {
+    stagesRef.current = [];
     setStatus(""); setProgress([]); setMissing([]); setStages([]); setError(""); setSaved(false);
   };
 
@@ -96,40 +126,66 @@ export function Debate() {
     const ctrl = new AbortController();
     abortRef.current = ctrl;
     try {
-      await debateStream(c, rounds, {
-        onStatus: setStatus,
+      const final = await debateStream(c, rounds, {
+        onStatus: (message) => { if (abortRef.current === ctrl) setStatus(message); },
         onDossierProgress: (title, ok, loaded, total) => {
+          if (abortRef.current !== ctrl) return;
           setStatus(`正在拉取客观事实底稿… ${loaded}/${total}`);
           setProgress((p) => [...p, { title, ok }]);
         },
-        onDossierReady: (_sections, miss) => { setMissing(miss); setStatus("底稿就绪，辩论开始"); },
-        onStageStart: (stage, label) =>
-          setStages((s) => [...s, { stage, label, content: "", done: false }]),
-        onDelta: (stage, text, audit) =>
-          setStages((s) => s.map((b) => (b.stage === stage && !b.done ? { ...b, content: b.content + text, ...(audit ? { audit } : {}) } : b))),
-        onStageDone: (stage, _label, content) =>
-          setStages((s) => s.map((b) => (b.stage === stage && !b.done ? { ...b, content, done: true } : b))),
-        onError: (message, stage) => setError(stage ? `${stage}：${message}` : message),
+        onDossierReady: (_sections, miss) => {
+          if (abortRef.current === ctrl) { setMissing(miss); setStatus("底稿就绪，辩论开始"); }
+        },
+        onStageStart: (stage, label) => {
+          if (abortRef.current === ctrl) updateStages((s) => [...s, { stage, label, content: "", done: false }]);
+        },
+        onDelta: (stage, text, audit) => {
+          if (abortRef.current === ctrl) updateStages((s) => s.map((b) => (b.stage === stage && !b.done ? { ...b, content: b.content + text, ...(audit ? { audit } : {}) } : b)));
+        },
+        onStageDone: (stage, _label, content) => {
+          if (abortRef.current === ctrl) updateStages((s) => s.map((b) => (b.stage === stage && !b.done ? { ...b, content, done: true } : b)));
+        },
+        onError: (message, stage) => {
+          if (abortRef.current === ctrl) setError(stage ? `${stage}：${message}` : message);
+        },
       }, ctrl.signal);
-      setStatus("辩论完成");
+      if (abortRef.current === ctrl && !ctrl.signal.aborted && final?.done && stagesRef.current.some((s) => s.done)) {
+        const body = [
+          `# 多空辩论 · ${c}`,
+          "",
+          `- 完成状态：${final.outcome}`,
+          `- 共同资料：${final.evidence_count} 条证据`,
+          ...(final.gaps.length ? ["- 资料缺口：" + final.gaps.join("；")] : []),
+          "",
+          ...stagesRef.current.filter((s) => s.done).flatMap((s) => [
+            `## ${s.label}`, "", s.content, "", ...auditMarkdown(s.audit), "---", "",
+          ]),
+        ].join("\n");
+        try {
+          setNotes(await addNote("多空辩论", `多空辩论 · ${c}`, body));
+          setSaved(true);
+          setStatus(final.outcome === "completed" ? "辩论完成，报告已自动归档" : "辩论结束（有环节未完成），现有报告已自动归档");
+        } catch (e) {
+          setError(`辩论已经完成，但自动归档失败：${e instanceof Error ? e.message : String(e)}`);
+        }
+      }
     } catch (e) {
-      if (e instanceof DOMException && e.name === "AbortError") setStatus("已中止");
-      else setError(e instanceof ApiError ? e.message : String(e));
+      if (abortRef.current === ctrl) {
+        if (e instanceof DOMException && e.name === "AbortError") setStatus("已中止");
+        else setError(e instanceof ApiError ? e.message : String(e));
+      }
     } finally {
-      setRunning(false);
-      abortRef.current = null;
+      if (abortRef.current === ctrl) {
+        if (ctrl.signal.aborted) setStatus("已中止");
+        setRunning(false);
+        abortRef.current = null;
+      }
     }
   }
 
   function stop() {
     abortRef.current?.abort();
-    setRunning(false);
-  }
-
-  function save() {
-    const body = stages.map((s) => `## ${s.label}\n\n${s.content}`).join("\n\n---\n\n");
-    addNote("多空辩论", `多空辩论 · ${code.trim()}`, body);
-    setSaved(true);
+    setStatus("正在中止…");
   }
 
   const finished = stages.length > 0 && stages.every((s) => s.done);
@@ -186,12 +242,7 @@ export function Debate() {
               <Play className="h-4 w-4" /> 开始辩论
             </button>
           )}
-          {finished && !running && (
-            <button onClick={save} disabled={saved}
-              className="inline-flex items-center gap-1.5 rounded-lg border border-border/60 px-4 py-2 text-sm text-muted-foreground hover:text-foreground disabled:opacity-50">
-              <Save className="h-4 w-4" /> {saved ? "已存入沉淀" : "存入沉淀"}
-            </button>
-          )}
+          {finished && !running && saved && <span className="text-xs text-success">报告已自动归档</span>}
         </div>
 
         {/* 开销提示：辩论比问答重得多，让用户在点下去之前就知道要花多久、调几次模型 */}
@@ -255,16 +306,12 @@ export function Debate() {
           <div className="flex flex-col items-center gap-2 py-10 text-center text-sm text-muted-foreground">
             <Swords className="h-8 w-8 text-muted-foreground/40" />
             输入一个代码开始。后端会先拉一份客观事实底稿，再让多方 / 空方基于同一份数据互相质疑。
-            <span className="text-xs">产出的是「分歧点 + 验证清单」，不是买卖建议。<br />
-            {/* 🔴 实测挖出来的:引用的数(带 ev-id)与资料包逐个核对过是对的,
-                但**算出来的数没有任何校验** —— 见过同比算反方向、拿隔年的数当去年基数,
-                而它们就摆在正确引用的数字旁边,看着一样可信。这条必须说在前面。 */}
-            <b className="text-warning/80">带 [ev-…] 的数字来自资料包、可溯源；而同比、差额这类
-            <u>算出来的数没有经过校验</u>——看到百分比请自己按它给的算式核一遍。</b></span>
+            <span className="text-xs">产出的是「分歧点 + 验证清单」，不是买卖建议。</span>
           </div>
         </GlassCard>
       )}
 
+      <ReportHistory kind="多空辩论" notes={notes} onChange={setNotes} />
       <Disclaimer />
     </div>
   );

@@ -15,11 +15,16 @@ import {
   ApiError, backend, noteKV, notWired, num, num0, round2, rows, scalar, str, throwNotWired,
   type Envelope,
 } from "./backend";
+import {
+  currencyLabel, currencyOfSymbol, marketOfSymbol, normalizeMarketSymbol, quoteQueryOfSymbol, symbolFromQuoteKey,
+  type CurrencyCode, type MarketCode,
+} from "./marketSymbol";
 
 export { ApiError };
 
 export interface MyReport {
-  id: string; name: string; industry: string; size: number; ext: string; ts: number;
+  id: string; name: string; size: number; ext: string; ts: number; uploaded_at: string;
+  chars: number; pages: number | null; truncated: boolean; symbols: string[];
 }
 
 /**
@@ -30,9 +35,25 @@ export const loadAccessKey = (): string => "";
 export const saveAccessKey = (_key: string): void => undefined;
 export const authHeaders = (): Record<string, string> => ({});
 
-export async function downloadReport(_id: string, _name: string): Promise<void> {
-  // 函数体是 async,这里 throw 会自动变成拒绝
-  throwNotWired("研报下载");
+export async function downloadReport(id: string, name: string): Promise<void> {
+  let res: Response;
+  try { res = await fetch(`/api/reports/${encodeURIComponent(id)}/download`); }
+  catch (e) { throw new ApiError(`连接不到编排器 API:${e instanceof Error ? e.message : String(e)}`, 0, "network"); }
+  if (!res.ok) {
+    let message = `HTTP ${res.status}`;
+    let code = String(res.status);
+    try { const body = await res.json() as { error?: string; message?: string }; message = body.message ?? body.error ?? message; code = body.error ?? code; } catch { /* 下载错误不是 JSON 时保留状态码 */ }
+    throw new ApiError(message, res.status, code);
+  }
+  const url = URL.createObjectURL(await res.blob());
+  try {
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = name;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+  } finally { URL.revokeObjectURL(url); }
 }
 
 export interface Quote {
@@ -43,6 +64,7 @@ export interface Quote {
    *    改成可空之后,类型系统会**逼着每一处调用点表态**(实测 12 处)。
    */
   name: string; price: number | null; last_close: number | null; change_pct: number | null;
+  market: MarketCode; currency: CurrencyCode;
   pe_ttm: number | null; pb: number | null; mcap_yi: number | null; turnover_pct: number | null;
   limit_up: number | null; limit_down: number | null;
   /**
@@ -228,6 +250,7 @@ export interface MacroProbability {
 
 export interface Holding {
   code: string; name: string; shares: number; cost: number;
+  market: MarketCode; currency: CurrencyCode;
   /** 🔴 行情派生的四项**可为 null**:拉不到行情时显示「—」,不是 0。
    *  写死成 number 的话,一只取不到行情的持仓会整行显示「现价 0.00 / 市值 0.00 / 浮盈 0.00」,
    *  排版完全正常,看不出是没取到。 */
@@ -240,7 +263,11 @@ export interface ClosedPosition {
 }
 export interface PortfolioData {
   holdings: Holding[];
-  totals: { market_value: number; cost: number; pnl: number; pnl_pct: number | null };
+  /** 三币种分开汇总：不做汇率换算就绝不可以直接相加。 */
+  totals: {
+    market: MarketCode; currency: CurrencyCode; label: string;
+    market_value: number; cost: number; pnl: number; pnl_pct: number | null;
+  }[];
   closed: ClosedPosition[];
   realized_pnl: number;
   updated: string; last_refresh: string | null;
@@ -312,11 +339,20 @@ const mul = (v: number | null, k: number): number | null => (v === null ? null :
 /* ---------- 行情 / 估值 ---------- */
 
 async function quoteMap(codes: string[]): Promise<Record<string, Quote>> {
-  const e = await env("tx_quotes_batch", { args: { codes } });
+  const canonical = [...new Set(codes.map(normalizeMarketSymbol).filter((c): c is string => c !== null))];
+  const queries = canonical.map(quoteQueryOfSymbol).filter((c): c is string => c !== null);
+  if (!queries.length) return {};
+  const e = await env("tx_quotes_batch", { args: { codes: queries } });
   const out: Record<string, Quote> = {};
   for (const r of rows(e)) {
-    out[r.key] = {
+    const symbol = symbolFromQuoteKey(r.key);
+    const market = symbol ? marketOfSymbol(symbol) : null;
+    const currency = symbol ? currencyOfSymbol(symbol) : null;
+    if (!symbol || !market || !currency) continue;
+    out[symbol] = {
       name: str(r.fields.security_name),
+      market,
+      currency,
       price: num(r.fields.price),
       last_close: num(r.fields.last_close),
       change_pct: num(r.fields.change_pct),
@@ -327,7 +363,8 @@ async function quoteMap(codes: string[]): Promise<Record<string, Quote>> {
       limit_up: num(r.fields.limit_up_price),
       limit_down: num(r.fields.limit_down_price),
       float_mcap_yi: num(r.fields.float_market_cap),                        // 端点单位：亿元
-      amount_yuan: mul(num(r.fields.turnover_amount), 1e4),                 // 端点单位：万元 → 元
+      // 这个旧字段只有 A 股页面在用。美 / 港成交额是各自币种，不冒充人民币。
+      amount_yuan: market === "CN" ? mul(num(r.fields.turnover_amount), 1e4) : null,
     };
   }
   return out;
@@ -1098,12 +1135,14 @@ async function macroProbabilityOf(refresh = false): Promise<MacroProbability> {
  */
 async function portfolioOf(): Promise<PortfolioData> {
   const led = await backend.ledger();
-  const held = (led.records.position ?? []).filter((r) => String(r.symbol ?? "").trim());
-  const codes = [...new Set(held.map((r) => String(r.symbol).trim()))];
+  const held = (led.records.position ?? []).filter((r) => normalizeMarketSymbol(r.symbol));
+  const codes = [...new Set(held.map((r) => normalizeMarketSymbol(r.symbol)!).filter(Boolean))];
   const quotes = codes.length ? await quoteMap(codes).catch(() => ({}) as Record<string, Quote>) : {};
 
   const holdings: Holding[] = held.map((r) => {
-    const code = String(r.symbol).trim();
+    const code = normalizeMarketSymbol(r.symbol)!;
+    const market = marketOfSymbol(code)!;
+    const currency = currencyOfSymbol(code)!;
     const shares = Number(r.shares ?? 0);
     const cost = Number(r.cost ?? 0);
     const q = quotes[code];
@@ -1115,6 +1154,8 @@ async function portfolioOf(): Promise<PortfolioData> {
     return {
       code,
       name: String(r.name ?? q?.name ?? ""),
+      market,
+      currency,
       price,
       shares,
       cost,
@@ -1124,22 +1165,30 @@ async function portfolioOf(): Promise<PortfolioData> {
     };
   });
 
-  // 合计只累加**拿到行情的那些** —— 取不到的当 0 加进去,合计就成了假数
-  const priced = holdings.filter((h) => h.market_value !== null);
-  const mv = priced.reduce((a, h) => a + (h.market_value ?? 0), 0);
-  const costSum = priced.reduce((a, h) => a + h.cost * h.shares, 0);
-  return {
-    holdings,
-    totals: {
+  // 合计只累加**拿到行情的那些**，并且必须按币种分组。
+  // 人民币 10 万 + 美元 2 万 + 港元 3 万没有一个不经换算就成立的「总数」。
+  const totalMap = new Map<CurrencyCode, Holding[]>();
+  for (const h of holdings) {
+    if (h.market_value === null) continue;
+    totalMap.set(h.currency, [...(totalMap.get(h.currency) ?? []), h]);
+  }
+  const totals = [...totalMap.entries()].map(([currency, items]) => {
+    const mv = items.reduce((a, h) => a + (h.market_value ?? 0), 0);
+    const costSum = items.reduce((a, h) => a + h.cost * h.shares, 0);
+    const market = items[0]!.market;
+    return {
+      market,
+      currency,
+      label: currencyLabel(currency),
       market_value: round2(mv)!,
       cost: round2(costSum)!,
       pnl: round2(mv - costSum)!,
-      // 🔴 成本和 ≤ 0 时**没有百分比可言**，要给 null 不能给 0 ——
-      //    0 是一个具体的数、读作"不赚不亏"，而真相是"这个比例算不出来"。
-      //    成本可以为负（分红送转吃够了），负数当分母还会**把赚的显示成亏的**：
-      //    成本 −1.5、现价 10 ⇒ (10−(−1.5))/(−1.5) = −766%，明明大赚。
       pnl_pct: costSum > 0 ? round2(((mv - costSum) / costSum) * 100)! : null,
-    },
+    };
+  });
+  return {
+    holdings,
+    totals,
     closed: [],
     realized_pnl: 0,
     updated: new Date().toISOString(),
@@ -1152,8 +1201,10 @@ async function portfolioOf(): Promise<PortfolioData> {
  * 实现必须真的合并,否则界面说的和做的两回事(而且第二次录入会静默抹掉第一次的股数)。
  */
 async function addHoldingTo(code: string, shares: number, cost: number): Promise<PortfolioData> {
+  const symbol = normalizeMarketSymbol(code);
+  if (!symbol) throw new ApiError("请输入 A 股、港股或美股代码", 400, "bad_symbol");
   const led = await backend.ledger();
-  const existing = (led.records.position ?? []).find((r) => String(r.symbol).trim() === code.trim());
+  const existing = (led.records.position ?? []).find((r) => normalizeMarketSymbol(r.symbol) === symbol);
 
   let nextShares = shares;
   let nextCost = cost;
@@ -1173,7 +1224,7 @@ async function addHoldingTo(code: string, shares: number, cost: number): Promise
     // 🔴 整条替换,不做字段级合并 —— 台账的更新语义是整条覆盖,
     //    只发变化的字段会把 name / account / note 一起清空且不报错
     ...(existing ?? {}),
-    symbol: code.trim(),
+    symbol,
     shares: nextShares,
     cost: nextCost,
   });
@@ -1181,8 +1232,10 @@ async function addHoldingTo(code: string, shares: number, cost: number): Promise
 }
 
 async function removeHoldingFrom(code: string): Promise<PortfolioData> {
+  const symbol = normalizeMarketSymbol(code);
+  if (!symbol) return portfolioOf();
   const led = await backend.ledger();
-  const hit = (led.records.position ?? []).find((r) => String(r.symbol).trim() === code.trim());
+  const hit = (led.records.position ?? []).find((r) => normalizeMarketSymbol(r.symbol) === symbol);
   if (hit) await backend.ledgerDelete("position", hit.id);
   return portfolioOf();
 }
@@ -1348,7 +1401,7 @@ export const api = {
   blocks: blocksOf,
   hotConcepts: hotConceptsOf,
   investorQa: investorQaOf,
-  myReports: (): Promise<MyReport[]> => notWired("我的研报"),
-  uploadReport: (_n: string, _b: string): Promise<MyReport> => notWired("上传研报"),
-  deleteReport: (_id: string): Promise<{ ok: boolean }> => notWired("删除研报"),
+  myReports: (): Promise<MyReport[]> => backend.reports(),
+  uploadReport: (name: string, content: string): Promise<MyReport> => backend.reportUpload(name, content),
+  deleteReport: async (id: string): Promise<{ ok: boolean }> => ({ ok: (await backend.reportDelete(id)).removed }),
 };

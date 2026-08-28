@@ -5,11 +5,9 @@
  * ⚠️ 读同步 / 写异步，缓存在 React 挂载前灌好（见 `main.tsx`）。
  */
 import { backend, type LedgerRecord } from "./backend";
+import { normalizeMarketSymbol, parseMarketSymbols } from "./marketSymbol";
 
 let cache: string[] = [];
-
-const code6 = (v: unknown) => String(v ?? "").trim();
-const isCode = (c: string) => /^\d{6}$/.test(c);
 
 /** 台账里当前的 代码 → 记录 id。同一代码有多条时保留第一条，其余当重复处理 */
 async function currentIds(): Promise<{ ids: Map<string, string>; dupes: string[] }> {
@@ -18,8 +16,8 @@ async function currentIds(): Promise<{ ids: Map<string, string>; dupes: string[]
   const ids = new Map<string, string>();
   const dupes: string[] = [];
   for (const r of rows) {
-    const c = code6(r.symbol);
-    if (!isCode(c)) continue;
+    const c = normalizeMarketSymbol(r.symbol);
+    if (!c) continue;
     if (ids.has(c)) dupes.push(r.id);
     else ids.set(c, r.id);
   }
@@ -50,14 +48,14 @@ export function loadWatch(): string[] {
  *    信内存的话，只要那份映射不是最新的（模块被重新加载过、另一个标签页写过），
  *    "已经有了"就会判成"还没有" ⇒ **静默写出重复记录**。
  *
- * ⚠️ **这只把窗口缩小，消不掉竞态。** 读状态和写回之间没有事务、没有版本校验，
- *    两个标签页同时保存仍可能各写一条同代码记录。真正兜底的是**每次保存开头的
- *    重复清扫**——它让重复自愈，而不是让重复不发生。要根治得在台账侧加唯一约束。
+ * 同一页面里的保存会排队，避免「先加 AAPL、紧接着加港股」时旧保存反过来删掉新代码。
+ * ⚠️ 不同浏览器标签页仍是两个 JS 进程；真正的跨标签唯一性要在台账侧加唯一约束。
  * ⚠️ 中途失败时台账已经被改了一半 ⇒ **缓存一律以重读结果为准**，
  *    不能停在"写之前"或"想写成"的状态：那两种都会让界面显示一个从未存在过的列表。
  */
-export async function saveWatch(codes: string[]): Promise<void> {
-  const want = [...new Set(codes.filter(isCode))];
+let saveQueue: Promise<void> = Promise.resolve();
+
+async function writeWatch(want: string[]): Promise<void> {
   try {
     const { ids, dupes } = await currentIds();
     for (const id of dupes) await backend.ledgerDelete("watch", id); // 顺手清掉历史重复
@@ -73,10 +71,17 @@ export async function saveWatch(codes: string[]): Promise<void> {
   }
 }
 
-/** 从任意文本里抽 6 位 A 股代码（逗号 / 空格 / 换行 / 顿号都行，方便一次粘一串）。 */
+export function saveWatch(codes: string[]): Promise<void> {
+  const want = [...new Set(codes.map(normalizeMarketSymbol).filter((c): c is string => c !== null))];
+  const work = saveQueue.catch(() => undefined).then(() => writeWatch(want));
+  // 队列自身吞掉失败以便后续保存继续；本次调用仍拿到 work 的原始成功 / 失败。
+  saveQueue = work.catch(() => undefined);
+  return work;
+}
+
+/** 从任意文本里抽取 A 股 / 港股 / 美股代码。 */
 export function parseCodes(raw: string): string[] {
-  const tokens = raw.split(/[^\d]+/).filter(Boolean);
-  return Array.from(new Set(tokens.filter(isCode)));
+  return parseMarketSymbols(raw);
 }
 
 /** 并入已有自选，返回去重后的新列表 + 实际新增数量。 */

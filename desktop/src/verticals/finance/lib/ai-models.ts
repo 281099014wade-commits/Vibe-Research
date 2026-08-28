@@ -22,7 +22,7 @@ export type ProviderId =
   | "deepseek" | "silicon" | "openai" | "minimax" | "openrouter"
   | "groq" | "together" | "mimo" | "glm" | "kimi" | "qwen"
   | "openai-compatible"
-  | "cli-codex" | "cli-claude" | "cli-qwen" | "cli-deepseek";
+  | "cli-codex" | "cli-claude";
 
 export interface ModelConfig {
   /** 真正传给引擎的 model 名 */
@@ -30,8 +30,6 @@ export interface ModelConfig {
   name: string;
   description: string;
   provider: ProviderId;
-  /** 列出但暂不可选 */
-  comingSoon?: boolean;
 }
 
 export const isCliProvider = (p: string): boolean => p.startsWith("cli-");
@@ -58,16 +56,13 @@ export const PROVIDER_BASE: Partial<Record<ProviderId, string>> = {
 
 export const AI_MODELS: ModelConfig[] = [
   // —— 订阅档（免 API key，用本机已登录的引擎 / CLI）——
-  // ⚠️ 只有 Codex 这一档**真的接得上**（产品自带的那台引擎）。别的选了后端会明确报错，
-  //    不会悄悄换成 Codex 去答 —— 那样用户根本看不出答案来自哪。
+  // 可用性不在这里写死：设置页从后端实时检测本机是否安装、是否登录。
   // ⚠️ 订阅档这一栏的 `id` 是**这条订阅的名字，不是模型名** —— 模型由登录态决定。
   //    上一版这里写了个像模像样的 "gpt-5.6-codex"，真发出去收到的是
   //    "The 'gpt-5.6-codex' model is not supported when using Codex with a ChatGPT account"。
   //    后端现在对订阅档一律不转发模型名，这里也不再摆一个假模型名出来。
   { id: "codex", name: "Codex 订阅", description: "用产品自带引擎的登录态，免 key（推荐）", provider: "cli-codex" },
-  { id: "claude-code", name: "Claude Code", description: "用本机 Claude 订阅", provider: "cli-claude", comingSoon: true },
-  { id: "qwen-code", name: "Qwen Code", description: "通义 Qwen Code 订阅", provider: "cli-qwen", comingSoon: true },
-  { id: "deepseek-cli", name: "DeepSeek CLI", description: "DeepSeek 本机 CLI 订阅", provider: "cli-deepseek", comingSoon: true },
+  { id: "claude-code", name: "Claude Code", description: "用本机 Claude.ai 订阅，免 API key", provider: "cli-claude" },
 
   // —— API 档（填自己的 key）。带模板的排前面 ——
   { id: "deepseek-v4-flash", name: "DeepSeek V4 Flash", description: "DeepSeek 官方 · 快而省", provider: "deepseek" },

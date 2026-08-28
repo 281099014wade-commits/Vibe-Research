@@ -1,23 +1,31 @@
 <p align="center"><a href="README.md">简体中文</a> | <b>English</b></p>
-<h1 align="center">vibe-research-agent</h1>
-<p align="center"><b>An open-source A-share equity research agent built on OpenAI Codex ("Codex for Finance")</b><br>zero fork · three-layer constraints · 115-endpoint data pipeline · deterministic calc library · compliance red line · multi-model access</p>
+
+<h1 align="center">Vibe Research</h1>
+
 <p align="center">
-  <img alt="License" src="https://img.shields.io/badge/license-pending-lightgrey">
-  <img alt="TypeScript" src="https://img.shields.io/badge/TypeScript-orchestrator-3178c6">
-  <img alt="Python" src="https://img.shields.io/badge/Python-data%20%2B%20calc-3776ab">
-  <img alt="Codex" src="https://img.shields.io/badge/Codex%20CLI-0.149.0-black">
+  <b>A local financial research workbench built on the Codex Harness</b><br>
+  Codex and Claude Code subscriptions connected · live local login detection · most compatible model APIs supported
 </p>
+
+<p align="center">
+  <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-yellow"></a>
+  <img alt="Version" src="https://img.shields.io/badge/version-v1.0.0-F35D2B">
+  <img alt="UI" src="https://img.shields.io/badge/UI-React%20%2B%20Vite-646cff">
+  <img alt="Orchestrator tests" src="https://img.shields.io/badge/orchestrator-525%20tests-passing">
+  <img alt="Desktop tests" src="https://img.shields.io/badge/desktop-22%20tests-passing">
+  <img alt="Codex Harness" src="https://img.shields.io/badge/runtime-Codex%20Harness-black">
+</p>
+
 <p align="center">
   <a href="#what-it-is">What it is</a> ·
+  <a href="#features">Features</a> ·
   <a href="#quick-start">Quick start</a> ·
-  <a href="#usage-cheat-sheet">Usage</a> ·
-  <a href="#model-access">Model access</a> ·
-  <a href="#configuration-and-environment-variables">Configuration</a> ·
-  <a href="#architecture">Architecture</a> ·
-  <a href="#data-sources">Data sources</a> ·
+  <a href="#how-it-works">How it works</a> ·
+  <a href="#model-access">Models</a> ·
+  <a href="#data-and-markets">Data</a> ·
   <a href="#security-and-privacy">Security</a> ·
   <a href="#development-and-tests">Development</a> ·
-  <a href="#status-and-roadmap">Roadmap</a> ·
+  <a href="#current-boundaries">Boundaries</a> ·
   <a href="CHANGELOG.md">CHANGELOG</a>
 </p>
 
@@ -25,193 +33,259 @@
 
 ## What it is
 
-OpenAI Codex is the engine. It is combined with **the discipline, data pipeline and calculation library of equity research**, so the agent can research a Chinese A-share company (US / HK market data is supported as well) through six stages — company profile → financials → consensus estimates → valuation → risk → report — and produce a research report that is **auditable, recomputable and backed by an evidence chain**.
+Vibe Research is a **local financial research workbench built on the
+[OpenAI Codex Harness](https://developers.openai.com/blog/codex-as-a-platform)**. The Harness maintains context,
+selects tools, advances tasks, handles failures, and preserves execution state on the local machine. Vibe Research
+adds financial data, research procedures, deterministic calculations, evidence checks, and compliance boundaries.
 
-LLMs doing financial research have three chronic habits: **making numbers up from memory, doing arithmetic in their head, and casually recommending a position**. Our answer is not a longer prompt but three layers of constraints:
+The previous version called model APIs directly to produce individual analyses. The current version is a local
+financial agent built on Codex: it can understand a task, call tools over multiple steps, request missing
+information, run the research workflow, and preserve the full process. Compared with a single API request, this
+substantially improves long-task execution, tool use, context retention, and reasoning quality.
 
-| Layer | Components | Role |
-|---|---|---|
-| Prompt layer | `AGENTS.md` research constitution + `.agents/skills/` research SOPs | Tells the agent how to work (the five-question gate, fetch-then-interpret stage split, facts vs. inference) |
-| Execution layer | Codex native hooks (Stop / PreToolUse) + sandbox | Invalid work is blocked immediately: no finishing a stage without its artifacts; no running fetch scripts, no network, no rewriting evidence |
-| Orchestration layer | thin orchestrator + validator + compliance gate | Data fetching is executed by the orchestrator with an in-memory ledger; every number must trace back to evidence and a calc DAG; any "buy / target price" wording triggers a rewrite |
+| Previous version: direct model API | Current version: local Codex financial agent |
+|---|---|
+| One request produces one analysis | Advances a complete research task over multiple steps |
+| The app decides the calls in advance | The agent reads the live tool catalog and chooses the appropriate tool |
+| The page temporarily holds context and state | The Harness maintains local context, progress, and failure recovery |
+| Usually returns a block of prose | Preserves reports, evidence, calculations, gaps, and run status |
+| Model output is displayed directly | Validators, sandboxing, hooks, and a compliance gate review the result |
 
-**Prompt compliance is not a process guarantee** — discipline lives in the execution and orchestration layers, not in the model's good will.
+The architecture supports both subscription runtimes and model APIs. Codex and Claude Code are connected end to
+end. The settings page detects each local CLI, version, and login state. If Codex is not authenticated, the user
+can open the official authorization page with **Log in to Codex** and the page detects completion automatically. Qwen Code and the
+DeepSeek CLI currently require their own API key, so they remain API paths rather than pretending to be keyless
+subscriptions. The API side supports most providers that expose the Responses API.
 
-The Codex repository is not modified at all (zero fork): we run the officially installed `codex` CLI and the matching TypeScript SDK; upstream upgrades only need re-verification against the version anchor file.
+## Features
 
-## What it can do
+| Module | Current capability |
+|---|---|
+| Home agent | Start a conversation immediately and ask about a company, industry, market review, or research task |
+| Daily review | Summarises market activity, themes, limit-up drivers, and daily signals |
+| Intelligence radar | Translated Investment News headlines, public news, A-share filings, and event probabilities |
+| Industry signals | GPU rental rates, monthly industry data, commodities, hiring, and data calendars |
+| Sector centre | Reviews sector performance and drills into specific industry themes |
+| Company research | Six-stage A-share workflow: profile, financials, consensus, valuation, risk, and report |
+| My reports | Stores PDF, DOCX, TXT, MD, and CSV locally, with extraction, search, citations, download, and deletion |
+| Backtesting | Uses an agent conversation as the only input; asks for missing details, then calls the real backtest tool |
+| Bull/bear review | Bull, bear, rebuttal, and neutral-referee stages share the same factual dossier |
+| Watchlist and portfolio | Recognises A-share, US, and Hong Kong symbols; stores records locally and refreshes quotes |
+| Research records | Stores research, backtest, and debate reports with search, timestamps, expansion, and deletion |
+| Connect AI | Uses a subscription login or a user-supplied model API configuration across the entire agent UI |
 
-- **One-command research**: `run.ts --symbol 300308` → a six-stage state machine; for each stage, the orchestrator fetches data and the agent interprets it → validator checks (ledger / schema / references / recomputation / semantic slots) → automatic retry on failure → compliance gate → merged artifacts. Outputs: `report.md`, `evidence.json` (every item references its raw source file), `calculations.json` (a DAG for every number), `conflicts.json` (cross-source conflicts), `viewer.html` (self-contained evidence viewer), `manifest.json`.
-- **Data pipeline**: `datasources/registry.json` registers 115 zero/low-auth endpoints across 29 layers (CN / US / HK: quotes, three statements, consensus, fund flows, margin trading, chip distribution, announcements, broker reports, macro, exchanges, SEC / FINRA / CBOE, RSS news radar). One generic fetcher pulls any endpoint and stores every raw response; **the fetch layer never derives anything**.
-- **Intelligence layers (12–17, mounted automatically by industry tag)**: beyond the company's own filings, three kinds of outside readings — **market voice** (public discussion, treated as a lead, never as fact) · **industry thermometers** (upstream/downstream hard data: Taiwan monthly revenue, GPU rental rates, futures, DRAM spot, each with a cross-run delta) · **export controls and market access** (full-text search of the Federal Register 1260H list, BIS, the FCC Covered List) · **data calendar** (the actual date of the next data point) · **overseas headlines** (demand-side leads) · **hiring signals** (open roles at industry anchor companies) · **chokepoint events** (deterministic classification of announcement titles). Each one carries a **reading guard** that must appear in the same paragraph as the number (a job count is hiring intent, not capacity; a thermometer is an industry reading, not this company's results), and each is **gated by the stock's industry tags** — no tag match means the layer is skipped, which is not a data gap.
-- **Deterministic calc library** `calc/`: 18 pure functions for valuation / series / technical indicators / chip distribution, fixture-tested, CLI output carries a deterministic `calculation_id` plus input DAG, recomputable by the validator.
-- **Knowledge layer**: every run is archived into the user's private `.local/knowledge/`; the next run recalls it by default (wrapped in an "untrusted data" boundary with freshness checks) and the agent adjudicates old-vs-new conflicts item by item.
-- **Visible while it runs**: a full six-stage run takes 15-19 minutes, so progress streams to stderr — the first substantive line (which sources this stage pulled, which failed) lands in about 5 seconds, a complete company profile paragraph in about 2 minutes, then one per stage; a failed validation says it is retrying rather than leaving you guessing. Turn it off with `--progress off`. The stdout JSON contract is untouched.
-- **Interfaces**: MCP server (8 tools, pluggable into Codex CLI or any MCP client), local HTTP API with a thin browser page, multi-symbol batch, run-to-run change alerts, data-source health check.
-- **Multi-model access**: provider profiles (OpenAI / DeepSeek / Qwen / Zhipu GLM / Kimi) plus a 10-item compatibility matrix harness; API keys are read from environment variables only.
+### Research output is inspectable
+
+A six-stage research run produces:
+
+- `report.md`: the final research report.
+- `evidence.json`: evidence used in the run, including source, date, and raw reference.
+- `calculations.json`: deterministic inputs, functions, and calculation DAGs.
+- `conflicts.json`: disagreements between sources, without silent resolution.
+- `manifest.json`: model, version, stages, status, recalled documents, and run metadata.
+- `viewer.html`: a browser-readable evidence and report viewer.
+
+If required data is missing, the run becomes `incomplete` or `failed`. It does not fill gaps with stale values or
+model guesses.
 
 ## Quick start
 
-### Prerequisites
+### Requirements
 
-| Item | Requirement | Notes |
-|---|---|---|
-| OS | macOS / Linux (tested on macOS, darwin-arm64) | Windows untested (hook command hashing on Windows is deferred) |
-| Node.js | ≥ 22.18 (24 LTS recommended) | TypeScript files run directly with `node xxx.ts`; no build step |
-| Python | ≥ 3.10 (tested on 3.12) | fetch scripts and calc; a virtualenv is recommended |
-| Codex CLI | 0.149.0 (`npm install -g @openai/codex@0.149.0`) | tested version range in `codex-version.json`; run the tests first on any other version |
-| Model access | a ChatGPT subscription (Plus / Pro / Team) **or** an OpenAI API key **or** a Chinese-vendor API key | subscription login needs no key at all |
-
-### Install
-
-```bash
-git clone <this-repo> vibe-research-agent && cd vibe-research-agent   # placeholder until the public release; replace with the real URL
-# 1) orchestrator dependencies (Codex TS SDK / MCP SDK / ajv / zod)
-(cd orchestrator && npm install)
-# 2) Python virtualenv + fetch dependencies (requests / pandas / lxml / akshare / baostock)
-python3 -m venv .venv && .venv/bin/pip install -r .agents/skills/data-access/scripts/requirements.txt
-# 3) Codex CLI (global)
-npm install -g @openai/codex@0.149.0 && codex --version
-# 4) initialise the product's own private layer .local/ (directories + config skeleton; never touches ~/.codex; safe to re-run)
-scripts/init --python "$(pwd)/.venv/bin/python"
-# 5) log in to the product's own CODEX_HOME (fully isolated from your ~/.codex; subscription login opens the browser)
-CODEX_HOME="$(pwd)/.local/codex-home" codex login
-# 6) health check: engine / login state / Python deps / calc / registry / secret scan … (--net also probes one quote endpoint)
-scripts/doctor --net
-```
-
-To use an OpenAI API key instead of a subscription: skip step 5, `export OPENAI_API_KEY=sk-...`, and add `--auth api_key` at run time (or put `{"provider": {"auth": "api_key"}}` in `.local/config.json`).
-
-### First run
-
-```bash
-# full six-stage research (about 8–10 minutes; by default uses every applicable registry endpoint and recalls the knowledge archive)
-node orchestrator/src/run.ts --symbol 300308 --market SZ --python "$(pwd)/.venv/bin/python" < /dev/null
-# artifacts in .local/runs/<run-id>/ : report.md · viewer.html (open in a browser) · report_appendix.md · manifest.json
-```
-
-Exit codes: 0 complete / 2 incomplete or stale / 3 failed. Status semantics are documented in `orchestrator/README.md`. For a first smoke test, `--endpoints core` (the 8 core endpoints only) is faster; then run the full set.
-
-## Usage cheat sheet
-
-| Goal | Command |
+| Item | Requirement |
 |---|---|
-| Full research run | `node orchestrator/src/run.ts --symbol 300308 --market SZ --python <venv>/bin/python [--run-id X] [--endpoints full\|core] [--knowledge on\|off] [--provider <id>] [--model M] [--reasoning medium]` |
-| Fetch a single endpoint | `<venv>/bin/python .agents/skills/data-access/scripts/fetch_endpoint.py --endpoint em_margin_trading --symbol 300308 --out-dir .local/mcp/try` (catalog: `datasources/CATALOG.md`) |
-| Compute one number | `<venv>/bin/python calc/cli.py forward_pe --args '{"price": 100, "eps_forecast": 5}'` (function contracts: `calc/SPEC.md`) |
-| Plug into Codex CLI (MCP) | `codex mcp add vibe-research -- node "$(pwd)/orchestrator/src/mcp.ts"` → use list_endpoints / fetch_endpoint / start_research / research_status / get_report / get_evidence / list_runs / knowledge_recall inside Codex |
-| Local HTTP API + browser page | `node orchestrator/src/api.ts --port 8765` → open `http://127.0.0.1:8765/login?token=<token>` (token in `.local/api.token`) |
-| Multi-symbol batch | `node orchestrator/src/batch.ts --symbols 300308,002463 --market SZ --python <venv>/bin/python` → `.local/batches/<id>/summary.md` |
-| Run-to-run change alerts | `node orchestrator/src/alerts.ts --symbol 300308 --market SZ [--base run-a --new run-b]` → `.local/alerts/…` |
-| Data-source health check | `<venv>/bin/python datasources/health.py` |
-| Init / doctor | `scripts/init [--python P] [--provider <id>] [--force]` / `scripts/doctor [--net] [--json]` (exit 0 all ok / 2 warnings only / 3 failures; report in `.local/doctor/`) |
-| Provider compatibility matrix | `node orchestrator/src/finance/provider_matrix.ts --provider deepseek --model deepseek-v4-flash` |
+| Operating system | macOS or Linux; the primary verified environment is Apple Silicon macOS |
+| Node.js | ≥ 22.18; Node 24 LTS recommended |
+| Python | ≥ 3.10; Python 3.12 currently verified |
+| Codex CLI | Version 0.149.0 verified; see `codex-version.json` |
+| Model access | ChatGPT or Claude.ai subscription login, or a provider that supports the Responses API |
 
-Always append `< /dev/null` when running in the background; otherwise Codex waits on stdin.
+### Install dependencies
+
+```bash
+git clone https://github.com/simonlin1212/Vibe-Research.git vibe-research-agent
+cd vibe-research-agent
+
+npm install --prefix orchestrator
+npm install --prefix desktop
+
+python3 -m venv .venv
+.venv/bin/pip install -r .agents/skills/data-access/scripts/requirements.txt
+
+npm install -g @openai/codex@0.149.0
+scripts/init --python "$(pwd)/.venv/bin/python"
+```
+
+### Connect a model
+
+For ChatGPT subscription access, start the UI, open **Connect AI → Subscription**, and click **Log in to Codex**.
+Complete authorization on the official OpenAI page that opens, return to Settings, and click **Test and save**
+after the login status turns ready. The product uses its own `.local/codex-home` and never reads or overwrites
+`~/.codex`. If the browser does not open automatically, use
+`CODEX_HOME="$(pwd)/.local/codex-home" codex login` as a fallback.
+
+For Claude.ai subscription access, install and log in to Claude Code. The settings page detects it automatically;
+no Claude API key needs to be entered into Vibe Research.
+
+For API access, open **Connect AI → API access**, choose a provider, enter the API base URL, model name, and key,
+then click **Test and save**. A real model request must succeed before the new configuration is saved and shared
+by the agent pages.
+If the agent asks you to reconnect there, the local login session has expired; the research or backtest workflow
+itself has not failed.
+
+### Start the browser UI
+
+Open two terminals:
+
+```bash
+# Terminal 1: local API
+node orchestrator/src/api.ts --port 8765
+```
+
+```bash
+# Terminal 2: React UI
+npm run dev --prefix desktop
+```
+
+Open [http://127.0.0.1:5930](http://127.0.0.1:5930).
+
+Vite proxies `/api/*` locally and adds authentication on the server side. If `VRA_DATA_ROOT` is set, both
+processes must use the same value.
+
+### Run one research job from the command line
+
+```bash
+node orchestrator/src/run.ts \
+  --symbol 300308 \
+  --market SZ \
+  --python "$(pwd)/.venv/bin/python" < /dev/null
+```
+
+A full run usually takes 15–19 minutes. Progress remains visible, and results are written to
+`.local/runs/<run-id>/`. Exit codes: `0` complete, `2` incomplete/stale, and `3` failed.
+
+## How it works
+
+```text
+Browser workbench
+Home agent · review · intelligence · company research · backtesting · document library
+        │
+        ▼
+Finance agent layer
+117 data endpoints · six-stage SOP · calc · validator · report archive
+        │
+        ▼
+OpenAI Codex Harness
+agent loop · context · tools · progress · sandbox
+        │
+        ▼
+Local Agent Runtime
+Codex SDK · Claude Code CLI (local detection / login probe / restricted execution)
+        │
+        ▼
+Model Provider
+ChatGPT / Claude.ai subscriptions · OpenAI · DeepSeek · Qwen · GLM · Kimi · MiMo · compatible APIs
+```
+
+The project enforces its rules at three levels:
+
+| Layer | Components | Purpose |
+|---|---|---|
+| Instruction | `AGENTS.md` + `.agents/skills/` | Defines financial research discipline and procedures |
+| Execution | Codex hooks + workspace sandbox | Restricts network, file access, data fetching, and output locations |
+| Orchestration | orchestrator + validator + calc + gate | Enforces stages, citations, deterministic calculations, and compliance |
+
+The project does not modify Codex source code. The Codex checkout is an upstream reference only; the product uses
+the official CLI and SDK.
 
 ## Model access
 
-The default is **ChatGPT subscription login** (the product's own CODEX_HOME; `~/.codex` is never touched). Switching models takes three steps:
+The **Connect AI** page separates the agent runtime from the model provider:
 
-```bash
-export DEEPSEEK_API_KEY=...                                             # 1) keys live in environment variables only (names in providers/*.json)
-node orchestrator/src/finance/provider_matrix.ts --provider deepseek            # 2) run the 10-item compatibility matrix first (results in .local/provider-matrix/)
-node orchestrator/src/run.ts --symbol 300308 --provider deepseek --model deepseek-v4-flash --python ...   # 3) use it for research once green
-```
+- The Codex Harness manages local context, tool calls, task state, progress, and failure handling.
+- The Local Agent Runtime connects subscription logins to the workbench. It currently supports the product Codex runtime and the locally installed Claude Code CLI, with live version and login detection. Codex login can be launched from Settings and is detected automatically after authorization.
+- The model provider supplies reasoning only. Changing models does not replace tools, memory, evidence, or research rules.
+- Codex subscription mode uses the product's own `CODEX_HOME` and never reads or writes the user's `~/.codex`. Claude subscription mode reuses the local Claude Code login while forcing local tools, MCP, web-search tools, and CLI session persistence off.
+- Both subscription and API configurations must pass a real conversation probe before **Test and save** updates the active configuration.
+- In API mode, the key remains in the current browser's `localStorage`. It is sent to the local backend per request
+  and is not written to the repository, configuration files, run ledger, or logs.
 
-Built-in profiles: `openai` / `deepseek` · `mimo` (native Responses API) / `qwen` · `glm` · `kimi` (hosted on Alibaba Cloud Bailian). Or set it in `.local/config.json`: `{"provider": {"profile": "deepseek"}, "defaults": {"model": "deepseek-v4-flash"}}`.
+Built-in provider templates: OpenAI, DeepSeek, Qwen, GLM, Kimi, and MiMo. The engine supports the Responses API
+only. A template's presence does not mean it passed the compatibility matrix; the UI distinguishes verified
+providers from unverified templates.
 
-**Responses protocol only.** The engine removed `wire_api="chat"` entirely, so a vendor must expose an OpenAI-compatible `/responses` endpoint — otherwise you need your own Responses→Chat gateway (`responses_support: "gateway"`). The three Bailian templates carry a `{WorkspaceId}` placeholder in `base_url`: copy one to `.local/providers/<id>.json` and fill in your own workspace ID, or selecting it fails immediately. If you do not set `auth`, the template's only supported mode (`api_key`) is chosen automatically; an explicit `--auth` / `VRA_PROVIDER_AUTH` always wins. Third-party templates must declare an explicit https `base_url` (Codex falls back to the official OpenAI endpoint when `base_url` is empty).
+See [docs/model-access.md](docs/model-access.md) and [providers/README.md](providers/README.md).
 
-OpenAI baseline matrix (subscription login, 2026-08-22): 9 pass · 1 n/a. Matrices for Chinese vendors can only be run with the corresponding API keys; `matrix.status` in each template is filled in from real results. Detailed guide: [docs/model-access.md](docs/model-access.md) (Chinese); template fields and constraints: [providers/README.md](providers/README.md).
+## Data and markets
 
-## Configuration and environment variables
+- Current registry: **117 endpoints across 30 layers**, covering CN, US, and HK.
+- Data includes quotes, candles, financial statements, consensus, filings, reports, fund flows, positioning,
+  options, SEC/FINRA/CBOE, news, macro data, industry thermometers, hiring, restrictions, and data calendars.
+- A-share, US, and Hong Kong symbols work in the watchlist, portfolio, document library, and agent conversations.
+- **The six-stage company research workflow currently supports A-shares only.** It will not launch an empty
+  US or Hong Kong research run without the required data chain.
+- Scanned PDFs require OCR. Text PDFs preserve page-level citations.
 
-Precedence (low → high): built-in defaults ← `vibe-research.config.json` (product config, committed, no secrets) ← `.local/config.json` (user-private, gitignored) ← environment variables ← CLI flags.
+See [datasources/CATALOG.md](datasources/CATALOG.md) for the endpoint catalog.
 
-Example `.local/config.json`:
+## Project structure
 
-```json
-{ "python": "/abs/path/.venv/bin/python",
-  "provider": { "profile": "openai", "auth": "chatgpt_login" },
-  "defaults": { "model": null, "reasoning": "medium", "turn_timeout_min": 20 } }
-```
-
-| Variable | Purpose |
+| Path | Purpose |
 |---|---|
-| `VRA_PYTHON` / `VRA_CODEX_PATH` / `VRA_CODEX_HOME` | Python interpreter / Codex binary (empty = SDK-bundled) / product CODEX_HOME (default `.local/codex-home`) |
-| `VRA_PROVIDER` / `VRA_PROVIDER_AUTH` | provider profile id / auth mode (`chatgpt_login` or `api_key`) |
-| `OPENAI_API_KEY`, `DEEPSEEK_API_KEY`, `DASHSCOPE_API_KEY` (shared by the three Bailian templates) | provider keys (names declared by each template's `env_key`) |
-| `VRA_API_TOKEN` | Bearer token for the HTTP API (auto-generated into `.local/api.token` if unset) |
-| `VRA_SEC_CONTACT` | contact required by SEC endpoints ("name email", per SEC policy) |
-| `IWENCAI_API_KEY` | iwencai (optional) |
-| `VRA_ALLOW_INSECURE_TLS=1` | explicit downgrade when the SWS / SZSE certificate chain fails (default: fail, no downgrade) |
-| `VRA_REPO_ROOT` | repository root for the MCP server (default: derived from file location) |
-
-**Secrets are read from environment variables only and never written to any config file; the agent's shell commands inherit no secret-like variables.**
-
-## Architecture
-
-```
-                 ┌──────────────── prompt layer ───────────────┐
-                 │ AGENTS.md constitution + .agents/skills SOPs │
-                 └─────────────────────────────────────────────┘
- fetch (orchestrator-executed, in-memory ledger) → agent turn (Codex SDK, sandbox cwd = run dir, no network) → validator → retry → compliance gate → merge
-   ▲ fetch_endpoint.py × registry                  ▲ hooks: Stop (no finishing without artifacts) / PreToolUse (no fetch scripts / network / evidence edits)
-   │ raw/ stored + sha256                          │ calc/cli.py (deterministic computation, DAG recorded)
- ┌──────────────── execution layer ───────────────┐  ┌─────────── orchestration layer ───────────┐
- │ Codex native hooks + workspace-write sandbox   │  │ orchestrator (TS) + validator + gate       │
- └────────────────────────────────────────────────┘  └────────────────────────────────────────────┘
-```
-
-Six stages: `profile → financials → estimates → valuation → risk → report`. At least one Codex turn per stage (if the validator or the Stop hook rejects the result, the stage is retried with the errors attached); the agent reads the orchestrator-fetched `fetch/*.json`, this run's `calcs/` and `conflicts.json`, and the SOP documents in the repository; it can only compute through calc and only writes the current stage's artifacts. The validator does not trust the agent's self-report: every file under `fetch/` and `raw/` must be in the in-memory ledger with a matching sha256, every referenced evidence id must exist, and every required calculation must be present and recomputable.
-
-| Path | Role |
-|---|---|
-| `AGENTS.md` | research constitution (auto-loaded by Codex) |
-| `.agents/skills/` | research SOP skills (`data-access` fetching, `company-research` six-stage SOP, `valuation`, `earnings-analysis`, `industry-chain`, `catalyst-risk`; the real project-level skill discovery path of Codex) |
-| `datasources/` | endpoint registry `registry.json` + generated `CATALOG.md` + `health.py` + RSS source table |
-| `calc/` | deterministic calc library (pure functions + fixture tests + CLI) |
-| `orchestrator/` | thin orchestrator / validator / gate / hooks / knowledge layer / viewer / service / MCP / HTTP API / batch / alerts / providers / matrix (see `orchestrator/README.md`) |
-| `providers/` | provider templates (environment-variable names only) |
-| `knowledge/` | knowledge-layer **templates** (user archives always live in `.local/knowledge/`) |
-| `scripts/` | `init` (idempotent `.local/` setup) / `doctor` (health check) |
-| `docs/` | model access guide and other docs |
-| `.local/` | user-private layer: config / run artifacts / knowledge archives / login state / tokens (gitignored) |
-| `codex-version.json` | tested Codex version anchor |
-
-## Data sources
-
-115 endpoints / 29 layers / CN + US + HK, each tagged with a compliance level (`cn-public` domestic public web APIs · `S` official government data · `B` unofficial / personal research · `C` personal research only · `rss-public` public RSS). Principles: units and currencies are stated by the mapper exactly as the source reports them; every evidence item is bound to its raw response; **the fetch layer never sums, divides or derives** (derived quantities always go through calc with a DAG); cross-source conflicts are reported explicitly, never silently resolved. Catalog: [datasources/CATALOG.md](datasources/CATALOG.md). Adding an endpoint = source function + mapper + registry entry + regenerate the catalog + offline test.
-
-Some sources have local limitations (Eastmoney push2 occasionally resets — multiple hosts are tried; Baidu K-line returns 403 server-side; SWS xls certificate chain; mootdx occasionally unreachable; SEC requires `VRA_SEC_CONTACT`); `health.py` reports them faithfully.
+| `desktop/` | React + Vite local browser UI |
+| `orchestrator/` | Agent orchestration, validators, API, MCP, chat, document library, and report archive |
+| `backtest/` | Deterministic backtest engine and tool entry point |
+| `calc/` | Deterministic calculation library |
+| `datasources/` | Endpoint registry, catalog, and health checks |
+| `.agents/skills/` | Financial research procedures and data tools |
+| `providers/` | Provider templates with no secrets |
+| `scripts/` | Initialisation and diagnostics |
+| `.local/` | Private user data, reports, sessions, and run artifacts; gitignored |
 
 ## Security and privacy
 
-- **Product / user data separation**: positions, keys and personal research conclusions never enter the repository; all private data lives in `.local/` (gitignored).
-- **Secrets via environment variables only**; provider templates hold variable names; the Codex thread's shell environment policy excludes `*KEY* / *SECRET* / *TOKEN* / *PASSWORD*`; event logs and matrix artifacts are redacted before being written.
-- **Isolated CODEX_HOME**: the product never reads or writes the user's `~/.codex`; wiring the MCP server into the user's own CODEX_HOME is the user's decision.
-- **Sandbox**: the agent's cwd is locked to the run directory (workspace-write), no network access, approval never; fetching is executed by the orchestrator in a minimal environment.
-- **Local API**: binds 127.0.0.1 by default (an explicit non-loopback `--host` requires `VRA_API_TOKEN` and disables cookie login; loopback = 127.0.0.1 / localhost / ::1); every request is authenticated: a Bearer token works on every route, and on loopback binds `/login?token=` exchanges the query-string token for a cookie that can only pass an allow-list of read-only GET routes; rejects cross-site / non-local Origin / non-JSON POST; every path goes through `safePath()` (no symlinks, must stay inside `.local`).
-- **Output red line**: data / frameworks / probabilities / decision points only — no opening, adding to or reducing a position, no target prices, no stop losses; enforced by schema isolation plus a compliance gate.
+- Original research documents stay on the local machine. The model receives only passages selected by server-side search.
+- Keys for the backend's default provider come only from environment variables and are not written to product configuration or the repository.
+- An API key entered in the browser stays in that browser's `localStorage` and is sent through the local backend to the selected model provider only when used.
+- Document chat disables shell access, image reading, subagents, plugins, apps, and network access.
+- Document citations use `[资料:<id> p.<page>]`. Missing, incorrect, or unknown citations are rejected by code.
+- Research-stage agents have no network access. The orchestrator fetches data through controlled scripts and stores
+  raw responses with hashes.
+- The local API binds to `127.0.0.1` by default. Write requests require authentication and JSON.
+- Output is limited to data, analytical frameworks, scenario probabilities, and decision checkpoints. It does not
+  provide position, sizing, target-price, or stop-loss instructions.
 
 ## Development and tests
 
 ```bash
-.venv/bin/pip install pytest                                               # Python test dependency (the fetch requirements do not include pytest)
-(cd orchestrator && npm run typecheck && npm test)                       # TypeScript: 94 node:test cases
-.venv/bin/python -m pytest calc/tests -q                                   # calc: 128 tests
-.venv/bin/python -m pytest .agents/skills/data-access/scripts/tests -q    # fetch-layer offline tests
-.venv/bin/python datasources/gen_catalog.py                                # regenerate CATALOG.md after editing the registry
+npm run typecheck --prefix orchestrator
+npm test --prefix orchestrator
+
+npm run typecheck --prefix desktop
+npm test --prefix desktop
+npm run build --prefix desktop
+
+.venv/bin/python -m pytest calc/tests -q
+.venv/bin/python -m pytest backtest/tests -q
+.venv/bin/python -m pytest .agents/skills/data-access/scripts/tests -q
 ```
 
-Working convention: after every step → independent Codex review (`codex review` / a `codex exec` review prompt) → verify each finding (they do misreport) → fix → re-review until no substantive issue remains → only then merge; the audit always precedes the push.
+Current verified baseline:
 
-## Status and roadmap
+- orchestrator: **525/525**, Core industry-term count **0**, TypeScript typecheck passed.
+- desktop: **22/22**, TypeScript typecheck and Vite production build passed.
+- Python (calculation library, backtest, and data scripts): **569/569**.
+- The V1.0.0 release changes passed an independent Codex re-review with no actionable P1/P2 findings.
 
-**Done (2026-08-22)**: Phase 0, all seven steps (orchestrator v0.4 + validator + gate + hooks v0 + hard-test harness) and Phase 1 M1 (full data-source integration) / M2 (knowledge layer · viewer · extension data in stages · technical indicators and chip distribution moved into calc) / M3 (service · MCP · HTTP API · batch · alerts) / M4 (provider templates · compatibility matrix · thin UI) / `scripts/init` · `scripts/doctor`, each closed through multiple rounds of independent Codex review.
+Project rule: test each completed component, run an independent Codex review, verify every finding, fix valid issues,
+and re-review. A component is not described as complete and is not committed or pushed before that loop closes.
 
-**To do**: real matrix runs for Chinese vendors (needs their API keys) and template back-fill; Windows hook hashing; a self-built Responses↔Chat adapter (separate sub-project); formal release (license decision + tag + Release; maintainer to-dos and release order in [docs/release-checklist.md](docs/release-checklist.md), Chinese).
+## Current boundaries
+
+- V1.0.0 is distributed as open-source code plus a local browser UI. The local API and browser UI are started separately.
+- MiMo API has passed an end-to-end run from an empty configuration to a real business report. Other third-party
+  providers still require the user's own keys and are not marked verified without real compatibility-matrix runs.
+- Windows has not received equivalent verification.
 
 ## Changelog
 
@@ -219,7 +293,10 @@ See [CHANGELOG.md](CHANGELOG.md).
 
 ## Disclaimer
 
-This project produces research data, analytical frameworks, scenario probabilities and decision points only. **It does not provide any investment action advice** (opening, adding to or reducing a position, target prices, stop losses). Nothing here constitutes investment advice; data comes from third-party public interfaces and may be delayed or wrong — verify it yourself and take responsibility for your own decisions. Respect the terms of use of each data source (some endpoints are for personal research only).
+This project produces research data, analytical frameworks, scenario probabilities, and decision checkpoints only.
+It does not provide investment-action instructions. Nothing produced by this project is investment advice.
+Third-party public data may be delayed, incomplete, or wrong. Users are responsible for verification, decisions,
+and compliance with each data source's terms.
 
 ## Support
 
@@ -229,6 +306,7 @@ This project produces research data, analytical frameworks, scenario probabiliti
 
 ## License
 
-License to be decided by the maintainer (the openai/codex engine is Apache-2.0; this repository contains no Codex source). A `LICENSE` file and badge will be added before release.
+This repository is licensed under the [MIT License](LICENSE). OpenAI Codex is licensed under Apache-2.0; this
+repository does not contain Codex source code.
 
 **Author:** Simon Lin · X [@linsizhen](https://x.com/linsizhen) · Email: [simonlin0423@gmail.com](mailto:simonlin0423@gmail.com)

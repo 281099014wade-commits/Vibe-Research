@@ -79,7 +79,7 @@ test("configFromArgs:产品配置进入 RunConfig;CLI 覆盖配置文件", () =>
   assert.equal(cfg.turnTimeoutMs, 3 * 60_000);
 });
 
-/* ===== 数据根:装机版必需的口子(2026-08-26) ===== */
+/* ===== 数据根:代码与用户数据分离 ===== */
 
 test("VRA_DATA_ROOT 改数据根 —— 用户配置 / 产物 / 引擎 home 必须同时跟着走", () => {
   const repo = tmpRepo();
@@ -89,11 +89,11 @@ test("VRA_DATA_ROOT 改数据根 —— 用户配置 / 产物 / 引擎 home 必�
 
   const pc = loadProductConfig(repo, { env: { VRA_DATA_ROOT: data } });
 
-  assert.equal(pc.resolved.dataRoot, data, "产物根没跟着换 —— 装机版会往只读的 App 包里写");
+  assert.equal(pc.resolved.dataRoot, data, "产物根没跟着换 —— 会继续往旧代码目录写");
   assert.equal(pc.defaults.max_retries, 4, "没读到新数据根下的用户配置 —— 说明读配置的根还是旧的");
   // 🔴 引擎 home 的默认值写的是「数据根下面那一格」,数据根一换它必须跟着换
   assert.equal(pc.resolved.codexHome, path.join(data, "codex-home"),
-    "引擎 home 留在产品根下 —— 装机版会把引擎状态写进 App 包，报出来是一句看不懂的权限错误");
+    "引擎 home 留在产品根下 —— 换代码目录后会丢失原有引擎状态");
   assert.ok(pc.sources.some((s) => s.startsWith(data)), `用户配置来源应指向新数据根:${pc.sources.join(" / ")}`);
 });
 

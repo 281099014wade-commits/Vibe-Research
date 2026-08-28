@@ -57,6 +57,11 @@ test("saveWatch():写到一半失败也要把缓存刷成台账真实状态", ()
     "还在直接把「想写成的列表」当结果 —— 那不是台账的真实状态");
 });
 
+test("saveWatch():同一页面的连续保存必须串行，旧保存不能反删新代码", () => {
+  assert.match(watchSrc, /let saveQueue:\s*Promise<void>/);
+  assert.match(watchSrc, /saveQueue\.catch\(\(\) => undefined\)\.then\(\(\) => writeWatch\(want\)\)/);
+});
+
 test("hydrate 的慢快照不许覆盖新缓存(读写并发)", () => {
   for (const [name, src] of [["watchlist", watchSrc], ["notes", notesSrc]] as const) {
     assert.ok(/const mine = \+\+seq;/.test(src) && /if \(mine !== seq\) return;/.test(src),

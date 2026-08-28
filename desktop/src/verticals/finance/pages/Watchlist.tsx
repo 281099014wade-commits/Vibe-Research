@@ -52,7 +52,7 @@ export function Watchlist() {
   const add = () => {
     const { next, added } = addCodes(codes, input);
     if (added === 0) {
-      setHint(input.trim() ? "没识别到新的 6 位代码（可能已在自选里）" : null);
+      setHint(input.trim() ? "没识别到新的 A 股、港股或美股代码（可能已在自选里）" : null);
       setInput("");
       return;
     }
@@ -74,7 +74,7 @@ export function Watchlist() {
             .map((c) => {
               const q = quotes[c];
               return q
-                ? `${q.name}(${c}) 现价${q.price ?? "未取到"} ${pct(q.change_pct)} PE(TTM)${q.pe_ttm ?? "—"} 换手${q.turnover_pct ?? "—"}%`
+                ? `${q.name}(${c},${q.currency}) 现价${q.price ?? "未取到"} ${pct(q.change_pct)} PE(TTM)${q.pe_ttm ?? "—"} 换手${q.turnover_pct ?? "—"}%`
                 : `${c}（行情未取到）`;
             })
             .join("\n")
@@ -125,7 +125,7 @@ export function Watchlist() {
 
       <GlassCard className="mb-4">
         <label className="mb-1.5 block text-xs text-muted-foreground">
-          批量添加 —— 粘贴一串代码即可（逗号 / 空格 / 换行都行，自动识别 6 位 A 股代码）
+          批量添加 —— 支持 A 股、港股、美股（逗号 / 空格 / 换行都行）
         </label>
         <div className="flex gap-2">
           <textarea
@@ -135,7 +135,7 @@ export function Watchlist() {
               if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) add();
             }}
             rows={2}
-            placeholder={"如：600519 000858, 002463\n300750 688017"}
+            placeholder={"如：600519 AAPL 00700.HK\n000858, MSFT, 09988.HK"}
             className="flex-1 resize-y rounded-lg border border-border bg-black/20 px-3 py-2 text-sm outline-none focus:border-primary/50"
           />
           <button
@@ -161,7 +161,7 @@ export function Watchlist() {
               <>
                 {/* 把「开着却没在刷」的原因说清楚，否则用户会以为坏了 */}
                 {live && !polling && codes.length > 0 && (
-                  <span>{isTradingHours() ? "已暂停（页面未激活）" : "非交易时段 · 已暂停"}</span>
+                  <span>{isTradingHours(codes) ? "已暂停（页面未激活）" : "当前关注市场均为非交易时段"}</span>
                 )}
                 {polling && <span className="text-primary/80">实时 · 每 3 秒</span>}
                 {updatedAt && (
@@ -203,7 +203,10 @@ export function Watchlist() {
                   return (
                     <tr key={c} className="border-b border-border/30">
                       <td className="px-2 py-2.5 font-medium">{q?.name || "—"}</td>
-                      <td className="px-2 py-2.5 font-mono text-xs text-muted-foreground">{c}</td>
+                      <td className="px-2 py-2.5 font-mono text-xs text-muted-foreground">
+                        {c}
+                        {q && <span className="ml-1.5 rounded border border-border px-1 py-0.5 text-[10px]">{q.currency}</span>}
+                      </td>
                       <td className={cn("px-2 py-2.5 font-mono", color(q?.change_pct))}>{q?.price ?? "—"}</td>
                       <td className={cn("px-2 py-2.5 font-mono", color(q?.change_pct))}>{q ? pct(q.change_pct) : "—"}</td>
                       <td className="px-2 py-2.5 font-mono text-muted-foreground">{q?.pe_ttm ?? "—"}</td>

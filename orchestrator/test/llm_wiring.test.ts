@@ -26,15 +26,22 @@ test("🔴 前提：这几个文件确实在 —— 改名 / 搬走时不许静�
 
 test("🔴 传输层自己带上用户配置 —— 不靠每个调用方记得传", () => {
   const src = read("backend.ts");
-  assert.ok(/import \{[^}]*readUserLlm[^}]*\} from "\.\/llmStore"/.test(src), "backend.ts 必须自己去读用户配置");
-  // 取 chat 这一段来看，别拿整份文件做判断（别处出现同名字样会造成假绿）
-  const seg = /chat:\s*\([^)]*\)\s*=>\s*\{([\s\S]*?)\n  \},/.exec(src);
+  assert.ok(/import \{[^}]*readUserLlm[^}]*\} from "\.\/llmStore(?:\.ts)?"/.test(src), "backend.ts 必须自己去读用户配置");
+  // 读配置集中在 requestLlm，chat 与标题翻译两条传输入口都必须调用它。
+  // 只看整份文件会假绿：helper 留着、真正的请求入口绕开它照样能过。
+  const helper = /function requestLlm\([^)]*\)[^{]*\{([\s\S]*?)\n\}\n\nasync function call/.exec(src);
+  assert.ok(helper, "没解析到 requestLlm 的实现，断言等于没做");
+  const helperBody = helper[1]!;
+  assert.ok(/readUserLlm\(\)/.test(helperBody), "传输层必须在调用方没给时去读用户配置");
+  assert.ok(/"broken"/.test(helperBody) && /"unavailable"/.test(helperBody), "必须把「坏了」「读不到」与「没配」分开处理");
+  assert.ok(/throw new ApiError/.test(helperBody), "坏了 / 读不到要报出来，不能静默回落");
+
+  const seg = /chat:\s*(?:async\s*)?\([^)]*\)\s*=>\s*\{([\s\S]*?)\n  \},/.exec(src);
   assert.ok(seg, "没解析到 backend.chat 的实现，断言等于没做");
   const body = seg[1]!;
-  assert.ok(/readUserLlm\(\)/.test(body), "chat 里必须在调用方没给时去读用户配置");
-  // 🔴 坏了 / 读不到时**不许当没配**回落到后端默认 —— 那正是"悄悄换一家去打"的形状
-  assert.ok(/"broken"/.test(body) && /"unavailable"/.test(body), "chat 必须把「坏了」「读不到」与「没配」分开处理");
-  assert.ok(/throw new ApiError/.test(body), "坏了 / 读不到要报出来，不能静默回落");
+  assert.ok(/requestLlm\(llm\)/.test(body), "chat 必须走统一的用户配置读取入口");
+  const translate = /translateHeadlines:\s*(?:async\s*)?\([^)]*\)\s*=>\s*\{([\s\S]*?)\n  \},/.exec(src);
+  assert.ok(translate && /requestLlm\(llm\)/.test(translate[1]!), "标题翻译也必须走同一入口，不能静默换模型");
   // 🔴 带不带 llm 按 `!== undefined` 判，不按真值判：真值判会把显式的 null / "" 悄悄丢掉，
   //    后端的形状校验就压根不会执行 —— 后端刚堵上的那条后门，在这个兄弟编译点上又开了。
   assert.ok(/use !== undefined \? \{ llm: use \}/.test(body), "带不带 llm 必须按 !== undefined 判");
@@ -119,5 +126,5 @@ test("🔴 成本和 ≤ 0 时的盈亏比例给 null，不给 0 —— 0 是个
   assert.ok(/:\s*null,?\s*$/.test(m[0]), `算不出时必须给 null：${m[0]}`);
 
   const page = fs.readFileSync(path.join(LIB, "..", "pages", "Portfolio.tsx"), "utf8");
-  assert.ok(/totals\.pnl_pct == null \? "—"/.test(page), "界面要把算不出如实渲染成「—」");
+  assert.ok(/total\.pnl_pct == null \? "—"/.test(page), "每个币种的汇总都要把算不出如实渲染成「—」");
 });

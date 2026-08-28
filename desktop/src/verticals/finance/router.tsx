@@ -1,5 +1,6 @@
 import { createBrowserRouter, Navigate } from "react-router-dom";
 import { Layout } from "@/components/layout/Layout";
+import { Home } from "@/pages/Home";
 import { DailyReview } from "@/pages/DailyReview";
 import { Intel } from "@/pages/Intel";
 import { Signals } from "@/pages/Signals";
@@ -8,7 +9,6 @@ import { SectorDetail } from "@/pages/SectorDetail";
 import { Debate } from "@/pages/Debate";
 import { Backtest } from "@/pages/Backtest";
 import { Portfolio } from "@/pages/Portfolio";
-import { StockData } from "@/pages/StockData";
 import { Watchlist } from "@/pages/Watchlist";
 import { Research } from "@/pages/Research";
 import { MyReports } from "@/pages/MyReports";
@@ -19,7 +19,7 @@ export const router = createBrowserRouter([
   {
     element: <Layout />,
     children: [
-      { path: "/", element: <Navigate to="/daily-review" replace /> },
+      { path: "/", element: <Home /> },
       { path: "/daily-review", element: <DailyReview /> },
       { path: "/intel", element: <Intel /> },
       { path: "/intel/:tab", element: <Intel /> },
@@ -28,7 +28,8 @@ export const router = createBrowserRouter([
       { path: "/sectors", element: <Sectors /> },
       { path: "/sectors/:key", element: <SectorDetail /> },
       { path: "/portfolio", element: <Portfolio /> },
-      { path: "/stock-data", element: <StockData /> },
+      // 旧版「个股研究」链接保留兼容，但产品里只有一个研究页。
+      { path: "/stock-data", element: <Navigate replace to="/research" /> },
       { path: "/debate", element: <Debate /> },
       { path: "/backtest", element: <Backtest /> },
       { path: "/watchlist", element: <Watchlist /> },

@@ -82,11 +82,152 @@ test("导航与路由双向对得上 —— 有导航没路由=点了白屏,有�
 
   assert.deepEqual(navTos.filter((t) => !reachable(t)), [], "有导航项没有对应路由(点了白屏)");
 
-  // 反向:每条静态路由要么在导航里,要么是重定向根 `/`
-  const orphan = staticRoutes.filter((p) => p !== "/" && !navTos.includes(p));
+  // 反向:每条静态路由要么在导航里,要么是明示的旧地址兼容跳转。
+  const redirects = [...routerSrc.matchAll(/\{\s*path:\s*"([^"]+)"\s*,\s*element:\s*<Navigate\b/g)].map((m) => m[1]!);
+  const orphan = staticRoutes.filter((p) => p !== "/" && !navTos.includes(p) && !redirects.includes(p));
   assert.deepEqual(orphan, [], "有路由不在导航里(永远点不到)");
 
   // 参数路由的静态父路径必须真的存在,否则它谁也点不到
   assert.deepEqual(paramPrefixes.filter((p) => p !== "" && !staticRoutes.includes(p)), [],
     "参数路由的静态父路径要有页面");
+});
+
+test("产品界面不展示 Phoenix Tree 官网入口", () => {
+  const layoutSrc = fs.readFileSync(path.join(FINANCE, "components", "layout", "Layout.tsx"), "utf8");
+  assert.ok(!/phoenixtree\.ai/i.test(layoutSrc), "本产品不进入官网产品系统，侧栏不得展示 Phoenix Tree 网址");
+});
+
+test("根路径是极简功能首页,首屏可直接与 Agent 交流", () => {
+  const routerSrc = fs.readFileSync(path.join(FINANCE, "router.tsx"), "utf8");
+  const layoutSrc = fs.readFileSync(path.join(FINANCE, "components", "layout", "Layout.tsx"), "utf8");
+  const homeSrc = fs.readFileSync(path.join(FINANCE, "pages", "Home.tsx"), "utf8");
+
+  assert.match(routerSrc, /path:\s*"\/",\s*element:\s*<Home\s*\/>/);
+  assert.ok(!/Navigate\s+to="\/daily-review"/.test(routerSrc), "根路径仍在跳过首页");
+  assert.match(layoutSrc, /to:\s*"\/",\s*icon:\s*Home,\s*label:\s*"首页"/);
+  assert.match(layoutSrc, /to:\s*"\/settings",\s*icon:\s*Settings,\s*label:\s*"接入 AI"/);
+  assert.match(homeSrc, /<FinanceHomeAgent\s+configured=\{modelReady\}\s*\/>/);
+  assert.match(homeSrc, /本地金融研究 Agent/);
+  assert.match(homeSrc, /to="\/settings"/);
+  assert.ok(!/Codex Harness 研究流程|全部功能，一页直达|先看清今天发生了什么/.test(homeSrc),
+    "首页仍保留上一版的大段说明");
+
+  for (const route of [
+    "/daily-review", "/intel", "/signals", "/sectors", "/debate", "/backtest",
+    "/research", "/watchlist", "/portfolio", "/my-reports", "/notes",
+  ]) {
+    assert.match(homeSrc, new RegExp(`to:\\s*"${route}"`), `首页缺少功能入口:${route}`);
+  }
+  assert.ok(!/to:\s*"\/stock-data"/.test(homeSrc), "首页不应同时列出两个个股研究入口");
+  assert.equal((homeSrc.match(/title:\s*"个股研究"/g) ?? []).length, 1, "首页只保留一个个股研究");
+});
+
+test("个股研究只有一个入口，旧地址跳转且归档只展示名称与代码", () => {
+  const routerSrc = fs.readFileSync(path.join(FINANCE, "router.tsx"), "utf8");
+  const layoutSrc = fs.readFileSync(path.join(FINANCE, "components", "layout", "Layout.tsx"), "utf8");
+  const researchSrc = fs.readFileSync(path.join(FINANCE, "pages", "Research.tsx"), "utf8");
+
+  assert.match(routerSrc, /path:\s*"\/stock-data"\s*,\s*element:\s*<Navigate\s+replace\s+to="\/research"/);
+  assert.equal((layoutSrc.match(/label:\s*"个股研究"/g) ?? []).length, 1);
+  assert.ok(!/label:\s*"深度研究"/.test(layoutSrc));
+  assert.match(researchSrc, /title="个股研究"/);
+  assert.match(researchSrc, /\^\\d\{6\}\$/, "现有研究底座只支持 A 股，界面必须按真实能力限制输入");
+  assert.match(researchSrc, /startResearch\(\{\s*symbol:\s*code,\s*endpoints:/, "A 股代码必须传到真实研究入口");
+  assert.ok(!/港股或美股标的跑完整|A 股 \/ 港股 \/ 美股代码/.test(researchSrc), "界面不能承诺尚未接通的港美完整研究");
+  const archive = researchSrc.slice(researchSrc.indexOf("<h3 className=\"mb-3 font-semibold\">研究归档"));
+  assert.match(archive, /r\.name\s*\?\?\s*"个股"/);
+  assert.match(archive, /r\.symbol\s*\?\?\s*"—"/);
+  assert.ok(!/r\.status|r\.finished_at|r\.started_at|<span[^>]*>\s*\{r\.run_id\}\s*<\/span>/.test(archive),
+    "归档行又把运行号、状态或日期渲染给用户了");
+});
+
+test("首页 Agent 是可发送的真实对话区,不是装饰输入框", () => {
+  const homeSrc = fs.readFileSync(path.join(FINANCE, "pages", "Home.tsx"), "utf8");
+  const dockSrc = fs.readFileSync(path.join(FINANCE, "components", "ui", "FinanceAiDock.tsx"), "utf8");
+  const layoutSrc = fs.readFileSync(path.join(FINANCE, "components", "layout", "Layout.tsx"), "utf8");
+  const llmSrc = fs.readFileSync(path.join(FINANCE, "lib", "llm.ts"), "utf8");
+
+  assert.match(homeSrc, /<FinanceHomeAgent\s+configured=\{modelReady\}\s*\/>/,
+    "首页状态与对话可用性必须共用同一个 modelReady，不能各判各的");
+  const homeAgent = dockSrc.slice(
+    dockSrc.indexOf("export function FinanceHomeAgent"),
+    dockSrc.indexOf("export function FinanceAiConsole"),
+  );
+  assert.match(homeAgent, /FinanceHomeAgent\(\{ configured \}: \{ configured: boolean \}\)/);
+  assert.match(homeAgent, /useAiChat\("home-agent",\s*sendTurn\)/);
+  assert.match(homeAgent, /!configured[\s\S]*<AiMessages[\s\S]*<AiComposer/);
+  assert.match(homeAgent, /onPick=\{setDraft\}/,
+    "首页任务模板应先填入输入框，不能点击后立刻冒充已执行");
+  assert.match(homeAgent, /value=\{draft\}[\s\S]*onValueChange=\{setDraft\}/,
+    "预填任务必须允许用户把‘这家公司 / 这个行业’改成真实名称");
+  assert.match(homeAgent, /onSend=\{\(text\) => void chat\.submit\(text\)\}/);
+  assert.match(homeAgent, /onClick=\{chat\.clear\}/);
+  assert.match(dockSrc, /backend\.chat\(message, session, signal\)/,
+    "首页 submit 必须最终接到真实后端对话接口");
+  assert.match(dockSrc, /FinanceAiConsole[\s\S]*configured=\{hasLlm\(\)\}/);
+  assert.match(dockSrc, /FinanceAiDock[\s\S]*configured=\{hasLlm\(\)\}/);
+  const hasLlmBlock = llmSrc.slice(llmSrc.indexOf("export function hasLlm"), llmSrc.indexOf("export function loadLlm"));
+  assert.match(hasLlmBlock, /loadUserLlm\(\)/, "全局 Agent 必须识别浏览器里配置的模型");
+  assert.match(hasLlmBlock, /cached\s*\?\s*cached\.provider\.key_present\s*:\s*optimistic/,
+    "全局 Agent 必须识别只在后端配置的模型，不能与首页状态分叉");
+  assert.match(layoutSrc, /pathname !== "\/" && <FinanceAiDock/);
+  assert.match(layoutSrc, /document\.getElementById\("home-agent"\)/);
+});
+
+test("Codex Harness 的产品身份在品牌区、Agent 面板与模型页三处同时可见", () => {
+  const layoutSrc = fs.readFileSync(path.join(FINANCE, "components", "layout", "Layout.tsx"), "utf8");
+  const dockSrc = fs.readFileSync(path.join(FINANCE, "components", "ui", "FinanceAiDock.tsx"), "utf8");
+  const settingsSrc = fs.readFileSync(path.join(FINANCE, "pages", "Settings.tsx"), "utf8");
+
+  assert.match(layoutSrc, /本地金融研究 Agent/);
+  assert.match(layoutSrc, /Built on Codex Harness/);
+  assert.match(dockSrc, /Vibe Research Agent/);
+  assert.match(dockSrc, /Codex Harness · 本地运行/);
+  assert.match(dockSrc, /trigger: "问 Agent"/);
+  assert.match(settingsSrc, /Agent Runtime/);
+  assert.match(settingsSrc, /Model Provider/);
+  assert.match(settingsSrc, /本地 API 已连接/);
+  assert.match(settingsSrc, /模型可以换|换模型不会换掉/);
+});
+
+test("产品能力与密钥文案不许超过代码实际做到的范围", () => {
+  const dailySrc = fs.readFileSync(path.join(FINANCE, "pages", "DailyReview.tsx"), "utf8");
+  const settingsSrc = fs.readFileSync(path.join(FINANCE, "pages", "Settings.tsx"), "utf8");
+  const readme = fs.readFileSync(path.join(REPO, "README.md"), "utf8");
+  const english = fs.readFileSync(path.join(REPO, "README_en.md"), "utf8");
+
+  const quickReview = dailySrc.match(/\) : !needConfig[\s\S]*?<p[^>]*>([\s\S]*?)<\/p>/)?.[1] ?? "";
+  assert.match(quickReview, /已经取到的客观数据、缺口与读法护栏交给所选模型整理/);
+  assert.match(quickReview, /不会启动完整研究工具链/);
+  assert.match(quickReview, /to="\/research"/);
+  assert.ok(!/调用[^，。；<]{0,20}工具|校验(?:证据|数据)|证据校验/.test(quickReview),
+    `快速复盘段不许承诺实际没有执行的工具或校验:${quickReview}`);
+
+  const runtimeBlock = settingsSrc.slice(settingsSrc.indexOf("const runtimeState"), settingsSrc.indexOf("return (", settingsSrc.indexOf("const runtimeState")));
+  assert.match(runtimeBlock, /info\s*\?\s*\{\s*label:\s*"本地 API 已连接"/);
+  assert.match(runtimeBlock, /err\s*\?\s*\{\s*label:\s*"本地 API 未连接"/);
+  assert.ok(!/label:\s*"(?!本地 API )[^"\n]*已连接"/.test(runtimeBlock),
+    `运行状态只能证明本地 API 连通:${runtimeBlock}`);
+
+  const zhSecurity = readme.slice(readme.indexOf("## 安全与隐私"), readme.indexOf("## 开发与测试"));
+  const enSecurity = english.slice(english.indexOf("## Security and privacy"), english.indexOf("## Development and tests"));
+  assert.match(zhSecurity, /后端默认 provider 的 key 只走环境变量/);
+  assert.match(zhSecurity, /浏览器里填写的 API key[^\n]*localStorage/);
+  assert.match(zhSecurity, /仅在调用时经本机后端转给所选模型服务商/);
+  assert.ok(!/密钥只走环境变量/.test(zhSecurity), "浏览器已支持 localStorage，README 不能继续声称全部密钥只走环境变量");
+  assert.match(enSecurity, /backend's default provider come only from environment variables/);
+  assert.match(enSecurity, /API key entered in the browser[^\n]*localStorage/);
+  assert.match(enSecurity, /sent through the local backend to the selected model provider only when used/);
+  assert.ok(!/Secrets via environment variables only/i.test(enSecurity), "English README 不能继续声称全部密钥只走环境变量");
+});
+
+test("README 首屏与架构图明确区分 Harness 和模型供应商", () => {
+  const readme = fs.readFileSync(path.join(REPO, "README.md"), "utf8");
+  const english = fs.readFileSync(path.join(REPO, "README_en.md"), "utf8");
+
+  for (const [name, source] of [["中文", readme], ["英文", english]] as const) {
+    assert.match(source, /Codex Harness|Codex harness/, `${name} README 没有 Codex Harness 定位`);
+    assert.match(source, /Local Agent Runtime/, `${name} README 架构图没有本地 Agent 运行时`);
+    assert.match(source, /Model Provider/, `${name} README 架构图没有把模型供应商拆成独立一层`);
+  }
 });

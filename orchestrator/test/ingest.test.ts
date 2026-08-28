@@ -376,7 +376,7 @@ test("🔴 用户放在自己数据根下的 provider 覆盖模板要生效 —�
 test("🔴 草稿校验用**完整契约**:值越界也要当场拒,不能等落库才被拒", async () => {
   const root = tmp();
   const bad: [string, string][] = [
-    ['{"drafts":[{"source_file":"01_a.csv","fields":{"symbol":"ABC"},"uncertain":[]}],"warnings":[]}', "symbol 不是六位数字(pattern)"],
+    ['{"drafts":[{"source_file":"01_a.csv","fields":{"symbol":"AAPL!"},"uncertain":[]}],"warnings":[]}', "symbol 不是三市场规范代码(pattern)"],
     ['{"drafts":[{"source_file":"01_a.csv","fields":{"shares":-1},"uncertain":[]}],"warnings":[]}', "数量为负(minimum)"],
     ['{"drafts":[{"source_file":"01_a.csv","fields":{"opened_at":"2026-99-99"},"uncertain":[]}],"warnings":[]}', "不是真日历日(format)"],
   ];

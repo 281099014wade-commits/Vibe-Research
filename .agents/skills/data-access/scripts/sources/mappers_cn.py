@@ -26,6 +26,16 @@ _TX_SPECS = [("price", "price", "元"), ("change_pct", "change_pct", "%"), ("pe_
              ("limit_up", "limit_up_price", "元"), ("limit_down", "limit_down_price", "元"), ("open", "open", "元"), ("high", "high", "元"), ("low", "low", "元"), ("last_close", "last_close", "元")]
 
 
+def _tx_specs(market: str) -> list:
+    """同一组腾讯字段在三市场的计价单位不同，不能只换 currency 而仍把港元 / 美元写成「元」。"""
+    units = {
+        "CN": {"元": "元", "万元": "万元", "亿元": "亿元"},
+        "HK": {"元": "港元", "万元": "港元", "亿元": "亿港元"},
+        "US": {"元": "美元", "万元": "美元", "亿元": "亿美元"},
+    }[market]
+    return [(src, field, units.get(unit, unit)) for src, field, unit in _TX_SPECS]
+
+
 def _tx_market(code: str) -> str:
     """腾讯批量行情的代码 → 市场。美股 `us` / 港股 `hk` 前缀,其余按 A 股。"""
     low = code.strip().lower()
@@ -47,7 +57,7 @@ def tencent_quotes_map(result: dict, ctx: dict) -> dict:
         #    沿用端点级的 CN 会把道指标成 `CNY` —— 数字对、标签错,而界面上不显示币种,
         #    所以**看不出来**;错的那份会随证据进 AI 上下文。市场决定币种(见 `ev()`)。
         rctx = {**ctx, "market": _tx_market(str(code))}
-        e, _ = dict_fields(rctx, q, _TX_SPECS, day, record_key=str(code), note=note)
+        e, _ = dict_fields(rctx, q, _tx_specs(rctx["market"]), day, record_key=str(code), note=note)
         evs += e
         evs.append(ev(rctx, "security_name", q.get("name", ""), "text", day, currency="n/a", record_key=str(code), note=note))
         if q.get("is_stale"):

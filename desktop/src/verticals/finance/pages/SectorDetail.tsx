@@ -62,7 +62,7 @@ export function SectorDetail() {
               该板块的环节骨架尚在<b className="text-foreground">实时核实</b>补全中（不靠模型记忆）——已核实的板块见左侧。
             </p>
             <p className="max-w-md text-xs text-muted-foreground/70">
-              也可以点右上角「让 AI 拆这个板块」，用你自己的 AI 按七维框架当场梳理它的产业链。
+              也可以点右上角「问 Agent」，让本地 Agent 按七维框架当场梳理它的产业链。
             </p>
           </div>
         </GlassCard>

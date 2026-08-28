@@ -1,7 +1,7 @@
 // 自选股实时行情轮询。
 //
 // 几个刻意的选择：
-// - **3 秒一档**：A 股 level-1 行情本身就是 3 秒一笔快照，拉得再快也是同一份数据，
+// - **3 秒一档**：三市场都不做比上游快照更快的无效轮询，
 //   纯粹浪费请求。这就是「能拿到的最快频率」。
 // - **递归 setTimeout 而不是 setInterval**：单次请求实测 ~750ms，网络一慢 setInterval
 //   会让请求首尾叠在一起。改成「上一次结束后再等 N 秒」，永远不会堆叠。
@@ -12,33 +12,13 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api, type Quote } from "@/lib/api";
+import { isAnyMarketTrading, tradingMarketSymbols } from "@/lib/marketSymbol";
 
-export const LIVE_INTERVAL_MS = 3000;   // A 股 level-1 快照粒度
+export const LIVE_INTERVAL_MS = 3000;
 const MAX_BACKOFF_MS = 30_000;
 
-/** 取当前的北京时间。
- *
- * ⚠️ 不能直接用 `new Date().getHours()` —— 那是**用户本机时区**。用户人在海外时，
- * 本地时间和 A 股交易时段完全对不上，会出现「盘中不刷 / 半夜狂刷」。
- * 这里统一换算到 UTC+8，无论用户在哪个时区都得到同一个答案。
- */
-function beijingNow(): Date {
-  const d = new Date();
-  return new Date(d.getTime() + d.getTimezoneOffset() * 60_000 + 8 * 3600_000);
-}
-
-/** 是否处于 A 股交易时段（含 9:15 起的集合竞价）。
- *
- * 只判断「周一至周五 + 时间段」，**不含法定节假日**——那需要一份交易日历，
- * 而节假日里多轮询几次的代价远小于引入日历的复杂度（数据不变，界面也不会跳）。
- */
-export function isTradingHours(): boolean {
-  const bj = beijingNow();
-  const day = bj.getDay();
-  if (day === 0 || day === 6) return false;
-  const mins = bj.getHours() * 60 + bj.getMinutes();
-  return (mins >= 9 * 60 + 15 && mins <= 11 * 60 + 30) || (mins >= 13 * 60 && mins <= 15 * 60);
-}
+/** 自选中任一市场开盘就轮询；空参数保留旧的 A 股语义。 */
+export const isTradingHours = (codes: string[] = [], at = new Date()): boolean => isAnyMarketTrading(codes, at);
 
 export interface LiveQuotesState {
   quotes: Record<string, Quote>;
@@ -68,10 +48,10 @@ export function useLiveQuotes(codes: string[], enabled: boolean): LiveQuotesStat
   const staleRef = useRef(false);          // 请求飞行途中自选变过 / 有请求被跳过
   const fetchRef = useRef<(() => Promise<boolean>) | null>(null);
 
-  const fetchOnce = useCallback(async (): Promise<boolean> => {
-    const cs = codesRef.current;
+  const fetchOnce = useCallback(async (onlyCodes?: string[]): Promise<boolean> => {
+    const cs = onlyCodes ?? codesRef.current;
     if (!cs.length) {
-      setQuotes({});
+      if (!onlyCodes) setQuotes({});
       return true;
     }
     if (inFlightRef.current) {
@@ -86,7 +66,8 @@ export function useLiveQuotes(codes: string[], enabled: boolean): LiveQuotesStat
     setLoading(true);
     try {
       const data = await api.quote(requested);
-      setQuotes(data);
+      // 自动轮询只拉开盘市场，必须与休市市场已有快照合并；首次 / 手动刷新才整体替换。
+      setQuotes((prev) => onlyCodes ? { ...prev, ...data } : data);
       setUpdatedAt(Date.now());
       setError(null);
       failuresRef.current = 0;
@@ -101,7 +82,7 @@ export function useLiveQuotes(codes: string[], enabled: boolean): LiveQuotesStat
       setLoading(false);
       // 这一趟拉的是不是已经过期的名单？过期就立刻补一次（只补一次，不会滚雪球：
       // 补拉时 staleRef 已复位，只有再次发生变动才会再补）。
-      const changed = codesRef.current.join(",") !== requested;
+      const changed = !onlyCodes && codesRef.current.join(",") !== requested;
       if (staleRef.current || changed) {
         staleRef.current = false;
         void fetchRef.current?.();
@@ -136,7 +117,7 @@ export function useLiveQuotes(codes: string[], enabled: boolean): LiveQuotesStat
       }
     };
 
-    const shouldRun = () => enabled && !document.hidden && isTradingHours() && codesRef.current.length > 0;
+    const shouldRun = () => enabled && !document.hidden && isTradingHours(codesRef.current) && codesRef.current.length > 0;
 
     const loop = async () => {
       if (cancelled) return;
@@ -147,7 +128,7 @@ export function useLiveQuotes(codes: string[], enabled: boolean): LiveQuotesStat
         return;
       }
       setPolling(true);
-      const ok = await fetchOnce();
+      const ok = await fetchOnce(tradingMarketSymbols(codesRef.current));
       if (cancelled) return;          // 请求期间被卸载/切换：到此为止，别再排下一拍
       const wait = ok
         ? LIVE_INTERVAL_MS

@@ -1,17 +1,47 @@
 # 模型接入指南
 
-适用:vibe-research-agent Phase 1 M4。本文讲清三件事:用哪条通道接模型、怎么验证一个 provider 能不能用、怎么加一家新的 provider。密钥永远只放环境变量。
+本文讲清三件事:用哪条通道接模型、怎么验证一个 provider 能不能用、怎么加一家新的 provider。
+后端默认 provider 的密钥只放环境变量；浏览器里由用户填写的 key 只存在当前浏览器 `localStorage`，
+随本轮请求交给本机后端，用完即弃，不写配置、日志或台账。
 
 ## 1. 两条通道
 
 | 通道 | 适用 | 怎么配 | 说明 |
 |---|---|---|---|
-| ChatGPT 订阅登录(默认) | OpenAI 模型,Plus / Pro / Team 订阅 | `CODEX_HOME="$(pwd)/.local/codex-home" codex login` | 登录态存在**产品自己的 CODEX_HOME**,与 `~/.codex` 隔离;不需要任何 API key;模型用订阅默认或 `--model` |
-| API key | OpenAI 或第三方(DeepSeek / 通义千问 / 智谱 GLM / Kimi …) | `export <ENV_KEY>=...` + `--provider <id>`(OpenAI 另加 `--auth api_key`) | 每个 provider 一份模板 `providers/<id>.json`,模板只声明变量名(`env_key`),值从进程环境读 |
+| ChatGPT 订阅登录(默认) | OpenAI 模型,Plus / Pro / Team 订阅 | “接入 AI”→“订阅接入”→“登录 Codex” | 产品打开 OpenAI 官方登录页；登录态存在**产品自己的 CODEX_HOME**,与 `~/.codex` 隔离;不需要任何 API key |
+| Claude.ai 订阅登录 | 本机 Claude Code 已安装并登录 | 在 Claude Code 里完成 `/login`，设置页自动检测 | 复用本机订阅；调用时强制关闭本地工具、MCP、联网搜索工具、插件与 CLI 会话落盘 |
+| API key | OpenAI 或第三方(DeepSeek / 通义千问 / 智谱 GLM / Kimi …) | 浏览器“接入 AI”填写，或 `export <ENV_KEY>=...` + `--provider <id>` | 浏览器 key 只走本轮内存；命令行/后端默认 key 从模板声明的环境变量读取 |
+
+设置页的订阅卡片不是静态开关。后端会实时检测 Codex / Claude Code 的 CLI、版本与登录状态。
+Codex 未登录时会显示“登录 Codex”：点击后由产品使用自己的 `CODEX_HOME` 启动官方 `codex login`，
+浏览器授权完成后页面自动轮询并点亮；登录失败或超时会明确提示重试。Qwen Code 的旧免费 OAuth 已停止，
+DeepSeek CLI 也使用 API key，因此二者不列为
+“免 key 订阅”。当前没有能同时证明“复用订阅”与“彻底禁用本地工具”的安全适配器时，不会照搬
+Open Design 的自动批准参数后把按钮点亮。
+
+### 从全新版本接入 ChatGPT 订阅
+
+1. 启动本地 API 与浏览器 UI，进入左侧“接入 AI”。
+2. 选择“订阅接入”，在 Codex 卡片点击“登录 Codex”。
+3. 在自动打开的 OpenAI 官方页面由用户本人完成登录。产品不接触账号密码，也不会复用 `~/.codex` 的登录态。
+4. 返回设置页等待状态变为“已登录”，点击“测试并保存”。只有真实对话探针成功后，订阅配置才会保存。
+5. 若浏览器没有自动打开，可在仓库根使用后备命令：
+
+```bash
+CODEX_HOME="$(pwd)/.local/codex-home" codex login
+```
+
+设置页会实时检测这个产品专用登录态，无需重启或手工复制认证文件。
 
 auth 的解析规则:用户没在 `.local/config.json` / `VRA_PROVIDER_AUTH` / `--auth` 显式写过 auth 时,切换到第三方 profile 会自动用模板唯一支持的 `api_key`;显式写过的永不被覆盖(不支持就报错,不静默降级)。产品配置 `vibe-research.config.json` 里的 auth 只是产品默认,不算显式。
 
-## 2. 三步接入第三方模型
+## 2. 从全新版本接入第三方模型
+
+普通用户不需要先写环境变量：进入“接入 AI”→“API 接入”，选择供应商，填写 API 地址、模型名与
+key，然后点击“测试并保存”。页面会先通过本机后端向所选供应商发起一次真实对话；成功才保存，失败
+则保留当前已生效配置并显示可行动提示。保存后，首页 Agent、每日复盘、回测与研究页面共用这份配置。
+
+下面的命令行流程用于开发者跑完整兼容矩阵：
 
 ```bash
 # 1) 密钥只放环境变量(变量名见模板 env_key;此处以 DeepSeek 为例)
@@ -100,6 +130,21 @@ OpenAI 基线(2026-08-22,订阅登录,引擎默认模型):9 pass · 1 n/a。
 ⑧ 是**协议层的事实**,矩阵如实记着不粉饰;产品侧用 `structured_output: "prompt"` 绕开了它。
 同日用 `mimo-v2.5` 真跑了一个完整研究阶段(profile):**validator 通过、79 条证据**,
 agent 那一轮 4.7 分钟 —— ⚠️ 慢,turn 超时压到 5 分钟会连续两次超时,用默认 20 分钟。
+
+### 发布前从零接入实测（2026-08-28）
+
+- **Codex 订阅**：产品专用 `.local/codex-home` 从未登录状态开始，在设置页点击“登录 Codex”，
+  成功打开 OpenAI 官方授权页；用户完成授权后，页面自动从“等待授权”变为“可用”。随后
+  “测试并保存”真实对话通过，并在“每日复盘”完成一份完整当日复盘。最终配置为
+  `provider=cli-codex`，没有 API key，也没有读取或覆盖 `~/.codex`。
+- **MiMo API**：清空浏览器模型配置后，从“API 接入”重新选择 MiMo，填写官方 base URL、
+  `mimo-v2.5-pro` 与用户自己的 key；“测试并保存”真实对话通过，随后同样在“每日复盘”完成完整报告。
+  key 未写入仓库、后端配置、运行账本或日志。实测结束后已把默认接入恢复为 Codex 订阅。
+- **失败保护**：新配置只有在真实对话成功后才保存；失败不会覆盖当前已生效配置。订阅登录任务限制为
+  单实例并带超时与整组进程清理，重复点击不会启动多个登录流程。
+
+这次验证的是普通用户真实路径，不是只调用 provider 矩阵或后端函数：从无配置/未登录状态开始，
+经过浏览器设置页接入，再在实际业务页面发起 Agent 任务。
 
 ## 4. 加一家新的 provider
 

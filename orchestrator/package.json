@@ -16,6 +16,8 @@
     "@modelcontextprotocol/sdk": "^1.30.0",
     "@openai/codex-sdk": "0.149.0",
     "ajv": "^8.17.1",
+    "mammoth": "^1.12.1",
+    "pdfjs-dist": "^6.2.108",
     "zod": "^4.4.3"
   },
   "devDependencies": {

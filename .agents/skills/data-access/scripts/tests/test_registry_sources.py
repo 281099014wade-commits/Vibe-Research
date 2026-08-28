@@ -87,6 +87,26 @@ def test_mappers_basic_shapes():
     assert cum["value"] == 9.0 and cum["period"] == "2026-08-21"
 
 
+def test_tencent_batch_quotes_keep_each_markets_currency_unit():
+    """一个批量信封可同时含三市场，金额单位必须逐行跟着市场走，不能全写成人民币「元」。"""
+    from sources import mappers_cn
+    result = {
+        "600519": {"name": "贵州茅台", "query": "sh600519", "price": 100, "amount_wan": 12, "mcap_yi": 3},
+        "usAAPL": {"name": "苹果", "query": "usAAPL", "price": 200, "amount_wan": 34, "mcap_yi": 5},
+        "hk00700": {"name": "腾讯控股", "query": "hk00700", "price": 300, "amount_wan": 56, "mcap_yi": 7},
+    }
+    got = mappers_cn.tencent_quotes_map(result, _ctx(market="CN", symbol="MARKET"))
+    by = {(e["record_key"], e["field"]): (e["market"], e["unit"], e["currency"]) for e in got["evidence"]}
+    assert by[("600519", "price")] == ("CN", "元", "CNY")
+    assert by[("600519", "turnover_amount")] == ("CN", "万元", "CNY")
+    assert by[("usAAPL", "price")] == ("US", "美元", "USD")
+    assert by[("usAAPL", "turnover_amount")] == ("US", "美元", "USD")
+    assert by[("usAAPL", "market_cap")] == ("US", "亿美元", "USD")
+    assert by[("hk00700", "price")] == ("HK", "港元", "HKD")
+    assert by[("hk00700", "turnover_amount")] == ("HK", "港元", "HKD")
+    assert by[("hk00700", "market_cap")] == ("HK", "亿港元", "HKD")
+
+
 def test_fetch_endpoint_generic_chain_with_fake_module(tmp_path):
     """假源包(临时目录 + PYTHONPATH,注册表 module 用带点绝对名)→ fetch_endpoint 产出契约信封(evidence / raw_files / 退出码);ep.args 默认参数合并、None 占位丢弃、--args 覆盖。不触碰真实 sources 包。"""
     pkg = tmp_path / "vra_fake_pkg"

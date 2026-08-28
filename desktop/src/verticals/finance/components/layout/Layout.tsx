@@ -1,7 +1,7 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Link, Outlet, useLocation } from "react-router-dom";
 import {
-  Activity, ChevronDown, ChevronsLeft, ChevronsRight, Cog, Cpu, FileText, FlaskConical, Gauge, Github, LayoutGrid, LineChart, Microscope, Moon, Newspaper, NotebookPen, Radar, Rss, Search, Settings, Sparkles, Star, Sun, Swords, Thermometer, TrendingUp, UserRound, Wallet,
+  Activity, ChevronDown, ChevronsLeft, ChevronsRight, Cog, Cpu, FileText, FlaskConical, Gauge, Github, Home, LayoutGrid, LineChart, Microscope, Moon, Newspaper, NotebookPen, Radar, Rss, Settings, Sparkles, Star, Sun, Swords, Thermometer, TrendingUp, UserRound, Wallet,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { AiPageProvider } from "../../../../core/ai/pageContext";
@@ -15,24 +15,20 @@ import { version as PKG_VERSION } from "../../../../../package.json";
 // 版本号只从 package.json 读，不再各处写死（发 v0.3.0 时三处忘改停在 v0.2.2，#20）
 const APP_VERSION = `v${PKG_VERSION}`;
 const REPO_URL = "https://github.com/simonlin1212/Vibe-Research";
-/** 出品方站点（还没公布，先挂上） */
-const SITE_URL = "https://phoenixtree.ai";
 // 作者联系方式
 const X_URL = "https://x.com/linsizhen";
 
 const NAV = [
+  { to: "/", icon: Home, label: "首页" },
   { to: "/daily-review", icon: Activity, label: "每日复盘" },
   { to: "/intel", icon: Radar, label: "资讯雷达" },
   { to: "/signals", icon: Thermometer, label: "产业信号" },
   { to: "/sectors", icon: LayoutGrid, label: "板块中心" },
-  { to: "/stock-data", icon: Search, label: "个股研究" },
+  { to: "/research", icon: Microscope, label: "个股研究" },
   { to: "/debate", icon: Swords, label: "多空辩论" },
   { to: "/backtest", icon: FlaskConical, label: "回测" },
   { to: "/watchlist", icon: Star, label: "自选股" },
   { to: "/portfolio", icon: Wallet, label: "我的持仓" },
-  // 六阶段研究引擎的入口。⚠️ 与下面「我的研报」不是一回事：
-  //    那一页是上传外部文件的归档柜，这一页是产品自己跑出带证据链与裁决点的研究。
-  { to: "/research", icon: Microscope, label: "深度研究" },
   { to: "/my-reports", icon: FileText, label: "我的研报" },
   { to: "/notes", icon: NotebookPen, label: "研究记录" },
   { to: "/settings", icon: Settings, label: "接入 AI" },
@@ -73,6 +69,7 @@ const NAV_GROUPS: Record<string, { storageKey: string; links: typeof SIGNAL_LINK
 export function Layout() {
   const { pathname } = useLocation();
   const { dark, toggle } = useDarkMode();
+  const navRef = useRef<HTMLElement | null>(null);
   const [collapsed, setCollapsed] = useState(() => storageGet("vr-sidebar") === "collapsed");
   // 底部 AI 控制台开着没。记住选择：它是"工作台的一部分"，不是弹一下就关的东西
   const [consoleOpen, setConsoleOpen] = useState(() => storageGet("vr-ai-console") === "open");
@@ -81,6 +78,14 @@ export function Layout() {
       storageSet("vr-ai-console", v ? "closed" : "open");
       return !v;
     });
+  };
+  const openAgent = () => {
+    if (pathname === "/") {
+      document.getElementById("home-agent")?.scrollIntoView({ behavior: "smooth", block: "center" });
+      document.querySelector<HTMLTextAreaElement>('#home-agent textarea')?.focus({ preventScroll: true });
+      return;
+    }
+    toggleConsole();
   };
   // 各导航组子栏目的展开状态（默认展开；按组记住用户的选择）
   const [openGroups, setOpenGroups] = useState<Record<string, boolean>>(() =>
@@ -101,6 +106,19 @@ export function Layout() {
     storageSet("vr-sidebar", collapsed ? "collapsed" : "expanded");
   }, [collapsed]);
 
+  // 品牌区与 Agent 入口都是固定高度，导航本身会滚动。窗口偏矮时当前页可能刚好落在
+  // 可视区外（例如最底部的「接入 AI」只露出一条边）—— 路由变化后把当前项拉回视野。
+  useEffect(() => {
+    const nav = navRef.current;
+    const active = nav?.querySelector<HTMLElement>('[aria-current="page"]');
+    if (!nav || !active) return;
+    const n = nav.getBoundingClientRect();
+    const a = active.getBoundingClientRect();
+    const breathingRoom = 8;
+    if (a.top < n.top + breathingRoom) nav.scrollTop -= n.top + breathingRoom - a.top;
+    if (a.bottom > n.bottom - breathingRoom) nav.scrollTop += a.bottom - (n.bottom - breathingRoom);
+  }, [pathname, collapsed]);
+
   return (
     <AiPageProvider>
     <div className="flex h-screen">
@@ -111,7 +129,7 @@ export function Layout() {
       )}>
         {/* Brand */}
         <div className={cn("border-b border-border/50", collapsed ? "flex justify-center p-3" : "p-4")}>
-          <Link to="/daily-review" className={cn("flex items-center", collapsed ? "justify-center" : "gap-2")}>
+          <Link to="/" className={cn("flex items-center", collapsed ? "justify-center" : "gap-2")}>
             <LineChart className="h-6 w-6 shrink-0 text-primary text-glow" />
             {!collapsed && (
               <span className="text-lg font-extrabold tracking-tight">
@@ -119,11 +137,22 @@ export function Layout() {
               </span>
             )}
           </Link>
-          {!collapsed && <p className="mt-1 text-[11px] text-muted-foreground">个人 AI 投研系统 · A股/美股/港股</p>}
+          {!collapsed && (
+            <>
+              <p className="mt-1 text-[11px] text-muted-foreground">本地金融研究 Agent · A股/美股/港股</p>
+              <div
+                data-testid="codex-harness-badge"
+                className="mt-2 inline-flex items-center gap-1.5 rounded-full border border-primary/25 bg-primary/[0.07] px-2 py-1 text-[10px] font-medium tracking-wide text-muted-foreground"
+              >
+                <span className="h-1.5 w-1.5 rounded-full bg-primary shadow-[0_0_8px_hsl(var(--primary)/0.8)]" />
+                Built on Codex Harness
+              </div>
+            </>
+          )}
         </div>
 
         {/* Nav */}
-        <nav className={cn("flex-1 space-y-1 overflow-auto", collapsed ? "p-1.5" : "p-2.5")}>
+        <nav ref={navRef} className={cn("flex-1 space-y-1 overflow-auto", collapsed ? "p-1.5" : "p-2.5")}>
           {NAV.map(({ to, icon: Icon, label }) => {
             const active = pathname === to;
             const group = NAV_GROUPS[to];
@@ -132,6 +161,7 @@ export function Layout() {
               <div key={to}>
                 <Link
                   to={to}
+                  aria-current={active ? "page" : undefined}
                   title={collapsed ? label : undefined}
                   className={cn(
                     "flex items-center rounded-lg text-sm transition-colors",
@@ -194,16 +224,16 @@ export function Layout() {
             打开时只把这几样各自加重一档，并给图标一个极缓的呼吸 —— 灵动但不吵。 */}
         <div className={cn(collapsed ? "px-1.5 pb-1.5" : "px-2.5 pb-2.5")}>
           <button
-            onClick={toggleConsole}
-            title={consoleOpen ? "收起 Agent" : "打开 Agent"}
-            aria-pressed={consoleOpen}
+            onClick={openAgent}
+            title={pathname === "/" ? "转到首页 Agent" : consoleOpen ? "收起 Agent" : "打开 Agent"}
+            aria-pressed={pathname === "/" ? undefined : consoleOpen}
             className={cn(
               "group relative flex w-full items-center overflow-hidden rounded-xl",
               "font-medium tracking-wide transition-all duration-300",
               "bg-gradient-to-br from-primary/[0.18] via-primary/[0.10] to-transparent",
               "text-foreground/90 ring-1 ring-inset",
               collapsed ? "justify-center p-2" : "gap-2.5 px-3 py-2.5 text-sm",
-              consoleOpen
+              pathname === "/" || consoleOpen
                 ? "ring-primary/50 shadow-[0_0_18px_-4px_hsl(var(--primary)/0.55)] text-foreground"
                 : "ring-primary/25 hover:ring-primary/45 hover:from-primary/[0.26] hover:via-primary/[0.14]",
             )}
@@ -216,7 +246,7 @@ export function Layout() {
             <Sparkles
               className={cn(
                 "h-4 w-4 shrink-0 text-primary transition-transform duration-300",
-                consoleOpen ? "animate-[pulse_2.4s_ease-in-out_infinite]" : "group-hover:scale-110",
+                pathname === "/" || consoleOpen ? "animate-[pulse_2.4s_ease-in-out_infinite]" : "group-hover:scale-110",
               )}
             />
             {!collapsed && <span className="text-glow">Agent</span>}
@@ -224,9 +254,9 @@ export function Layout() {
               // 小标做成一枚淡色胶囊,而不是压透明度的白字 —— 后者在浅色主题下几乎看不见
               <span className={cn(
                 "ml-auto rounded-full px-1.5 py-0.5 text-[10px] font-normal transition-colors",
-                consoleOpen ? "bg-primary/20 text-primary" : "bg-foreground/[0.06] text-muted-foreground",
+                pathname === "/" || consoleOpen ? "bg-primary/20 text-primary" : "bg-foreground/[0.06] text-muted-foreground",
               )}>
-                {consoleOpen ? "收起" : "对话"}
+                {pathname === "/" ? "首页" : consoleOpen ? "收起" : "对话"}
               </span>
             )}
           </button>
@@ -265,16 +295,6 @@ export function Layout() {
                   </button>
                 </div>
               </div>
-              {/* 出品方。站点还没公布，但地址是我们自己的 ⇒ 现在就挂上。
-                  ⚠️ 外链一律 target=_blank + rel="noreferrer"：少了 rel，新开的页面能拿到 window.opener。 */}
-              <a
-                href={SITE_URL}
-                target="_blank"
-                rel="noreferrer"
-                className="block truncate text-[11px] font-semibold tracking-wide text-primary/90 transition-colors hover:text-primary"
-              >
-                {SITE_URL}
-              </a>
               <p className="text-[11px] leading-relaxed text-muted-foreground/60">
                 {APP_VERSION} · 不荐股 · 不预测 · 无倾向
               </p>
@@ -294,11 +314,11 @@ export function Layout() {
             <Outlet />
           </div>
         </main>
-        <FinanceAiConsole open={consoleOpen} onClose={toggleConsole} />
+        {pathname !== "/" && <FinanceAiConsole open={consoleOpen} onClose={toggleConsole} />}
       </div>
 
       {/* 每一页都有的 AI 入口：位置固定，聊的是当前页登记的上下文 */}
-      <FinanceAiDock />
+      {pathname !== "/" && <FinanceAiDock />}
     </div>
     </AiPageProvider>
   );

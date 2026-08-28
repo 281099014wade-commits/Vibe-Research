@@ -1,23 +1,31 @@
 <p align="center"><b>简体中文</b> | <a href="README_en.md">English</a></p>
-<h1 align="center">vibe-research-agent</h1>
-<p align="center"><b>基于 OpenAI Codex 的开源 A 股金融研究 Agent("Codex for Finance")</b><br>零 fork · 三级约束 · 115 端点数据管道 · 确定性计算库 · 合规红线 · 多模型接入</p>
+
+<h1 align="center">Vibe Research</h1>
+
 <p align="center">
-  <img alt="License" src="https://img.shields.io/badge/license-pending-lightgrey">
-  <img alt="TypeScript" src="https://img.shields.io/badge/TypeScript-orchestrator-3178c6">
-  <img alt="Python" src="https://img.shields.io/badge/Python-data%20%2B%20calc-3776ab">
-  <img alt="Codex" src="https://img.shields.io/badge/Codex%20CLI-0.149.0-black">
+  <b>基于 Codex Harness 打造的本地金融研究工作台</b><br>
+  已接通 Codex 与 Claude Code 订阅 · 自动检测本机登录状态 · 支持大多数兼容模型 API
 </p>
+
+<p align="center">
+  <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-yellow"></a>
+  <img alt="Version" src="https://img.shields.io/badge/version-v1.0.0-F35D2B">
+  <img alt="UI" src="https://img.shields.io/badge/UI-React%20%2B%20Vite-646cff">
+  <img alt="Orchestrator tests" src="https://img.shields.io/badge/orchestrator-525%20tests-passing">
+  <img alt="Desktop tests" src="https://img.shields.io/badge/desktop-22%20tests-passing">
+  <img alt="Codex Harness" src="https://img.shields.io/badge/runtime-Codex%20Harness-black">
+</p>
+
 <p align="center">
   <a href="#这是什么">这是什么</a> ·
+  <a href="#功能">功能</a> ·
   <a href="#快速开始">快速开始</a> ·
-  <a href="#用法速查">用法速查</a> ·
+  <a href="#工作方式">工作方式</a> ·
   <a href="#模型接入">模型接入</a> ·
-  <a href="#配置与环境变量">配置</a> ·
-  <a href="#架构">架构</a> ·
-  <a href="#数据源">数据源</a> ·
+  <a href="#数据与市场">数据</a> ·
   <a href="#安全与隐私">安全</a> ·
   <a href="#开发与测试">开发</a> ·
-  <a href="#状态与路线图">路线图</a> ·
+  <a href="#当前边界">边界</a> ·
   <a href="CHANGELOG.md">CHANGELOG</a>
 </p>
 
@@ -25,193 +33,246 @@
 
 ## 这是什么
 
-把 OpenAI Codex 当成引擎,外挂一套**金融研究的纪律、数据管道与计算库**,让 agent 对一只 A 股(也支持美股 / 港股数据)跑完"公司画像 → 财务 → 一致预期 → 估值 → 风险 → 报告"六个阶段,产出**可审计、可复算、带证据链**的研究报告。
+Vibe Research 是一个**基于 [OpenAI Codex Harness](https://developers.openai.com/blog/codex-as-a-platform)
+打造的本地金融研究工作台**。Codex Harness 在本机维持上下文、选择工具、推进任务、处理失败并保留
+过程；Vibe Research 再叠加金融数据源、研究 SOP、确定性计算、证据校验和合规边界。
 
-大模型做金融研究有三个老毛病:**凭记忆编数字、心算公式、顺手给建仓建议**。本项目的解法不是多写几句提示词,而是三级约束:
+上一版 Vibe Research 主要由应用直接调用模型 API 完成分析。现在它被改造升级为一个基于 Codex 的
+本地金融 Agent：能够理解任务、连续调用工具、补充缺失信息、执行多步研究并保存完整过程。相比单次
+API 问答，长任务能力、工具使用、上下文保持和推理质量都会显著提升。
 
-| 层 | 部件 | 作用 |
-|---|---|---|
-| 提示层 | `AGENTS.md` 金融研究宪法 + `.agents/skills/` 投研 SOP | 告诉 agent 该怎么做(五问 Gate、取数与解释分阶段、事实与推断分离) |
-| 执行层 | Codex 原生 hooks(Stop / PreToolUse)+ 沙箱 | 做不对当场过不去:缺产物不许收工、禁止自跑取数脚本 / 联网 / 改写证据 |
-| 编排层 | 薄 orchestrator + validator + 合规 gate | 取数由编排器执行并记内存账本,每个数字必须对得上证据与 calc 的计算 DAG;命中建仓 / 目标价等措辞即要求重写 |
+| 上一版：直接调用模型 API | 当前版：Codex 本地金融 Agent |
+|---|---|
+| 一次请求完成一次分析 | 持续推进完整研究任务 |
+| 应用预先决定调用什么 | Agent 读取真实工具目录后自主选择 |
+| 上下文和任务状态由页面临时维护 | Harness 在本机维护上下文、进度和失败恢复 |
+| 结果通常只有一段回答 | 保留报告、证据、计算过程、缺口和运行状态 |
+| 模型输出直接展示 | validator、沙箱、hooks 与合规 gate 共同把关 |
 
-**提示遵循 ≠ 流程保证**——纪律落在执行层和编排层,不靠模型自觉。
+架构同时支持订阅型 AI 与模型 API 两类接入。当前已接通 Codex 与 Claude Code 两个订阅入口；设置页会
+实时检测本机 CLI、版本与登录状态。Codex 未登录时可直接点击“登录 Codex”打开官方授权页，授权完成后
+自动识别；Qwen Code 与 DeepSeek CLI 当前仍需
+各自的 API key，因此归入 API 接入，不冒充免 key 订阅。API 侧支持大多数提供 Responses API 的模型服务。
 
-Codex 仓库一行不改(零 fork):运行用官方安装的 `codex` CLI 与同版 TypeScript SDK,上游升级只需对照版本锚定文件重新验证。
+## 功能
 
-## 它能做什么
+| 模块 | 当前能力 |
+|---|---|
+| 首页 Agent | 打开首页即可对话；可直接提出公司、行业、复盘或研究任务 |
+| 每日复盘 | 汇总市场、热点、涨停原因和当日线索 |
+| 资讯雷达 | Investment News 标题翻译、公开新闻、A 股公告和事件概率 |
+| 产业信号 | GPU 租金、月频产业数据、原材料、招聘和数据日历 |
+| 板块中心 | 查看板块表现并下钻到具体产业方向 |
+| 个股研究 | A 股六阶段研究：公司画像、财务、一致预期、估值、风险、报告 |
+| 我的研报 | 本地保存 PDF、DOCX、TXT、MD、CSV；抽取、检索、引用、下载和删除 |
+| 回测 | 只提供 Agent 对话入口；信息不足时补问，齐备后调用真实回测工具 |
+| 多空辩论 | 多方、空方、反驳与中立主持共用同一份真实资料包 |
+| 自选股与持仓 | 支持 A 股、美股和港股代码识别、本地保存与行情刷新 |
+| 研究记录 | 保存研究、回测和辩论报告，可搜索、按时间查看和删除 |
+| 接入 AI | 选择订阅登录或填写自己的模型 API；全站 Agent 共用这一份配置 |
 
-- **一键研究**:`run.ts --symbol 300308` → 六阶段状态机,每阶段取数 → agent 解释 → validator 校验(账本 / schema / 引用 / 复算 / 语义槽位)→ 不过自动补跑 → 合规 gate → 合并产物。产物:`report.md`、`evidence.json`(每条证据带 raw 原文引用)、`calculations.json`(每个数字的计算 DAG)、`conflicts.json`(跨源冲突)、`viewer.html`(自包含证据查看器)、`manifest.json`。
-- **数据管道**:`datasources/registry.json` 注册 115 个零鉴权 / 低鉴权端点(29 层,CN / US / HK:行情、财务三表、一致预期、资金流、融资融券、筹码、公告、研报、宏观、交易所、SEC / FINRA / CBOE、RSS 新闻雷达),通用取数器一条命令取任一端点,原始响应全部落盘;**取数层不做任何派生计算**。
-- **情报层(第 12–17 层,按产业标签自动挂载)**:公司自己的报表之外,再叠三类外部读数 —— **市场声音**(公开讨论,只当线索不当事实)· **产业温度计**(上下游硬数据:台系月营收 / GPU 租金 / 期货 / DRAM 现货,带跨运行变动)· **管制与准入**(联邦公报 1260H / BIS / FCC 原文检索)· **数据日历**(下一个数据点的具体日期)· **海外头条**(需求侧一手线索)· **招聘信号**(产业锚点公司公开在招岗位)· **卡口事件**(公告标题的确定性分类)。🔴 每类都自带**读法护栏**并要求与数字同段出现(例:岗位数是招聘意图不是产能;温度计是产业读数不是本公司业绩),且**按标的所属产业标签门控** —— 没命中标签就不取,不是缺口。
-- **确定性计算库** `calc/`:估值 / 序列 / 技术指标 / 筹码分布 18 个纯函数,fixture 测试,CLI 输出带确定性 `calculation_id` 与输入 DAG,validator 可复算。
-- **知识层**:每次运行自动归档到用户私有区 `.local/knowledge/`,下次运行默认召回(带"不可信数据"边界与新鲜度判定),由 agent 逐条裁决新旧冲突。
-- **运行时可见**:六阶段要跑 15–19 分钟,进度实时打到 stderr —— **约 5 秒**出现第一行实质内容(本阶段取了哪几个源、哪个失败),**约 2 分钟**出现完整的公司画像段落,此后每阶段一段;校验未过会说明正在自动补跑。`--progress off` 关闭。stdout 的 JSON 契约不受影响。
-- **接口**:MCP server(8 个工具,可接入 Codex CLI / 任何 MCP 客户端)、本机 HTTP API + 薄浏览页、多标的批量、两次运行变化提醒、数据源健康巡检。
-- **多模型接入**:provider 模板(OpenAI / DeepSeek / 通义千问 / 智谱 GLM / Kimi)+ 10 项兼容矩阵 harness,密钥只从环境变量读。
+### 研究结果不是一段无法复核的文字
+
+六阶段研究会产出：
+
+- `report.md`：最终研究报告。
+- `evidence.json`：本轮使用的证据，每条保留来源、资料期和原文引用。
+- `calculations.json`：派生数字的输入、函数和计算 DAG。
+- `conflicts.json`：跨来源冲突，不静默取舍。
+- `manifest.json`：模型、版本、阶段、状态、资料召回和运行清单。
+- `viewer.html`：可在浏览器查看证据与报告。
+
+任何关键数据拿不到，状态都会变成 `incomplete` 或 `failed`，不会用旧值或猜测填空。
 
 ## 快速开始
 
-### 前置条件
+### 环境要求
 
-| 项 | 要求 | 说明 |
-|---|---|---|
-| 操作系统 | macOS / Linux(实测 macOS,darwin-arm64) | Windows 未测(hooks 的 Windows 命令哈希留后) |
-| Node.js | ≥ 22.18(推荐 24 LTS) | 仓库直接 `node xxx.ts` 运行 TypeScript,不需要构建 |
-| Python | ≥ 3.10(实测 3.12) | 取数脚本与 calc;建议虚拟环境 |
-| Codex CLI | 0.149.0(`npm install -g @openai/codex@0.149.0`) | 已测版本区间见 `codex-version.json`;其它版本请先跑测试 |
-| 模型访问 | ChatGPT 订阅(Plus / Pro / Team)**或** OpenAI API key **或** 国产模型 API key | 订阅登录不需要任何 key |
-
-### 安装
-
-```bash
-git clone <本仓库地址> vibe-research-agent && cd vibe-research-agent   # 地址为发布前占位,正式发布时替换
-# 1) 编排器依赖(Codex TS SDK / MCP SDK / ajv / zod)
-(cd orchestrator && npm install)
-# 2) Python 虚拟环境 + 取数依赖(requests / pandas / lxml / akshare / baostock)
-python3 -m venv .venv && .venv/bin/pip install -r .agents/skills/data-access/scripts/requirements.txt
-# 3) Codex CLI(全局)
-npm install -g @openai/codex@0.149.0 && codex --version
-# 4) 初始化产品自己的私有层 .local/(目录 + 配置骨架;不碰 ~/.codex;可重复执行)
-scripts/init --python "$(pwd)/.venv/bin/python"
-# 5) 登录到产品自己的 CODEX_HOME(与你的 ~/.codex 完全隔离;ChatGPT 订阅走浏览器授权)
-CODEX_HOME="$(pwd)/.local/codex-home" codex login
-# 6) 体检:引擎 / 登录态 / Python 依赖 / calc / 注册表 / 密钥扫描……(--net 顺带探测一个行情端点)
-scripts/doctor --net
-```
-
-用 OpenAI API key 而不是订阅:跳过第 5 步,改为 `export OPENAI_API_KEY=sk-...`,运行时加 `--auth api_key`(或在 `.local/config.json` 写 `{"provider": {"auth": "api_key"}}`)。
-
-### 第一次运行
-
-```bash
-# 六阶段完整研究(约 8–10 分钟;默认接入注册表全部适用端点 + 召回知识档案)
-node orchestrator/src/run.ts --symbol 300308 --market SZ --python "$(pwd)/.venv/bin/python" < /dev/null
-# 产物在 .local/runs/<run-id>/ :report.md · viewer.html(双击用浏览器打开)· report_appendix.md · manifest.json
-```
-
-退出码:0 complete / 2 incomplete 或 stale / 3 failed。状态含义见 `orchestrator/README.md`。第一次建议先跑 `--endpoints core`(只用 8 个核心端点,更快)确认链路通,再跑全量。
-
-## 用法速查
-
-| 目的 | 命令 |
+| 项目 | 要求 |
 |---|---|
-| 完整研究 | `node orchestrator/src/run.ts --symbol 300308 --market SZ --python <venv>/bin/python [--run-id X] [--endpoints full\|core] [--knowledge on\|off] [--provider <id>] [--model M] [--reasoning medium]` |
-| 只取一个端点 | `<venv>/bin/python .agents/skills/data-access/scripts/fetch_endpoint.py --endpoint em_margin_trading --symbol 300308 --out-dir .local/mcp/try`(端点目录:`datasources/CATALOG.md`) |
-| 算一个数 | `<venv>/bin/python calc/cli.py forward_pe --args '{"price": 100, "eps_forecast": 5}'`(函数契约:`calc/SPEC.md`) |
-| 接入 Codex CLI(MCP) | `codex mcp add vibe-research -- node "$(pwd)/orchestrator/src/mcp.ts"` → 在 Codex 里直接用 list_endpoints / fetch_endpoint / start_research / research_status / get_report / get_evidence / list_runs / knowledge_recall |
-| 本机 HTTP API + 浏览页 | `node orchestrator/src/api.ts --port 8765` → 浏览器打开 `http://127.0.0.1:8765/login?token=<token>`(token 在 `.local/api.token`)|
-| 多标的批量 | `node orchestrator/src/batch.ts --symbols 300308,002463 --market SZ --python <venv>/bin/python` → `.local/batches/<id>/summary.md` |
-| 两次运行变化提醒 | `node orchestrator/src/alerts.ts --symbol 300308 --market SZ [--base run-a --new run-b]` → `.local/alerts/…` |
-| 数据源健康巡检 | `<venv>/bin/python datasources/health.py` |
-| 初始化 / 体检 | `scripts/init [--python P] [--provider <id>] [--force]` / `scripts/doctor [--net] [--json]`(退出码 0 全 ok / 2 只有 warn / 3 有 fail;报告在 `.local/doctor/`) |
-| provider 兼容矩阵 | `node orchestrator/src/finance/provider_matrix.ts --provider deepseek --model deepseek-v4-flash` |
+| 操作系统 | macOS 或 Linux；当前主要验证环境为 Apple Silicon macOS |
+| Node.js | ≥ 22.18，推荐 24 LTS |
+| Python | ≥ 3.10，当前验证版本为 3.12 |
+| Codex CLI | 已验证 0.149.0；版本锚点见 `codex-version.json` |
+| 模型 | ChatGPT / Claude.ai 订阅登录，或支持 Responses API 的模型服务 |
 
-后台运行一律加 `< /dev/null`,否则 Codex 会停在等待标准输入。
+### 安装依赖
+
+```bash
+git clone https://github.com/simonlin1212/Vibe-Research.git vibe-research-agent
+cd vibe-research-agent
+
+npm install --prefix orchestrator
+npm install --prefix desktop
+
+python3 -m venv .venv
+.venv/bin/pip install -r .agents/skills/data-access/scripts/requirements.txt
+
+npm install -g @openai/codex@0.149.0
+scripts/init --python "$(pwd)/.venv/bin/python"
+```
+
+### 连接模型
+
+使用 ChatGPT 订阅：启动界面后进入“接入 AI”→“订阅接入”，点击“登录 Codex”，在自动打开的
+OpenAI 官方页面完成授权；页面自动识别登录结果后，点击“测试并保存”。产品使用独立的
+`.local/codex-home`，不会读取或覆盖用户的 `~/.codex`。浏览器未自动打开时，可用
+`CODEX_HOME="$(pwd)/.local/codex-home" codex login` 作为后备方式。
+
+使用 Claude.ai 订阅：先安装并登录 Claude Code；设置页会自动检测，不需要把 Claude 的 key 填进产品。
+
+API 接入：进入“接入 AI”→“API 接入”，选择供应商并填写 API 地址、模型名和 key，再点击
+“测试并保存”。系统先发起一次真实模型对话，成功才保存并供所有 Agent 页面使用。出现“请先到接入 AI
+重新连接”时，表示本机登录态已失效，不是研究或回测逻辑失败。
+
+### 启动浏览器 UI
+
+打开两个终端：
+
+```bash
+# 终端 1：本地 API
+node orchestrator/src/api.ts --port 8765
+```
+
+```bash
+# 终端 2：React 界面
+npm run dev --prefix desktop
+```
+
+浏览器打开 [http://127.0.0.1:5930](http://127.0.0.1:5930)。
+
+Vite 只在本机代理 `/api/*`，并在服务端补上鉴权信息。若设置了 `VRA_DATA_ROOT`，两个进程必须使用
+同一个值。
+
+### 命令行运行一次研究
+
+```bash
+node orchestrator/src/run.ts \
+  --symbol 300308 \
+  --market SZ \
+  --python "$(pwd)/.venv/bin/python" < /dev/null
+```
+
+完整研究通常需要 15–19 分钟。进度会持续显示，结果写入 `.local/runs/<run-id>/`。
+退出码：`0` complete、`2` incomplete/stale、`3` failed。
+
+## 工作方式
+
+```text
+浏览器工作台
+首页 Agent · 复盘 · 资讯 · 个股研究 · 回测 · 资料库
+        │
+        ▼
+金融 Agent 层
+117 个数据端点 · 六阶段 SOP · calc · validator · report archive
+        │
+        ▼
+OpenAI Codex Harness
+agent loop · context · tools · progress · sandbox
+        │
+        ▼
+Local Agent Runtime
+Codex SDK · Claude Code CLI（本机检测 / 登录探针 / 受限执行）
+        │
+        ▼
+Model Provider
+ChatGPT / Claude.ai 订阅 · OpenAI · DeepSeek · Qwen · GLM · Kimi · MiMo · compatible API
+```
+
+三级约束不会只依赖提示词：
+
+| 层 | 组成 | 作用 |
+|---|---|---|
+| 提示层 | `AGENTS.md` + `.agents/skills/` | 定义金融研究纪律与 SOP |
+| 执行层 | Codex hooks + workspace sandbox | 限制联网、文件访问、取数和产物范围 |
+| 编排层 | orchestrator + validator + calc + gate | 强制阶段、证据引用、确定性计算和合规边界 |
+
+项目不修改 Codex 源码。Codex 仓库只作上游参考，产品通过官方 CLI 与 SDK 使用 Harness。
 
 ## 模型接入
 
-默认走 **ChatGPT 订阅登录**(产品自己的 CODEX_HOME,不碰 `~/.codex`)。换模型三步:
+“接入 AI”把 Agent Runtime 与 Model Provider 分开：
 
-```bash
-export DEEPSEEK_API_KEY=...                                             # 1) 密钥只放环境变量(各家变量名见 providers/*.json)
-node orchestrator/src/finance/provider_matrix.ts --provider deepseek    # 2) 先跑 10 项兼容矩阵(结果在 .local/provider-matrix/)
-node orchestrator/src/run.ts --symbol 300308 --provider deepseek --model deepseek-v4-flash --python ...   # 3) 全绿再用于研究
-```
+- Codex Harness 负责本地上下文、工具调用、任务状态、进度和失败处理。
+- Local Agent Runtime 把订阅登录接进工作台；当前支持产品内 Codex 与本机 Claude Code，并实时检测版本和登录状态。Codex 可从设置页启动官方登录，授权完成后自动检测。
+- Model Provider 只提供推理能力；换模型不会换掉工具、记忆、证据链或金融纪律。
+- Codex 订阅使用产品自己的 `CODEX_HOME`，不读写用户的 `~/.codex`；Claude 订阅复用本机 Claude Code 登录态，调用时强制关闭本地工具、MCP、联网搜索工具与会话落盘。
+- 无论订阅或 API，点击“测试并保存”都会先做一次真实对话探针；探针失败不覆盖当前已生效配置。
+- API 模式的 key 只保存在当前浏览器 `localStorage`，随请求交给本机后端，不写入仓库、配置文件、
+  运行账本或日志。
 
-内置模板:`openai` / `deepseek` · `mimo`(官方原生 Responses)/ `qwen` · `glm` · `kimi`(经阿里云百炼)。也可写进 `.local/config.json`:`{"provider": {"profile": "deepseek"}, "defaults": {"model": "deepseek-v4-flash"}}`;auth 不写时自动按模板选 `api_key`,显式 `--auth` / `VRA_PROVIDER_AUTH` 优先。
+内置 provider 模板：OpenAI、DeepSeek、Qwen、GLM、Kimi、MiMo。引擎只支持 Responses API；
+模板存在不等于已经通过兼容矩阵，界面会区分“已实测”和“有模板、未实测”。
 
-🔴 **只支持 Responses 协议**:引擎已彻底移除 `wire_api="chat"`,厂商必须提供 OpenAI 兼容的 `/responses`,否则需自建 Responses→Chat 网关(填 `responses_support: "gateway"`)。第三方模板必须显式 https `base_url`(Codex 对空 base_url 会回退到 OpenAI 官方端点)。⚠️ 百炼那三个模板的 `base_url` 带 `{WorkspaceId}` 占位符,**要先复制到 `.local/providers/<id>.json` 换成自己的工作空间 ID**,否则选用时会被当场拒绝。
+详细说明见 [docs/model-access.md](docs/model-access.md) 和 [providers/README.md](providers/README.md)。
 
-OpenAI 基线矩阵(订阅登录,2026-08-22):9 pass · 1 n/a。国产模型矩阵需要对应 API key 才能真跑,模板的 `matrix.status` 以实际结果回填。详细指南:[docs/model-access.md](docs/model-access.md);模板字段与约束:[providers/README.md](providers/README.md)。
+## 数据与市场
 
-## 配置与环境变量
+- 当前注册表：**117 个端点、30 层**，覆盖 CN、US、HK。
+- 数据类别：行情、K 线、财务、一致预期、公告、研报、资金、筹码、期权、SEC/FINRA/CBOE、
+  新闻、宏观、产业温度计、招聘、管制与数据日历。
+- A 股、美股和港股都可用于自选股、持仓、资料归档与 Agent 对话。
+- **六阶段个股研究目前只支持 A 股。** 港美市场不会启动一条没有完整数据链的空研究。
+- 扫描版 PDF 需要先 OCR；文本型 PDF 会保留页码引用。
 
-优先级(低 → 高):内置默认 ← `vibe-research.config.json`(产品配置,入库,无密钥)← `.local/config.json`(用户私有,gitignore)← 环境变量 ← CLI 参数。
+端点目录见 [datasources/CATALOG.md](datasources/CATALOG.md)。
 
-`.local/config.json` 示例:
-
-```json
-{ "python": "/abs/path/.venv/bin/python",
-  "provider": { "profile": "openai", "auth": "chatgpt_login" },
-  "defaults": { "model": null, "reasoning": "medium", "turn_timeout_min": 20 } }
-```
-
-| 环境变量 | 作用 |
-|---|---|
-| `VRA_PYTHON` / `VRA_CODEX_PATH` / `VRA_CODEX_HOME` | Python 解释器 / Codex 二进制(空 = SDK 内置)/ 产品 CODEX_HOME(默认 `.local/codex-home`) |
-| `VRA_PROVIDER` / `VRA_PROVIDER_AUTH` | provider 模板 id / 认证方式(`chatgpt_login` 或 `api_key`) |
-| `OPENAI_API_KEY`、`DEEPSEEK_API_KEY`、`DASHSCOPE_API_KEY`(百炼三件套共用) | 各 provider 的密钥(名字由模板 `env_key` 声明) |
-| `VRA_API_TOKEN` | HTTP API 的 Bearer token(不设则自动生成到 `.local/api.token`) |
-| `VRA_SEC_CONTACT` | SEC 端点必需的联系方式("姓名 邮箱",SEC 要求) |
-| `IWENCAI_API_KEY` | 同花顺问财(可选) |
-| `VRA_ALLOW_INSECURE_TLS=1` | 申万 / 深交所证书链失败时的显式降级(默认失败不降级) |
-| `VRA_REPO_ROOT` | MCP server 的仓库根(默认按文件位置推导) |
-
-**密钥只从环境变量读,不进任何配置文件;agent 的 shell 命令不继承任何密钥类变量。**
-
-## 架构
-
-```
-                 ┌──────────────── 提示层 ────────────────┐
-                 │ AGENTS.md 宪法 + .agents/skills SOP     │
-                 └────────────────────────────────────────┘
- 取数(编排器执行,内存账本)→ agent turn(Codex SDK,沙箱 cwd=运行目录,无网络)→ validator → 补跑 → 合规 gate → 合并
-   ▲ fetch_endpoint.py × 注册表            ▲ hooks: Stop(缺产物不许收工)/ PreToolUse(禁自跑取数 / 联网 / 改证据)
-   │ raw/ 原文落盘 + sha256                 │ calc/cli.py(确定性计算,记 DAG)
- ┌──────────────── 执行层 ────────────────┐  ┌──────────── 编排层 ────────────┐
- │ Codex 原生 hooks + workspace-write 沙箱 │  │ orchestrator(TS)+ validator + gate │
- └────────────────────────────────────────┘  └────────────────────────────────────┘
-```
-
-六阶段:`profile → financials → estimates → valuation → risk → report`。每阶段至少一个 Codex turn(validator / Stop 钩子不通过就带着错误补跑);agent 读编排器取好的 `fetch/*.json`、本次 `calcs/` 与 `conflicts.json` 以及仓库里的 SOP 文档,只能经 calc 计算,只能写本阶段产物;validator 不信任 agent 自报——`fetch/` `raw/` 下每个文件必须在内存账本里且 sha256 一致,引用的证据 id 必须真实存在,必需计算必须出现并可复算。
+## 项目结构
 
 | 路径 | 作用 |
 |---|---|
-| `AGENTS.md` | 金融研究宪法(Codex 自动加载) |
-| `.agents/skills/` | 投研 SOP skills(`data-access` 取数、`company-research` 六阶段 SOP、`valuation` 估值口径、`earnings-analysis` 财报拆解、`industry-chain` 产业链与不可替代性、`catalyst-risk` 催化剂与风险;Codex 项目级 skill 的真实发现路径) |
-| `datasources/` | 端点注册表 `registry.json` + 自动生成的 `CATALOG.md` + `health.py` 巡检 + RSS 源表 |
-| `calc/` | 确定性计算库(纯函数 + fixture 测试 + CLI) |
-| `orchestrator/` | 薄编排器 / validator / gate / hooks / 知识层 / 查看器 / service / MCP / HTTP API / 批量 / 提醒 / provider / 矩阵(详见 `orchestrator/README.md`) |
-| `providers/` | provider 模板(只引用环境变量名) |
-| `knowledge/` | 知识层**模板**(用户档案一律在 `.local/knowledge/`) |
-| `scripts/` | `init`(幂等初始化 `.local/`)/ `doctor`(体检) |
-| `docs/` | 模型接入指南等文档 |
-| `.local/` | 用户私有层:配置 / 运行产物 / 知识档案 / 登录态 / token(已 gitignore) |
-| `codex-version.json` | 已测 Codex 版本锚定 |
-
-## 数据源
-
-115 个端点 / 29 层 / CN + US + HK,按合规级标注(`cn-public` 国内公开网页接口 · `S` 官方政府数据 · `B` 非官方 / 个人研究 · `C` 仅个人研究 · `rss-public` 公开 RSS)。原则:证据单位 / 币种按源原样由 mapper 明示、每条证据绑定 raw 原文、**取数层不做任何求和 / 比率 / 派生**(派生量一律经 calc 记 DAG)、跨源冲突显式报告不静默取舍。目录见 [datasources/CATALOG.md](datasources/CATALOG.md);新增端点 = 源函数 + mapper + 注册表条目 + 重生成目录 + 离线测试。
-
-部分源有本地限制(东财 push2 偶发断连有多主机备源;百度 K 线源侧 403;申万 xls 证书链;mootdx 偶发不可达;SEC 需 `VRA_SEC_CONTACT`),`health.py` 巡检会如实列出。
+| `desktop/` | React + Vite 本地浏览器 UI |
+| `orchestrator/` | Agent 编排、validator、API、MCP、对话、资料库与报告归档 |
+| `backtest/` | 确定性回测引擎与工具入口 |
+| `calc/` | 确定性计算库 |
+| `datasources/` | 数据端点注册表、目录和健康巡检 |
+| `.agents/skills/` | 金融研究 SOP 与取数工具 |
+| `providers/` | 模型 provider 模板，不包含密钥 |
+| `scripts/` | 初始化与体检 |
+| `.local/` | 用户私有数据、报告、登录态和运行产物；已 gitignore |
 
 ## 安全与隐私
 
-- **产品 / 用户数据分离**:持仓、密钥、个人研究结论永不进仓库;一切私有数据在 `.local/`(gitignore)。
-- **密钥只走环境变量**;provider 模板只记变量名;Codex 线程的 shell 环境策略排除 `*KEY* / *SECRET* / *TOKEN* / *PASSWORD*`;事件日志与矩阵产物落盘前脱敏。
-- **隔离的 CODEX_HOME**:产品从不读写用户的 `~/.codex`;MCP 接入用户 CODEX_HOME 由用户自己决定。
-- **沙箱**:agent 的 cwd 锁定在运行目录(workspace-write),无网络访问,approval never;取数由编排器在最小环境里执行。
-- **本机 API**:默认只绑 127.0.0.1(显式 `--host` 非回环地址必须设置 `VRA_API_TOKEN`,且自动关闭 cookie 登录;回环 = 127.0.0.1 / localhost / ::1);每个请求都要鉴权:Bearer token 对所有路由有效,回环绑定下 `/login?token=` 用查询参数换 cookie,该 cookie 只能放行白名单里的只读 GET;拒绝跨站 / 非本机 Origin / 非 JSON POST;所有路径经 `safePath()`(禁符号链接、必须在 `.local` 内)。
-- **产出红线**:只报数据 / 框架 / 概率 / 裁决点,不给建仓 / 加减仓 / 目标价 / 止损位;schema 层隔离 + 合规 gate 后处理。
+- 原始研报文件只保存在本机；模型只接收服务端检索命中的正文片段。
+- 后端默认 provider 的 key 只走环境变量，不写入产品配置或仓库。
+- 浏览器里填写的 API key 只保存在当前浏览器 `localStorage`，仅在调用时经本机后端转给所选模型服务商。
+- 资料对话关闭 Shell、图片读取、子代理、插件、应用和联网能力。
+- 资料引用格式为 `[资料:<id> p.<页码>]`，漏引、错引和未知引用会被机器校验拒绝。
+- Agent 研究阶段无网络；取数由编排器使用受控脚本完成，原始响应落盘并记录哈希。
+- 本机 API 默认只绑定 `127.0.0.1`，写请求必须鉴权并使用 JSON。
+- 输出只包含数据、分析框架、情景概率和裁决点，不提供建仓、加减仓、目标价或止损位。
 
 ## 开发与测试
 
 ```bash
-.venv/bin/pip install pytest                                               # Python 测试依赖(取数 requirements 不含 pytest)
-(cd orchestrator && npm run typecheck && npm test)                       # TypeScript:94 个 node:test
-.venv/bin/python -m pytest calc/tests -q                                   # calc:128 个
-.venv/bin/python -m pytest .agents/skills/data-access/scripts/tests -q    # 取数层离线测试
-.venv/bin/python datasources/gen_catalog.py                                # 改注册表后重生成 CATALOG.md
+npm run typecheck --prefix orchestrator
+npm test --prefix orchestrator
+
+npm run typecheck --prefix desktop
+npm test --prefix desktop
+npm run build --prefix desktop
+
+.venv/bin/python -m pytest calc/tests -q
+.venv/bin/python -m pytest backtest/tests -q
+.venv/bin/python -m pytest .agents/skills/data-access/scripts/tests -q
 ```
 
-工作约定:每完成一步 → Codex 独立审查(`codex review` / `codex exec` 审查提示)→ 逐条核实(会误报)→ 修 → 复审至无实质问题 → 才合并;审计必须在 push 之前。
+当前验证基线：
 
-## 状态与路线图
+- orchestrator：**525/525**，Core 行业词 **0**，TypeScript 类型检查通过。
+- desktop：**22/22**，TypeScript 类型检查与 Vite 生产构建通过。
+- Python（计算库、回测、数据脚本）：**569/569**。
+- V1.0.0 发布改动经 Codex 独立复审，末轮无可操作 P1/P2。
 
-**已完成(2026-08-22)**:Phase 0 七步(编排器 v0.4 + validator + gate + hooks v0 + 硬测试 harness)+ Phase 1 M1(数据源全量接入)/ M2(知识层 · 查看器 · 扩展数据进阶段 · 技术指标与筹码进 calc)/ M3(service · MCP · HTTP API · 批量 · 提醒)/ M4(provider 模板 · 兼容矩阵 · 薄 UI)/ `scripts/init` · `scripts/doctor`,各经 Codex 多轮独立审查闭环。
+项目约定：每个环节完成后先测试，再做 Codex 独立审计、逐条核实、修复和复审；审计完成前不把
+该环节称为“建成”，也不提交或推送。
 
-**待做**:国产模型矩阵真测(需各家 API key)→ 按结果回填模板;Windows hooks 哈希;Responses↔Chat 自建适配器(独立子项目);正式发布(License 拍板 + tag + Release;维护者待办与发布时序见 [docs/release-checklist.md](docs/release-checklist.md))。
+## 当前边界
+
+- V1.0.0 的交付形态是开源源码 + 本地浏览器 UI，需要分别启动本地 API 与浏览器界面。
+- MiMo API 已完成从空配置到真实业务报告的端到端验证；其他第三方模型仍需使用者自己的 key，
+  没有真实跑过兼容矩阵的模板不会标成“已实测”。
+- Windows 尚未完成同等级验证。
 
 ## 更新日志
 
@@ -219,7 +280,9 @@ OpenAI 基线矩阵(订阅登录,2026-08-22):9 pass · 1 n/a。国产模型矩�
 
 ## 免责声明
 
-本项目只产出研究数据、分析框架、情景概率与裁决点,**不提供任何投资动作建议**(建仓 / 加减仓 / 目标价 / 止损位)。所有输出不构成投资建议,数据来自第三方公开接口、可能延迟或有误,使用者自行核实并承担决策责任。请遵守各数据源的使用条款(部分端点仅限个人研究用途)。
+本项目只产出研究数据、分析框架、情景概率与裁决点，不提供任何投资动作建议。所有输出均不构成
+投资建议；第三方公开数据可能延迟、缺失或有误，使用者应自行核实并承担决策责任，同时遵守各数据源
+的使用条款。
 
 ## 赞赏
 
@@ -229,6 +292,6 @@ OpenAI 基线矩阵(订阅登录,2026-08-22):9 pass · 1 n/a。国产模型矩�
 
 ## License
 
-License 待维护者拍板(引擎 openai/codex 为 Apache-2.0;本仓库不含 Codex 源码)。发布前补 `LICENSE` 文件与徽章。
+本仓库采用 [MIT License](LICENSE)。OpenAI Codex 使用 Apache-2.0；本仓库不包含 Codex 源码。
 
 **作者：** Simon 林 · X [@linsizhen](https://x.com/linsizhen) · 邮箱：[simonlin0423@gmail.com](mailto:simonlin0423@gmail.com)

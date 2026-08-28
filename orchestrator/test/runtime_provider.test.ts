@@ -16,15 +16,18 @@ const code = (fn: () => unknown): string => {
   try { fn(); return "(没抛)"; } catch (e) { return e instanceof RuntimeProviderError ? e.code : `(不是 RuntimeProviderError:${e})`; }
 };
 
-test("runtime provider:订阅档只认产品自带引擎,别的 cli-* 一律报错不静默回落", () => {
+test("runtime provider:Codex 与 Claude 订阅各走自己的真实 runtime,未知 cli-* 报错", () => {
   const ok = resolveRuntimeProvider(REPO, DATA, { provider: "cli-codex" }, BASE_ENV);
+  assert.equal(ok.runtime, "codex");
+  if (ok.runtime !== "codex") assert.fail("Codex 订阅应走 Codex runtime");
   assert.equal(ok.auth, "chatgpt_login");
   assert.equal(ok.profile.id, "openai");
   assert.equal(ok.env, BASE_ENV, "订阅档不该往 env 里塞任何东西");
 
-  // 🔴 这条是承重的:界面上列着 Claude Code / Qwen Code(标"开发中")。
-  //    如果这里回落到自带引擎,用户选了 Claude、答案出自 Codex,而界面上一个字都不会提示。
-  for (const p of ["cli-claude", "cli-qwen", "cli-deepseek", "cli-anything"]) {
+  const claude = resolveRuntimeProvider(REPO, DATA, { provider: "cli-claude" }, BASE_ENV);
+  assert.deepEqual(claude, { runtime: "local-agent", agent: "claude", model: null, env: BASE_ENV });
+  // 没有安全禁工具适配器的 CLI 不得回落到 Codex。
+  for (const p of ["cli-qwen", "cli-deepseek", "cli-anything"]) {
     assert.equal(code(() => resolveRuntimeProvider(REPO, DATA, { provider: p }, BASE_ENV)), "unsupported_cli", p);
   }
   assert.ok(isCliProvider("cli-x") && !isCliProvider("deepseek"));
@@ -32,6 +35,8 @@ test("runtime provider:订阅档只认产品自带引擎,别的 cli-* 一律报�
 
 test("runtime provider:实测模板按模板自己的 env_key 注入 key,默认模型来自模板", () => {
   const r = resolveRuntimeProvider(REPO, DATA, { provider: "deepseek", apiKey: "sk-secret-abc" }, BASE_ENV);
+  assert.equal(r.runtime, "codex");
+  if (r.runtime !== "codex") assert.fail("API provider 应走 Codex runtime");
   assert.equal(r.profile.id, "deepseek");
   assert.equal(r.auth, "api_key");
   // 🔴 用固定变量名的话,模板里 env_http_headers 引用的变量就对不上 —— 必须按模板声明的名字
@@ -52,12 +57,16 @@ test("runtime provider:带占位符的模板,用户在界面上填了 baseURL �
   const r = resolveRuntimeProvider(
     REPO, DATA, { provider: "qwen", apiKey: "k", baseURL: "https://ws-1234.cn-beijing.maas.aliyuncs.com/compatible-mode/v1" }, BASE_ENV,
   );
+  assert.equal(r.runtime, "codex");
+  if (r.runtime !== "codex") assert.fail("API provider 应走 Codex runtime");
   assert.equal(r.profile.base_url, "https://ws-1234.cn-beijing.maas.aliyuncs.com/compatible-mode/v1");
   assert.ok(!/[{<]/.test(r.profile.base_url ?? ""), "占位符还在就等于没填");
 });
 
 test("runtime provider:自填端点合成的档案要过契约校验,协议不能是引擎已删掉的 chat", () => {
   const r = resolveRuntimeProvider(REPO, DATA, { provider: "custom", apiKey: "k", baseURL: "https://gw.example.com/v1", model: "my-model" }, BASE_ENV);
+  assert.equal(r.runtime, "codex");
+  if (r.runtime !== "codex") assert.fail("自定义 provider 应走 Codex runtime");
   assert.equal(r.profile.wire_api, "responses", "引擎 0.149.0 已彻底移除 chat 协议,写 chat 会跑到深处才炸");
   assert.equal(r.profile.matrix?.status, "unverified", "没跑过兼容矩阵就不许声称跑过");
   assert.equal(r.model, "my-model");

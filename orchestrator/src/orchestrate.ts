@@ -23,6 +23,7 @@ import { currentPlugin } from "./plugin.ts";
 import { rawHashes, writeConflicts, writeManifest, writeMergedArtifacts, type Manifest, type StageRecord } from "./merge.ts";
 import type { AgentRunner } from "./runner.ts";
 import { turnReplySchema, validateManifest } from "./schemas.ts";
+import { reportsForSymbol } from "./report_library.ts";
 import { allCriticalFetchFailed, checkAgentTrace, deriveQuoteDecision, deriveStageStatus, loadRun, summarizeErrorsForAgent, validateFetchIntegrity, validateFinalArtifacts, validateProtectedArtifacts, validateReport, validateStage, type AgentTrace, type CalcVerifier, type ProtectedExpectation, type ValidationResult, isUpstreamContractError } from "./validator.ts";
 
 export interface Deps {
@@ -203,6 +204,7 @@ async function runResearchInner(cfg: RunConfig, deps: Deps, onlyStages?: Stage[]
     //    也必须一眼看得出这是播种运行,否则它会像一次普通研究(Codex fixture-r2 P2)。收尾处只做补全。
     ...(cfg.seedFrom ? { test_scenario: true } : {}),
     endpoint_scope: cfg.endpointScope, registry_version: cfg.registryVersion,
+    user_reports: [],
   };
   /** 编排器自有产物的 sha256(conflicts.json / manifest.json),与 runner 的 events 摘要一起构成"受保护产物"认证 */
   const protectedFiles: Record<string, string> = {};
@@ -262,8 +264,18 @@ async function runResearchInner(cfg: RunConfig, deps: Deps, onlyStages?: Stage[]
   // M2 知识层召回:只在未由 scenario 注入且开启时;注入文本进全阶段提示词,由 knowledge_conflicts 裁决
   if (shouldRecall(cfg)) {
     const k = recallKnowledge(cfg);
-    if (k) { cfg.knowledge = { as_of: k.as_of, text: k.text, status: k.status, path: k.path }; manifest.knowledge_recalled = { path: k.path, as_of: k.as_of, status: k.status, truncated: k.truncated }; runner.log("orchestrator", "knowledge.recalled", { path: k.path, as_of: k.as_of, status: k.status, chars: k.text.length, truncated: k.truncated }); }
-    else { manifest.knowledge_recalled = null; runner.log("orchestrator", "knowledge.none", { dir: path.join(cfg.dataRoot, "knowledge") }); }
+    const reports = reportsForSymbol(cfg.dataRoot, cfg.symbol, { maxChars: 10_000 });
+    manifest.user_reports = reports?.hits.map((x) => ({ id: x.id, name: x.name, page: x.page })) ?? [];
+    if (k || reports) {
+      const reportText = reports ? `\n\n## 用户资料库命中（上传时间不是资料期）\n${reports.text}` : "";
+      const asOf = k?.as_of ?? reports!.hits.map((x) => x.uploaded_at.slice(0, 10)).sort().at(-1) ?? "1970-01-01";
+      const text = `${k?.text ?? ""}${reportText}`.trim();
+      const sourcePath = k?.path ?? path.join(cfg.dataRoot, "knowledge", "reports", "manifest.json");
+      const truncated = (k?.truncated ?? false) || (reports?.truncated ?? false);
+      cfg.knowledge = { as_of: asOf, text, status: k?.status ?? "stale", path: sourcePath };
+      manifest.knowledge_recalled = { path: sourcePath, as_of: asOf, status: k?.status ?? "stale", truncated };
+      runner.log("orchestrator", "knowledge.recalled", { path: sourcePath, as_of: asOf, status: k?.status ?? "stale", chars: text.length, truncated, user_reports: reports?.hits.length ?? 0 });
+    } else { manifest.knowledge_recalled = null; runner.log("orchestrator", "knowledge.none", { dir: path.join(cfg.dataRoot, "knowledge") }); }
   } else manifest.knowledge_recalled = null;
   persistManifest();
   runner.log("orchestrator", "run.start", { config: { ...cfg, endpoints: Object.keys(cfg.endpoints).length }, codex_version: sdk.version, codex_binary: sdk.binary, calc_version: calcVersion, repo_version: repoVersion, stages: stagesToRun });

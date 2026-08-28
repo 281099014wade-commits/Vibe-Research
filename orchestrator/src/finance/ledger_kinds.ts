@@ -11,8 +11,15 @@
  */
 import type { LedgerKindDef } from "../plugin.ts";
 
-/** 主体代码:六位数字,或留空(组合级的计划不针对单一主体) */
-const SYMBOL = { type: "string", pattern: "^([0-9]{6})?$" };
+/**
+ * 主体代码的台账规范形:
+ * A 股 `600519` / 港股 `00700.HK` / 美股 `AAPL` 或 `BRK.B`。
+ * 界面负责把 `hk00700` 等常见写法归一化，台账只收唯一写法。
+ */
+const US_SYMBOL_VALUE = "(?:[A-Z][A-Z0-9]{0,9}(?:[.-][A-Z0-9]{1,4})?)";
+const SYMBOL_VALUE = `(?:[0-9]{6}|[0-9]{5}\\.HK|${US_SYMBOL_VALUE})`;
+const SYMBOL = { type: "string", pattern: `^(?:${SYMBOL_VALUE})?$` };
+const REQUIRED_SYMBOL = { type: "string", pattern: `^${SYMBOL_VALUE}$` };
 /**
  * 日期:留空,或一个**真实存在的日历日**。
  * 🔴 只写 `^\d{4}-\d{2}-\d{2}$` 是不够的 —— `2026-99-99` / `2026-02-31` 都能过,
@@ -55,7 +62,7 @@ export const FINANCE_LEDGER_KINDS: Record<string, LedgerKindDef> = {
   position: {
     label: "持有",
     properties: {
-      symbol: { type: "string", pattern: "^[0-9]{6}$" },
+      symbol: REQUIRED_SYMBOL,
       name: TEXT(40),
       account: TEXT(40),
       shares: { type: "number", minimum: 0 },
@@ -115,7 +122,7 @@ export const FINANCE_LEDGER_KINDS: Record<string, LedgerKindDef> = {
   watch: {
     label: "自选",
     properties: {
-      symbol: { type: "string", pattern: "^[0-9]{6}$" },
+      symbol: REQUIRED_SYMBOL,
       name: TEXT(40),
       /** 用户自己的分组名(想按什么分就按什么分,产品不给固定选项) */
       tag: TEXT(40),
@@ -139,8 +146,8 @@ export const FINANCE_LEDGER_KINDS: Record<string, LedgerKindDef> = {
       symbol: SYMBOL,
       category: { type: "string", enum: ["review", "highlight", "ask", "debate", "audit", "backtest"] },
       title: NONEMPTY(160),
-      /** markdown 正文 */
-      body: TEXT(20000),
+      /** markdown 正文；回测 / 多空辩论会保留完整多阶段报告，不能沿用短笔记的 2 万字上限。 */
+      body: TEXT(100000),
     },
     required: ["title"],
   },

@@ -11,18 +11,60 @@
  *    底座 token 浏览器永远拿不到;模型 key 是**用户自己的**,存在他自己的 localStorage 里,
  *    随请求发给本机后端、用完即弃(见 llmStore.ts 与「接入 AI」页)。
  */
-import { readUserLlm } from "./llmStore";
+import { readUserLlm } from "./llmStore.ts";
 
 export class ApiError extends Error {
+  readonly status: number;
+  readonly code: string;
   constructor(
     message: string,
-    readonly status: number,
-    readonly code = "",
+    status: number,
+    code = "",
   ) {
     super(message);
     this.name = "ApiError";
+    this.status = status;
+    this.code = code;
   }
 }
+
+const AGENT_AUTH_ERROR = /401|unauthorized|missing bearer|authentication|not[_ -]?authenticated|token[_ -]?revoked|(?:proxy-)?authorization\s*:|bearer\s+[A-Za-z0-9._~+/=-]{4,}/i;
+const AGENT_TRANSPORT_DETAIL = /reconnecting|unexpected status|https?:\/\/|wss?:\/\/|cf-ray|x-(?:request|trace)-id|<\s*!?doctype|<\s*html\b/i;
+/** 只有这些由产品自己定义、文案受控的错误码可以把 message 原样展示。其余 Agent 错误默认收口。 */
+const SAFE_AGENT_MESSAGE_CODES = new Set([
+  "llm_broken", "llm_unavailable",
+  "bad_provider", "unknown_provider", "missing_base_url", "missing_key", "needs_base_url", "bad_base_url",
+  "unsupported_cli", "bad_session", "empty_message", "message_too_long", "bad_message",
+  "bad_translation_items", "bad_translation_output", "report_citation_invalid",
+  "chat_engine_unsupported", "chat_engine_missing", "chat_capacity", "chat_busy", "chat_cancelled", "timeout",
+  "agent_quota", "agent_not_installed", "agent_busy", "agent_timeout", "agent_output_too_large",
+  "agent_bad_output", "agent_failed", "agent_empty_output", "agent_cancelled", "agent_start_failed",
+  "tool_context_too_large", "bad_agent_output", "guided_output_blocked", "bad_tool_args", "bad_tool",
+  "bad_agent_state", "not_found", "tool_failed",
+]);
+
+/**
+ * Agent 错误给用户看的唯一出口。引擎原文仍由后端负责诊断，界面只显示可行动提示。
+ * 这层也保护旧后端或代理缓存：即使服务端暂时还返回原始 SDK 文本，也不会把地址 / cf-ray 暴露到页面。
+ */
+export function friendlyAgentError(error: unknown): string {
+  const raw = error instanceof Error ? error.message : String(error);
+  const code = error instanceof ApiError ? error.code : "";
+  if (code === "agent_not_ready" || code === "agent_not_authenticated" || AGENT_AUTH_ERROR.test(raw)) {
+    return "当前 AI 登录已失效或尚未完成。请先到「接入 AI」重新连接。";
+  }
+  if (AGENT_TRANSPORT_DETAIL.test(raw)) {
+    return "本地 Agent 暂时没有连接成功。请到「接入 AI」检查当前连接后重试。";
+  }
+  if (SAFE_AGENT_MESSAGE_CODES.has(code)) return raw;
+  if (code === "bad_llm" || code === "bad_template") {
+    return "当前 AI 配置无法使用。请到「接入 AI」检查模型与连接配置后重试。";
+  }
+  return "本地 Agent 暂时没有连接成功。请到「接入 AI」检查当前连接后重试。";
+}
+
+const isAgentPath = (path: string): boolean =>
+  path === "/chat" || path === "/translate-headlines" || path === "/local-agents/codex/login" || path.startsWith("/guided-tool/");
 
 /** 一条证据。所有端点的 evidence 元素都是这个形状,所以一套读法能服务全部端点。 */
 export interface Evidence {
@@ -66,7 +108,27 @@ export interface FetchResult {
   fetched_at: string;
 }
 
+export type GuidedToolReply =
+  | { status: "needs_input"; message: string }
+  | {
+      status: "complete"; message: string; title: string; question: string;
+      hypothesis: string; logic: string[]; report: string; tool_result: unknown;
+    };
+
+function requestLlm(llm: unknown): unknown {
+  if (llm !== undefined) return llm;
+  const r = readUserLlm();
+  if (r.status === "broken") {
+    throw new ApiError("本机存的模型配置读不懂了 —— 请到「接入 AI」重新选一次", 400, "llm_broken");
+  }
+  if (r.status === "unavailable") {
+    throw new ApiError("浏览器不让读本地存储（隐私模式？）—— 「接入 AI」的配置这一轮用不了", 400, "llm_unavailable");
+  }
+  return r.config ?? undefined;
+}
+
 async function call<T>(path: string, init?: RequestInit): Promise<T> {
+  const agentPath = isAgentPath(path);
   let res: Response;
   try {
     res = await fetch(`/api${path}`, {
@@ -79,6 +141,9 @@ async function call<T>(path: string, init?: RequestInit): Promise<T> {
     });
   } catch (e) {
     // fetch 只在网络层失败时抛。这里不能静默成空数据,否则页面把"连不上"渲染成"没有数据"
+    if (agentPath) {
+      throw new ApiError("本地 Agent 暂时没有连接成功。请到「接入 AI」检查当前连接后重试。", 0, "network");
+    }
     throw new ApiError(`连接不到编排器 API:${e instanceof Error ? e.message : String(e)}`, 0, "network");
   }
   const text = await res.text();
@@ -87,18 +152,54 @@ async function call<T>(path: string, init?: RequestInit): Promise<T> {
     body = text ? JSON.parse(text) : null;
   } catch {
     // 代理错误页是 HTML,直接 res.json() 会炸在 "Unexpected token <",把真正原因埋掉
+    if (agentPath) {
+      throw new ApiError("本地 Agent 暂时没有连接成功。请到「接入 AI」检查当前连接后重试。", res.status, "bad_response");
+    }
     throw new ApiError(`返回不是 JSON:${text.slice(0, 120)}`, res.status, "bad_response");
   }
   if (!res.ok) {
     const b = body as { error?: string; message?: string } | null;
-    throw new ApiError(b?.message ?? b?.error ?? `HTTP ${res.status}`, res.status, b?.error ?? String(res.status));
+    const code = b?.error ?? String(res.status);
+    const raw = b?.message ?? b?.error ?? `HTTP ${res.status}`;
+    const message = agentPath ? friendlyAgentError(new ApiError(raw, res.status, code)) : raw;
+    throw new ApiError(message, res.status, code === "turn_failed" && message !== raw ? "agent_not_ready" : code);
   }
   return body as T;
+}
+
+async function ensureSelectedLocalAgentReady(llm: unknown): Promise<void> {
+  if (!llm || typeof llm !== "object" || Array.isArray(llm)) return;
+  const provider = String((llm as { provider?: unknown }).provider ?? "");
+  // 只预检**已经有真实适配器**的两种订阅。未知 cli-* 必须交给后端返回 unsupported_cli，
+  // 不能在这里误报成“没登录”，否则坏配置会被掩盖。
+  if (provider !== "cli-codex" && provider !== "cli-claude") return;
+  const status = (await call<LocalAgentStatus[]>("/local-agents")).find((x) => x.provider === provider);
+  if (status?.available) return;
+  const name = status?.name ?? (provider === "cli-codex" ? "Codex" : "本地 Agent");
+  const message = status?.status === "not_installed"
+    ? `当前选择的 ${name} 尚未安装。请先到「接入 AI」完成连接。`
+    : "当前 AI 登录已失效或尚未完成。请先到「接入 AI」重新连接。";
+  throw new ApiError(message, 409, "agent_not_ready");
 }
 
 export const backend = {
   health: () => call<{ ok: boolean; version: string }>("/health"),
   product: () => call<ProductInfo>("/product"),
+  localAgents: () => call<LocalAgentStatus[]>("/local-agents"),
+  startCodexLogin: () => call<{ state: "started" | "pending" }>("/local-agents/codex/login", {
+    method: "POST", body: "{}",
+  }),
+  reports: () => call<{
+    id: string; name: string; size: number; ext: string; ts: number; uploaded_at: string;
+    chars: number; pages: number | null; truncated: boolean; symbols: string[];
+  }[]>("/reports"),
+  reportUpload: (name: string, content: string) => call<{
+    id: string; name: string; size: number; ext: string; ts: number; uploaded_at: string;
+    chars: number; pages: number | null; truncated: boolean; symbols: string[];
+  }>("/reports", { method: "POST", body: JSON.stringify({ name, content }) }),
+  reportDelete: (id: string) => call<{ removed: boolean }>(`/reports/${encodeURIComponent(id)}/delete`, {
+    method: "POST", body: JSON.stringify({ id }),
+  }),
 
   /**
    * 取一个端点。**默认读上次的快照**(见 service.fetchEndpoint):
@@ -137,30 +238,30 @@ export const backend = {
    * 一轮对话。`llm` = 用户自己在「接入 AI」里配的那一份（不给则走后端默认）。
    * 🔴 key 随请求发给**本机**后端，用完即弃：不写配置文件、不进日志、不入账本。
    */
-  chat: (message: string, session = "default", signal?: AbortSignal, llm?: unknown) => {
+  chat: async (message: string, session = "default", signal?: AbortSignal, llm?: unknown) => {
     // 🔴 **默认就带上用户那份**，不靠调用方记得传。
     //    上一版要求每个入口自己传 —— 结果三个入口里有两个（Agent 面板、agents.ts）漏了，
     //    表现是"用户在界面上选的模型没生效"，而对话照常成功、界面上看不出任何异常。
-    let use = llm;
-    if (use === undefined) {
-      const r = readUserLlm();
-      // 🔴 本地那份**坏了 / 读不到**时要说出来，不许当"没配"回落到后端默认 ——
-      //    那正是"用户选的模型悄悄换了一家"的形状，而对话照常有答案、界面上看不出来。
-      if (r.status === "broken") {
-        throw new ApiError("本机存的模型配置读不懂了 —— 请到「接入 AI」重新选一次", 400, "llm_broken");
-      }
-      if (r.status === "unavailable") {
-        throw new ApiError("浏览器不让读本地存储（隐私模式？）—— 「接入 AI」的配置这一轮用不了", 400, "llm_unavailable");
-      }
-      use = r.config ?? undefined;
-    }
-    return call<{ session: string; reply: string; redacted: number; duration_ms: number }>("/chat", {
+    const use = requestLlm(llm);
+    await ensureSelectedLocalAgentReady(use);
+    return await call<{ session: string; reply: string; redacted: number; duration_ms: number }>("/chat", {
       method: "POST",
       // 🔴 判据是 `!== undefined`，不是真值。用真值判的话，显式传进来的 `null`（以及 ""/0/false）
       //    会在这里被悄悄丢掉、请求体里根本没有 llm ⇒ 后端的形状校验压根不会执行，
       //    照样回落到后端默认。后端刚把这条堵上，前端这个**兄弟编译点**不能漏
       //    （Codex 复审 r4：同一根因，两处各判各的）。
       body: JSON.stringify({ session, message, ...(use !== undefined ? { llm: use } : {}) }),
+      signal,
+    });
+  },
+
+  /** RSS 标题走专用受限转换入口，不借用会记上下文的自由对话。 */
+  translateHeadlines: async (items: { id: string; title: string }[], signal?: AbortSignal, llm?: unknown) => {
+    const use = requestLlm(llm);
+    await ensureSelectedLocalAgentReady(use);
+    return await call<{ items: { id: string; zh: string }[]; redacted: number; duration_ms: number }>("/translate-headlines", {
+      method: "POST",
+      body: JSON.stringify({ items, ...(use !== undefined ? { llm: use } : {}) }),
       signal,
     });
   },
@@ -174,6 +275,16 @@ export const backend = {
    */
   runTool: <T>(name: string, body: unknown, signal?: AbortSignal) =>
     call<T>(`/tool/${encodeURIComponent(name)}`, { method: "POST", body: JSON.stringify(body), signal }),
+  /** Agent 先补问，条件齐备后由后端调用同一个真实工具，并返回可归档报告。 */
+  guidedTool: async (name: string, session: string, message: string, signal?: AbortSignal, llm?: unknown) => {
+    const use = requestLlm(llm);
+    await ensureSelectedLocalAgentReady(use);
+    return await call<GuidedToolReply>(`/guided-tool/${encodeURIComponent(name)}`, {
+      method: "POST",
+      body: JSON.stringify({ session, message, ...(use !== undefined ? { llm: use } : {}) }),
+      signal,
+    });
+  },
   debateStart: (symbol: string, depth?: string) =>
     call<DebateState>("/debate", { method: "POST", body: JSON.stringify({ symbol, ...(depth ? { depth } : {}) }) }),
   debateAdvance: (id: string) =>
@@ -205,7 +316,7 @@ export const backend = {
     }),
 
   /**
-   * 发起一次**六阶段深度研究**（公司画像 → 财务 → 一致预期 → 估值 → 风险 → 成稿）。
+   * 发起一次**六阶段个股研究**（公司画像 → 财务 → 一致预期 → 估值 → 风险 → 成稿）。
    *
    * 🔴 这条链路后端一直都有，界面却**没有任何入口** —— 用户完全不知道产品能生成
    *    带证据链、确定性计算、数据缺口与裁决点的正式研究；「我的研报」只是上传外部文件的归档柜。
@@ -262,6 +373,17 @@ export interface ProductInfo {
    * 「明明实测过却没标」或更糟的「没测过却标了已实测」。
    */
   provider_templates?: Record<string, string>;
+}
+
+export interface LocalAgentStatus {
+  provider: "cli-codex" | "cli-claude";
+  name: "Codex" | "Claude Code";
+  installed: boolean;
+  authenticated: boolean;
+  available: boolean;
+  version: string | null;
+  status: "ready" | "not_installed" | "not_authenticated" | "login_pending" | "login_failed" | "probe_failed";
+  detail: string;
 }
 
 /** 一段产出里数字的着落。三档分开报 —— 混成一个数等于什么都没说 */
@@ -372,6 +494,8 @@ export interface RunListItem {
   run_id: string;
   status: string | null;
   symbol: string | null;
+  /** 归档列表只展示「公司名称 + 代码」；名称来自这次研究已落盘的证据，不在前端猜。 */
+  name: string | null;
   /** 同代码不同市场不算时间序列 —— 比较两次运行要带上它 */
   market: string | null;
   started_at: string | null;
