@@ -17,6 +17,7 @@
 </p>
 
 <p align="center">
+  <a href="https://viberesearch.wiki">官方网站</a> ·
   <a href="#这是什么">这是什么</a> ·
   <a href="#功能">功能</a> ·
   <a href="#快速开始">快速开始</a> ·

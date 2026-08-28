@@ -2,6 +2,13 @@
 
 格式遵循 Keep a Changelog，并采用语义化版本。
 
+## [Unreleased]
+
+- 重建 [viberesearch.wiki](https://viberesearch.wiki) 官方网站，主叙事升级为“基于 OpenAI Codex Harness
+  打造的本地金融研究 Agent”，并展示当前工作台、模型接入、回测 Agent、研报库与证据纪律。
+- 官网源码迁入 `website/`，中英文 README 恢复官网入口；Release 链接使用稳定的 `releases/latest`，
+  具体版本号由 GitHub API 动态同步，避免后续发布时出现新旧版本并存。
+
 ## [1.0.0] - 2026-08-28
 
 Vibe Research 从直接调用模型 API 的个人投研看板，升级为基于 Codex Harness 的本地金融研究 Agent。
