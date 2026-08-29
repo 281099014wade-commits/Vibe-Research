@@ -14,7 +14,7 @@ import fs from "node:fs";
 import { createRequire } from "node:module";
 import path from "node:path";
 
-import { nowIso, readJsonIfExists, sha256File, writeJson } from "./fsutil.ts";
+import { NOFOLLOW_FLAG, nowIso, privateFilePermissions, readJsonIfExists, sha256File, writeJson } from "./fsutil.ts";
 import { assertDataRootInside, detectPython, gitignoreCovers, resolveDataRoot } from "./init.ts";
 import { loadProductConfig, type LoadedProductConfig } from "./productConfig.ts";
 import { parseArgs } from "./run.ts";
@@ -165,8 +165,16 @@ function probeFakeIp(hosts: readonly string[]): string[] {
     let ips: string[] = [];
     try {
       // lookup 是异步 API;这里用 spawnSync 调系统解析器,避免把 runDoctor 变成依赖网络的慢函数
-      const r = spawnSync("dscacheutil", ["-q", "host", "-a", "name", h], { encoding: "utf8", timeout: 3_000 });
-      ips = [...(r.stdout || "").matchAll(/ip_address:\s*([0-9.]+)/g)].map((m) => m[1] as string);
+      if (process.platform === "darwin") {
+        const r = spawnSync("dscacheutil", ["-q", "host", "-a", "name", h], { encoding: "utf8", timeout: 3_000 });
+        ips = [...(r.stdout || "").matchAll(/ip_address:\s*([0-9.]+)/g)].map((m) => m[1] as string);
+      } else if (process.platform === "win32") {
+        const r = spawnSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", `(Resolve-DnsName -Type A '${h}' -ErrorAction SilentlyContinue).IPAddress`], { encoding: "utf8", timeout: 3_000, windowsHide: true });
+        ips = (r.stdout || "").split(/\r?\n/).map((x) => x.trim()).filter((x) => /^\d+(?:\.\d+){3}$/.test(x));
+      } else {
+        const r = spawnSync("getent", ["ahostsv4", h], { encoding: "utf8", timeout: 3_000 });
+        ips = [...(r.stdout || "").matchAll(/^(\d+(?:\.\d+){3})\s/gm)].map((m) => m[1] as string);
+      }
     } catch { /* 解析不了就跳过这个主机 */ }
     if (ips.some(isReservedIp)) hit.push(h);
   }
@@ -298,13 +306,25 @@ export async function runDoctor(opts: { repoRoot?: string; env?: NodeJS.ProcessE
   // 8. Python 与取数依赖
   const python = opts.python ?? pc?.python ?? detectPython(repoRoot);
   let pyOk = false;
-  if (!python) add({ id: "python", title: "Python 与取数依赖", status: "fail", detail: "未找到 Python(配置 python 为空且无 .venv)", fix: "python3 -m venv .venv && .venv/bin/pip install -r .agents/skills/data-access/scripts/requirements.txt;或在 .local/config.json 填 python" });
+  if (!python) add({ id: "python", title: "Python 与取数依赖", status: "fail", detail: "未找到 Python(配置 python 为空且无 .venv)", fix: process.platform === "win32" ? "py -3.12 -m venv .venv; .\\.venv\\Scripts\\python.exe -m pip install -r .agents\\skills\\data-access\\scripts\\requirements.txt" : "python3 -m venv .venv && .venv/bin/pip install -r .agents/skills/data-access/scripts/requirements.txt;或在 .local/config.json 填 python" });
   else {
     const r = exec(python, ["-c", `import sys, ${PY_IMPORTS}; print(sys.version.split()[0])`], { timeoutMs: 60_000 });
     const ver = r.status === 0 ? r.stdout.trim() : "";
-    pyOk = r.status === 0;
+    const importsOk = r.status === 0;
     const vnum = ver ? ver.split(".").map(Number) : null;
-    add({ id: "python", title: "Python 与取数依赖", status: !pyOk ? "fail" : vnum && cmpVersion(vnum, [3, 10]) < 0 ? "warn" : "ok", detail: pyOk ? `${python} → ${ver}(${PY_IMPORTS} 可导入)` : `${python} 导入失败:${sub((r.stderr || r.stdout).trim().split("\n").slice(-1)[0] ?? "")}`, fix: pyOk ? undefined : `${python} -m pip install -r .agents/skills/data-access/scripts/requirements.txt` });
+    const versionOk = Boolean(vnum && cmpVersion(vnum, [3, 11]) >= 0);
+    pyOk = importsOk && versionOk;
+    const detail = !importsOk
+      ? `${python} 导入失败:${sub((r.stderr || r.stdout).trim().split("\n").slice(-1)[0] ?? "")}`
+      : !versionOk
+        ? `${python} → ${ver};受控配置隔离需要 Python ≥ 3.11(tomllib 标准库)`
+        : `${python} → ${ver}(${PY_IMPORTS} 可导入)`;
+    const fix = !importsOk
+      ? `${python} -m pip install -r .agents/skills/data-access/scripts/requirements.txt`
+      : !versionOk
+        ? "安装 Python 3.12 并重建 .venv，再重新运行初始化"
+        : undefined;
+    add({ id: "python", title: "Python 与取数依赖", status: pyOk ? "ok" : "fail", detail, fix });
   }
 
   // 9. calc 自检
@@ -329,7 +349,7 @@ export async function runDoctor(opts: { repoRoot?: string; env?: NodeJS.ProcessE
     try {
       fs.mkdirSync(dataRoot, { recursive: true });
       const probe = safePath({ dataRoot }, `.doctor-write-${process.pid}`);
-      const fd = fs.openSync(probe, fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_NOFOLLOW, 0o600);
+      const fd = fs.openSync(probe, fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL | NOFOLLOW_FLAG, 0o600);
       try { fs.writeSync(fd, "1"); } finally { fs.closeSync(fd); fs.unlinkSync(probe); }
       add({ id: "data_root", title: "数据根写权限", status: "ok", detail: dataRoot });
     } catch (e) { add({ id: "data_root", title: "数据根写权限", status: "fail", detail: `${dataRoot}:${e instanceof Error ? e.message : String(e)}`, fix: "检查目录权限;数据根内不得有符号链接" }); }
@@ -382,7 +402,11 @@ export async function runDoctor(opts: { repoRoot?: string; env?: NodeJS.ProcessE
 
   // 14. api.token 权限
   const tok = path.join(dataRoot, "api.token");
-  if (fs.existsSync(tok)) { const mode = fs.statSync(tok).mode & 0o777; add({ id: "api_token", title: ".local/api.token 权限", status: (mode & 0o077) ? "warn" : "ok", detail: `mode ${mode.toString(8)}`, fix: (mode & 0o077) ? `chmod 600 ${tok}` : undefined }); }
+  if (fs.existsSync(tok)) {
+    const permission = privateFilePermissions(tok);
+    add({ id: "api_token", title: ".local/api.token 权限", status: permission.secure ? "ok" : "warn", detail: permission.detail,
+      fix: permission.secure ? undefined : (process.platform === "win32" ? "重启 API，产品会断开 ACL 继承并只授权当前 Windows 用户" : `chmod 600 ${tok}`) });
+  }
   else add({ id: "api_token", title: ".local/api.token 权限", status: "skip", detail: "尚未生成(首次起 HTTP API 时自动生成)" });
 
   // 15. 数据源连通(可选;会把取数信封与 raw 写到 <data_root>/mcp/doctor/)

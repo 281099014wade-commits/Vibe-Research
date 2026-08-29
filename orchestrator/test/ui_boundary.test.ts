@@ -132,7 +132,7 @@ test("个股研究只有一个入口，旧地址跳转且归档只展示名称�
   assert.ok(!/label:\s*"深度研究"/.test(layoutSrc));
   assert.match(researchSrc, /title="个股研究"/);
   assert.match(researchSrc, /\^\\d\{6\}\$/, "现有研究底座只支持 A 股，界面必须按真实能力限制输入");
-  assert.match(researchSrc, /startResearch\(\{\s*symbol:\s*code,\s*endpoints:/, "A 股代码必须传到真实研究入口");
+  assert.match(researchSrc, /startResearch\(\{[\s\S]{0,400}symbol:\s*code,[\s\S]{0,400}endpoints:\s*scope,/, "A 股代码必须传到真实研究入口");
   assert.ok(!/港股或美股标的跑完整|A 股 \/ 港股 \/ 美股代码/.test(researchSrc), "界面不能承诺尚未接通的港美完整研究");
   const archive = researchSrc.slice(researchSrc.indexOf("<h3 className=\"mb-3 font-semibold\">研究归档"));
   assert.match(archive, /r\.name\s*\?\?\s*"个股"/);

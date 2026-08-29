@@ -6,6 +6,7 @@ import fs from "node:fs";
 import path from "node:path";
 
 import AjvModule from "ajv";
+import { NOFOLLOW_FLAG } from "./fsutil.ts";
 
 // 不 import schemas.ts:config.ts → providers.ts → schemas.ts → config.ts 会成环(模块求值期 STAGES 未定义);这里直接用 Ajv
 const AjvCtor = ((AjvModule as unknown as { default?: unknown }).default ?? AjvModule) as new (o: object) => { compile: (s: object) => unknown };
@@ -169,7 +170,7 @@ function readProfileJson(dir: string, id: string, root: string, label: string): 
   if (fs.lstatSync(dir).isSymbolicLink()) throw new Error(`${label} 目录 ${dir} 是符号链接,拒绝读取`);
   const realDir = fs.realpathSync(dir), realRoot = fs.realpathSync(root);
   if (realDir !== realRoot && !realDir.startsWith(realRoot + path.sep)) throw new Error(`${label} 目录 ${dir} 解析到根目录之外(${realDir}),拒绝读取`);
-  const fd = fs.openSync(f, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
+  const fd = fs.openSync(f, fs.constants.O_RDONLY | NOFOLLOW_FLAG);
   try { return JSON.parse(fs.readFileSync(fd, "utf8")); } finally { fs.closeSync(fd); }
 }
 

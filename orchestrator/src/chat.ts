@@ -28,7 +28,7 @@ import { LocalAgentError, runLocalAgent, type RunLocalAgentOptions } from "./loc
 import { loadProductConfig } from "./productConfig.ts";
 import { structuredOutputMode, withOutputSchema } from "./providers.ts";
 import { reportCitationErrors, type ReportSourceRef } from "./report_library.ts";
-import { codexOptionsFor, sdkCodexVersion } from "./runner.ts";
+import { codexOptionsFor, mcpIsolationOverride, sdkCodexVersion } from "./runner.ts";
 import { RuntimeProviderError, resolveRuntimeProvider, type LlmOverride, type ResolvedRuntimeProvider } from "./runtime_provider.ts";
 import { listForeignSkillPaths } from "./skills_isolation.ts";
 
@@ -99,6 +99,7 @@ function rememberLocalTurn(local: LocalSession, role: "user" | "assistant", text
  */
 const CHAT_FEATURES = Object.freeze({
   shell_tool: false,
+  unified_exec: false,
   view_image: false,
   multi_agent: false,
   multi_agent_v2: false,
@@ -107,26 +108,28 @@ const CHAT_FEATURES = Object.freeze({
   plugins: false,
   tool_suggest: false,
   standalone_web_search: false,
+  code_mode: false,
 });
 
-function chatCodexOptions(cfg: RunConfig, engineEnv: NodeJS.ProcessEnv): CodexOptions {
-  if (process.platform === "win32") {
-    throw new ChatError("chat_engine_unsupported", "当前无工具对话启动器尚未支持 Windows");
-  }
+function chatCodexOptions(cfg: RunConfig, engineEnv: NodeJS.ProcessEnv, workingDirectory: string): CodexOptions {
   const realCodex = cfg.codexPath ?? sdkCodexVersion().binary;
   if (!realCodex || !fs.existsSync(realCodex)) {
     throw new ChatError("chat_engine_missing", "找不到产品捆绑的 Codex 引擎，无法安全启动对话");
   }
-  const wrapper = path.join(cfg.repoRoot, "orchestrator", "bin", "codex-chat");
-  if (!fs.existsSync(wrapper)) {
-    throw new ChatError("chat_engine_missing", "缺少对话专用启动器 orchestrator/bin/codex-chat");
-  }
-  const base = codexOptionsFor({ ...cfg, codexPath: wrapper }, engineEnv);
+  // 直接启动官方二进制，避免 POSIX /bin/sh 包装器把 Windows 排除在外。
+  // 用户配置里的工具面由下面的最高优先级 config 全量关闭，read-only 再挡住独立的 apply_patch 工具。
+  // 对话永远不创建研究轮的 vra_run MCP。Windows 的 cfg 默认是
+  // controlled_mcp，若直接传给 codexOptionsFor，会先生成研究 MCP，再靠
+  // 后一条 override 覆盖。即使 SDK 当前的同层最后写入语义能删掉它，
+  // 对话边界也不应依赖这个隐含顺序。
+  const base = codexOptionsFor({ ...cfg, executionMode: "shell_hooks", codexPath: realCodex }, engineEnv);
+  // MCP 发现必须与线程的真实 cwd 完全一致。对话 cwd 是 dataRoot/chat/<session>，
+  // 不是研究配置的 cfg.runDir；用错目录会漏掉会话目录下的 `.codex/config.toml`。
+  const mcpIsolation = mcpIsolationOverride({ ...cfg, runDir: workingDirectory }, undefined, engineEnv);
   const baseConfig = (base.config ?? {}) as Record<string, unknown>;
   const foreignSkills = listForeignSkillPaths({ codexHome: cfg.codexHome, productRoots: [cfg.repoRoot] });
   return {
     ...base,
-    env: { ...(base.env ?? {}), VRA_CODEX_REAL_BIN: realCodex },
     config: {
       ...baseConfig,
       features: {
@@ -141,6 +144,7 @@ function chatCodexOptions(cfg: RunConfig, engineEnv: NodeJS.ProcessEnv): CodexOp
         config: foreignSkills.map((skillPath) => ({ path: skillPath, enabled: false })),
       },
     },
+    configOverrides: [...(base.configOverrides ?? []), mcpIsolation.override],
   };
 }
 
@@ -188,8 +192,8 @@ function publicLocalAgentFailure(error: LocalAgentError): ChatError {
 }
 
 /**
- * 对话线程的完整规则。对话启动器使用 `--ignore-rules`，不会读取项目 AGENTS.md；
- * 因此这段不是补充说明，而是无工具对话通道自己的最小宪法。
+ * 对话线程的完整规则。它与项目 AGENTS.md 共同生效；这里仍完整给出
+ * 无工具、无联网、只读与资料引用等对话专属边界。
  */
 function preamble(): string {
   const p = currentPlugin();
@@ -384,6 +388,8 @@ export async function chatSend(
     ...(rt ? (rt.model ? { model: rt.model } : {}) : pc.defaults.model ? { model: pc.defaults.model } : {}),
     runId: `chat-${session}`,
   });
+  // 先建立真实工作目录，再用同一目录做 MCP 配置发现与启动线程。
+  const dir = sessionDir(cfg, session);
 
   // 🔴 会话表的键必须带上**真实数据根**,不能只用客户端给的会话名。
   //    线程一建好就绑定了某个数据根下的工作目录;只按会话名索引的话,
@@ -402,9 +408,8 @@ export async function chatSend(
   //    (Codex 复审 mimo-r2 P1)。`codexOptionsFor(cfg)` 就是 `new Codex(...)` 收到的原物,
   //    它一变,线程就必须重开。
   // ⚠️ 这个哈希里含密钥派生值 ⇒ **只留在内存里当 Map 的键,永不落盘、永不进日志**。
-  // 启动器会加 `--ignore-user-config --ignore-rules`：认证仍从产品 CODEX_HOME 读取，
-  // 但 config.toml 里的用户 MCP / 插件 / 规则不进入对话线程。
-  const baseCodexOptions = chatCodexOptions(cfg, engineEnv);
+  // 认证只从产品 CODEX_HOME 读取；产品侧禁用外部 skills，下面再显式关闭全部内置工具与 MCP。
+  const baseCodexOptions = chatCodexOptions(cfg, engineEnv, dir);
   const baseConfig = (baseCodexOptions.config ?? {}) as Record<string, unknown>;
   const codexOptions: CodexOptions = {
     ...baseCodexOptions,
@@ -434,7 +439,6 @@ export async function chatSend(
   }
 
   if (!s) {
-    const dir = sessionDir(cfg, session);
     const codex = codexFactory(codexOptions);
     const thread = codex.startThread({
       // 每个会话仍放在自己的数据根目录下做隔离；启动器忽略用户规则，规则只来自上面的 preamble。

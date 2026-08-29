@@ -11,8 +11,8 @@
   <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-yellow"></a>
   <img alt="Version" src="https://img.shields.io/badge/version-v1.0.0-F35D2B">
   <img alt="UI" src="https://img.shields.io/badge/UI-React%20%2B%20Vite-646cff">
-  <img alt="Orchestrator tests" src="https://img.shields.io/badge/orchestrator-525%20tests-passing">
-  <img alt="Desktop tests" src="https://img.shields.io/badge/desktop-22%20tests-passing">
+  <img alt="Orchestrator tests" src="https://img.shields.io/badge/orchestrator-537%20checks-passing">
+  <img alt="Desktop tests" src="https://img.shields.io/badge/desktop-25%20tests-passing">
   <img alt="Codex Harness" src="https://img.shields.io/badge/runtime-Codex%20Harness-black">
 </p>
 
@@ -95,13 +95,28 @@ model guesses.
 
 | Item | Requirement |
 |---|---|
-| Operating system | macOS or Linux; the primary verified environment is Apple Silicon macOS |
+| Operating system | Windows 11, macOS, or Linux; Windows runs natively and does not require WSL |
 | Node.js | ≥ 22.18; Node 24 LTS recommended |
-| Python | ≥ 3.10; Python 3.12 currently verified |
+| Python | ≥ 3.11; Python 3.12 recommended and currently verified |
 | Codex CLI | Version 0.149.0 verified; see `codex-version.json` |
 | Model access | ChatGPT or Claude.ai subscription login, or a provider that supports the Responses API |
 
 ### Install dependencies
+
+Windows (PowerShell or Command Prompt):
+
+```bat
+git clone https://github.com/simonlin1212/Vibe-Research.git vibe-research-agent
+cd vibe-research-agent
+scripts\setup-windows.cmd
+scripts\start.cmd
+```
+
+`setup-windows.cmd` creates `.venv`, installs Node/Python dependencies, initializes the private product data
+directory, and runs diagnostics. `start.cmd` starts the local API and browser UI and opens
+`http://127.0.0.1:5930`.
+
+macOS / Linux:
 
 ```bash
 git clone https://github.com/simonlin1212/Vibe-Research.git vibe-research-agent
@@ -124,6 +139,8 @@ Complete authorization on the official OpenAI page that opens, return to Setting
 after the login status turns ready. The product uses its own `.local/codex-home` and never reads or overwrites
 `~/.codex`. If the browser does not open automatically, use
 `CODEX_HOME="$(pwd)/.local/codex-home" codex login` as a fallback.
+On Windows, the fallback is
+`$env:CODEX_HOME="$PWD\.local\codex-home"; codex login`.
 
 For Claude.ai subscription access, install and log in to Claude Code. The settings page detects it automatically;
 no Claude API key needs to be entered into Vibe Research.
@@ -136,7 +153,7 @@ itself has not failed.
 
 ### Start the browser UI
 
-Open two terminals:
+On Windows, `scripts\start.cmd` handles both processes. On macOS / Linux, open two terminals:
 
 ```bash
 # Terminal 1: local API
@@ -154,6 +171,21 @@ Vite proxies `/api/*` locally and adds authentication on the server side. If `VR
 processes must use the same value.
 
 ### Run one research job from the command line
+
+Windows PowerShell:
+
+```powershell
+node orchestrator/src/run.ts `
+  --symbol 300308 `
+  --market SZ `
+  --python "$PWD\.venv\Scripts\python.exe"
+```
+
+Windows automatically uses the `controlled_mcp` execution layer. The research thread has no shell access and no
+workspace write permission; it can only read sanitized run files, call deterministic calculations, and write the
+current stage through controlled tools. macOS and Linux keep the existing hook-based execution layer.
+
+macOS / Linux:
 
 ```bash
 node orchestrator/src/run.ts \
@@ -273,9 +305,9 @@ npm run build --prefix desktop
 
 Current verified baseline:
 
-- orchestrator: **525/525**, Core industry-term count **0**, TypeScript typecheck passed.
-- desktop: **22/22**, TypeScript typecheck and Vite production build passed.
-- Python (calculation library, backtest, and data scripts): **569/569**.
+- orchestrator: **537 checks** (536 passed locally plus one Windows-only ACL check skipped off Windows), Core industry-term count **0**, TypeScript typecheck passed.
+- desktop: **25/25**, TypeScript typecheck and Vite production build passed.
+- Python (calculation library, backtest, and data scripts): **571/571**.
 - The V1.0.0 release changes passed an independent Codex re-review with no actionable P1/P2 findings.
 
 Project rule: test each completed component, run an independent Codex review, verify every finding, fix valid issues,
@@ -286,7 +318,9 @@ and re-review. A component is not described as complete and is not committed or 
 - V1.0.0 is distributed as open-source code plus a local browser UI. The local API and browser UI are started separately.
 - MiMo API has passed an end-to-end run from an empty configuration to a real business report. Other third-party
   providers still require the user's own keys and are not marked verified without real compatibility-matrix runs.
-- Windows has not received equivalent verification.
+- Native Windows 11 support includes PowerShell setup/start scripts, Windows path and process handling, and the
+  controlled research toolchain. The CI matrix covers `windows-latest`, `macos-latest`, and `ubuntu-latest`.
+  Windows 10 is best-effort, following upstream Codex support.
 
 ## Changelog
 

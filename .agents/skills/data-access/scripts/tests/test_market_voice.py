@@ -74,8 +74,11 @@ def test_parse_rpc_sse_multiline_json_batch_and_errors():
 
 def test_sanitize_untrusted_neutralizes_actions_and_controls():
     s = textsafe.sanitize_untrusted("  目标价​ 1500，建议买入！减持评级 \x07‍ 增持   ", 300)
-    assert "目标价" not in s and "建议买" not in s and "减持评级" not in s
-    assert s.count(textsafe.ACTION_MARK) == 3 and "\x07" not in s and "​" not in s
+    assert "目标价" not in s and "建议买" not in s
+    # 裸评级标签可能是第三方事实或篇数统计，保留给产出 gate 做语境判断；
+    # 不能在取数层把合法的评级分布先删掉。
+    assert "减持评级" in s
+    assert s.count(textsafe.ACTION_MARK) == 2 and "\x07" not in s and "​" not in s
     assert "增持" in s, "裸词「增持」不是动作措辞(股东增持是公司行为事实)"
     assert textsafe.sanitize_untrusted("a" * 500, 100) == "a" * 100
     assert textsafe.sanitize_untrusted(None) == ""

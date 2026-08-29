@@ -48,7 +48,7 @@ export function EarningsSnapshot({ val, fin, pctl }: Props) {
   if (val.eps_26e != null) fwd.push(`一致预期 ${val.base_year ? `FY${val.base_year}` : "基年未知"} EPS ${val.eps_26e}`);
   if (val.pe_26e != null) fwd.push(`前向 PE ${val.pe_26e}`);
   if (val.digest_years != null && val.digest_years > 0) fwd.push(`估值消化 ${val.digest_years} 年`);
-  if (val.analyst_count > 0) fwd.push(`${val.analyst_count} 家机构覆盖`);
+  if (val.analyst_count != null && val.analyst_count > 0) fwd.push(`${val.analyst_count} 家机构覆盖`);
 
   return (
     <GlassCard glow className="mb-4">

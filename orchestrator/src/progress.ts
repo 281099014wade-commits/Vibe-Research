@@ -19,6 +19,7 @@ import { currentPlugin } from "./plugin.ts";
 import fs from "node:fs";
 import path from "node:path";
 import { redact } from "./service.ts";
+import { NOFOLLOW_FLAG } from "./fsutil.ts";
 
 /** 阶段显示名**由插件提供**。同时是**白名单** —— 只有这些 stage 允许被拼进文件路径(见 stageSummary) */
 const stageLabels = (): Record<string, string> => currentPlugin().stageLabels as Record<string, string>;
@@ -165,7 +166,7 @@ export class ProgressReporter {
       //     —— 显示层会把整次真实研究拖死(Codex progress-r6)。所以必须 isFile() 才读。
       // 🔴 O_NONBLOCK 不可省:对 FIFO 来说**连 openSync 本身都会阻塞**(等写端),
       //    检查放在 open 之后根本来不及 —— 我第一版就是这么写的,测试当场挂死。
-      const fd = fs.openSync(f, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK);
+      const fd = fs.openSync(f, fs.constants.O_RDONLY | NOFOLLOW_FLAG | fs.constants.O_NONBLOCK);
       try {
         const st = fs.fstatSync(fd);
         if (!st.isFile() || st.size > MAX_STAGE_FILE_BYTES) return null;

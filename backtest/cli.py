@@ -79,6 +79,15 @@ def _result_view(r: Result) -> dict:
             "win_rate", "profit_loss_ratio", "profit_factor", "trade_count",
             "avg_holding_days", "benchmark_return", "benchmark_ticker",
             "total_turnover", "max_consecutive_loss")
+    benchmark_is_self = "benchmark_ticker" not in m
+    disclosures = []
+    if benchmark_is_self:
+        disclosures.append("本次基准是所测标的自身的等权买入持有，不是独立外部基准。")
+    turnover = m.get("total_turnover")
+    if isinstance(turnover, (int, float)) and turnover < 1:
+        disclosures.append(
+            f"总换手率为 {turnover}；该值低于 1，收益差异可能包含未投入现金的影响，不能只归因于策略信号。"
+        )
     return {
         "strategy": r.strategy,
         "plan": _plan_view(r.plan),
@@ -86,7 +95,8 @@ def _result_view(r: Result) -> dict:
         # 免得同一个数在报告与界面上不一致
         "metrics": {k: m[k] for k in keep if k in m},
         # 基准是**等权买入持有这几只标的本身**,除非 metrics 里带了 benchmark_ticker
-        "benchmark_is_self": "benchmark_ticker" not in m,
+        "benchmark_is_self": benchmark_is_self,
+        "required_disclosures": disclosures,
         "missing": r.missing,
         "provenance": [
             {"code": p.code, "endpoint": p.endpoint, "rows": p.rows,

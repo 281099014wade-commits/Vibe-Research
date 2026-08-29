@@ -19,7 +19,7 @@ import { cn } from "@/lib/utils";
 // 容 null:同上,行情缺项时显示灰色的「—」,不套涨跌色
 const pctColor = (p: number | null | undefined) =>
   p == null ? "text-muted-foreground/40" : p > 0 ? "text-danger" : p < 0 ? "text-success" : "text-muted-foreground";
-const fmt = (v: number) => v.toLocaleString("zh-CN", { maximumFractionDigits: 2 });
+const fmt = (v: number | null) => v == null ? "—" : v.toLocaleString("zh-CN", { maximumFractionDigits: 2 });
 const yi = (v: number | null) => (v == null ? "—" : `${fmt(v / 1e8)} 亿`); // 元 → 亿
 
 export function DailyReview() {
@@ -176,15 +176,17 @@ export function DailyReview() {
       lines.push(`⚠️ 这一屏的数据来自不同业务日，跨日比较要当心。各块取数时刻：${stamps || "未记录"}`);
     }
 
-    lines.push(indices.length
-      ? `【A股指数】${indices.map((i) => `${i.name} ${i.price}（${i.change_pct > 0 ? "+" : ""}${i.change_pct}%）`).join("；")}`
+    const validIndices = indices.filter((i) => i.price !== null && i.change_pct !== null);
+    lines.push(validIndices.length
+      ? `【A股指数】${validIndices.map((i) => `${i.name} ${i.price}（${i.change_pct! > 0 ? "+" : ""}${i.change_pct}%）`).join("；")}`
       : "【A股指数】未取到");
     // 拿不到价的那条**不写进去** —— 让模型看到 null 比不给还糟
     const gi = globalIdx.filter((i) => i.price !== null && i.change_pct !== null);
-    if (gi.length) lines.push(`【海外指数】${gi.map((i) => `${i.name} ${i.price}（${(i.change_pct ?? 0) > 0 ? "+" : ""}${i.change_pct}%）`).join("；")}`);
+    if (gi.length) lines.push(`【海外指数】${gi.map((i) => `${i.name} ${i.price}（${i.change_pct! > 0 ? "+" : ""}${i.change_pct}%）`).join("；")}`);
     if (sentCells.length) lines.push(`【市场情绪】${sentCells.map((c) => `${c.k} ${c.v}`).join("；")}`);
     if (emotion) lines.push(`【短线情绪】${JSON.stringify(emotion).slice(0, 400)}`);
-    if (sectors.length) lines.push(`【板块资金】${sectors.slice(0, 12).map((x) => `${x.name} ${x.net}`).join("；")}`);
+    const validSectors = sectors.filter((x) => x.net !== null);
+    if (validSectors.length) lines.push(`【板块资金】${validSectors.slice(0, 12).map((x) => `${x.name} ${x.net}`).join("；")}`);
     if (turnover?.stocks?.length) lines.push(`【成交额居前】${turnover.stocks.slice(0, 10).map((r) => r.name).join("、")}`);
 
     // 取数层写的读法护栏 + 哪些块没取到 —— 两样都要让模型知道
@@ -264,8 +266,8 @@ export function DailyReview() {
           : indices.map((i) => (
               <GlassCard key={i.name} className="p-3">
                 <p className="truncate text-xs text-muted-foreground">{i.name}</p>
-                <p className={cn("mt-1 font-mono text-lg font-bold", pctColor(i.change_pct))}>{i.price}</p>
-                <p className={cn("text-xs", pctColor(i.change_pct))}>{i.change_pct > 0 ? "+" : ""}{i.change_pct}%</p>
+                <p className={cn("mt-1 font-mono text-lg font-bold", pctColor(i.change_pct))}>{i.price ?? "—"}</p>
+                <p className={cn("text-xs", pctColor(i.change_pct))}>{i.change_pct == null ? "—" : `${i.change_pct > 0 ? "+" : ""}${i.change_pct}%`}</p>
               </GlassCard>
             ))}
       </div>
@@ -549,8 +551,8 @@ export function DailyReview() {
                 {sectors.slice(0, 15).map((s) => (
                   <tr key={s.name} className="border-b border-border/30">
                     <td className="px-2 py-2 font-medium">{s.name}</td>
-                    <td className={cn("px-2 py-2 font-mono", pctColor(s.pct))}>{s.pct > 0 ? "+" : ""}{s.pct}%</td>
-                    <td className={cn("px-2 py-2 font-mono", pctColor(s.net))}>{s.net > 0 ? "+" : ""}{fmt(s.net)} 亿</td>
+                    <td className={cn("px-2 py-2 font-mono", pctColor(s.pct))}>{s.pct == null ? "—" : `${s.pct > 0 ? "+" : ""}${s.pct}%`}</td>
+                    <td className={cn("px-2 py-2 font-mono", pctColor(s.net))}>{s.net == null ? "—" : `${s.net > 0 ? "+" : ""}${fmt(s.net)} 亿`}</td>
                   </tr>
                 ))}
               </tbody>
@@ -570,8 +572,8 @@ export function DailyReview() {
           //    旧写法 `slice(-6)` 把列表末尾当流出 —— 取回来的板块若全是净流入，
           //    末尾那几个照样是正数，于是「流出 Top」第一名显示 **+8.04 亿**（实测）。
           //    一个正数排在流出榜里，而**页面上看不出这是错的**。
-          { title: "流入 Top", icon: TrendingUp, color: "text-danger", rows: sectors.filter((s) => s.net > 0).slice(0, 6) },
-          { title: "流出 Top", icon: TrendingDown, color: "text-success", rows: sectors.filter((s) => s.net < 0).sort((a, b) => a.net - b.net).slice(0, 6) },
+          { title: "流入 Top", icon: TrendingUp, color: "text-danger", rows: sectors.filter((s) => s.net != null && s.net > 0).slice(0, 6) },
+          { title: "流出 Top", icon: TrendingDown, color: "text-success", rows: sectors.filter((s) => s.net != null && s.net < 0).sort((a, b) => a.net! - b.net!).slice(0, 6) },
         ].map((col) => (
           <GlassCard key={col.title}>
             <h4 className={cn("mb-3 flex items-center gap-1.5 text-sm font-semibold", col.color)}><col.icon className="h-4 w-4" /> {col.title}</h4>
@@ -583,8 +585,8 @@ export function DailyReview() {
                   <div key={s.name} className="flex items-center gap-3 border-b border-border/30 pb-1.5 text-sm last:border-0">
                     <span className="w-5 text-xs text-muted-foreground/50">{i + 1}</span>
                     <span className="flex-1 truncate">{s.name}</span>
-                    <span className={cn("font-mono text-xs", pctColor(s.pct))}>{s.pct > 0 ? "+" : ""}{s.pct}%</span>
-                    <span className={cn("w-20 text-right font-mono text-xs", pctColor(s.net))}>{s.net > 0 ? "+" : ""}{fmt(s.net)} 亿</span>
+                    <span className={cn("font-mono text-xs", pctColor(s.pct))}>{s.pct == null ? "—" : `${s.pct > 0 ? "+" : ""}${s.pct}%`}</span>
+                    <span className={cn("w-20 text-right font-mono text-xs", pctColor(s.net))}>{s.net == null ? "—" : `${s.net > 0 ? "+" : ""}${fmt(s.net)} 亿`}</span>
                   </div>
                 ))}
               </div>

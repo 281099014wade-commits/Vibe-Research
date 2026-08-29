@@ -87,6 +87,17 @@ export function knowledgeFor(cfg: RunConfig): { as_of: string; text: string; sta
 export function commonHeader(cfg: RunConfig, ledger?: Ledger): string {
   const calc = path.join(cfg.repoRoot, cfg.calcCliRel);
   const fetched = ledger ? Object.values(ledger).map((l) => `${l.script}=${l.status}`).join(", ") : "(见 RUN/fetch/_ledger.json)";
+  if (cfg.executionMode === "controlled_mcp") {
+    return `你正在执行研究(run-id=${cfg.runId},标的 ${cfg.symbol}${cfg.market ? " / " + cfg.market : ""})。
+当前是 **Windows 原生受控工具模式**。没有 Shell、apply_patch 写权限、网络、插件或子代理；不要输出或尝试执行 PowerShell / Bash / Python 命令。
+取数已由编排器执行完毕(本次状态:${fetched})。只能使用 vra_run 工具：
+1. vra_run.list_run_files：列出本次运行可读文件。
+2. vra_run.read_run_file：读取 fetch/*.json、calcs/*.json、stages/*.json、conflicts.json 或已有 report.md；大文件按 next_offset 继续读。
+3. vra_run.calculate：调用白名单确定性计算并写 calcs/<两位序号>_<函数>.json。args 原样传对象，evidence_ids / calculation_ids 必须列全；禁止自行计算或换算。
+4. vra_run.write_stage：提交当前阶段 JSON。schema 仍以下方施工单为准；只能写当前阶段。
+5. report 阶段使用 vra_run.write_report 同时提交 markdown 与 stage_output；合规补写时可只提交 markdown。
+不得读取仓库外文件，不得读取 raw/，不得改写 fetch/；status=failed/partial 必须如实写 gaps。所有事实与派生数字继续分别绑定 ev- / calc- id。宪法与当前垂类 skill 已由引擎加载，冲突时以宪法为准。`;
+  }
   return `你正在执行 A 股个股研究(run-id=${cfg.runId},标的 ${cfg.symbol}${cfg.market ? " / " + cfg.market : ""})。
 你的工作目录(cwd)= 运行目录 RUN = ${cfg.runDir}(已有 raw/ fetch/ calcs/ stages/);沙箱只允许写 RUN 内。仓库根目录 = ${cfg.repoRoot}(**只读**:代码 / 契约 / skills 都在这里,用绝对路径读)。
 宪法 = ${cfg.constitutionPath}(引擎已自动加载;与本说明冲突时以宪法为准)。

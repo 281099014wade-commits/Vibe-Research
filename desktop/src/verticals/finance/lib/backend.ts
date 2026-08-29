@@ -322,7 +322,7 @@ export const backend = {
    *    带证据链、确定性计算、数据缺口与裁决点的正式研究；「我的研报」只是上传外部文件的归档柜。
    * ⚠️ 它会真的花模型额度、跑十几分钟，所以必须由用户显式点，不能页面一打开就跑。
    */
-  startResearch: (body: { symbol: string; market?: string; endpoints?: "core" | "full"; knowledge?: "on" | "off"; stages?: string[] }) =>
+  startResearch: (body: { symbol: string; company_name?: string; market?: string; endpoints?: "core" | "full"; knowledge?: "on" | "off"; stages?: string[] }) =>
     call<{ run_id: string; log: string; pid?: number }>("/research", { method: "POST", body: JSON.stringify(body) }),
 
   researchStatus: (id: string) => call<ResearchStatus>(`/runs/${encodeURIComponent(id)}/status`),
@@ -586,9 +586,6 @@ export function num(e: Evidence | undefined): number | null {
 export function str(e: Evidence | undefined): string {
   return e && e.value !== null ? String(e.value) : "";
 }
-
-/** 数值,取不到时给 0 —— **只用在上游类型写死了 number 的地方**,别拿它当默认读法 */
-export const num0 = (e: Evidence | undefined): number => num(e) ?? 0;
 
 /** 保留两位,给不出就 null */
 export function round2(v: number | null): number | null {

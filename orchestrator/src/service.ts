@@ -12,7 +12,7 @@ import { fileURLToPath } from "node:url";
 
 import { FETCH_ENV_KEYS, RUN_ID_RE, stages as packStages, fetchEnv } from "./config.ts";
 import { runAlerts, type AlertDiff } from "./alerts.ts";
-import { nowIso, readJsonIfExists } from "./fsutil.ts";
+import { NOFOLLOW_FLAG, nowIso, readJsonIfExists } from "./fsutil.ts";
 import { ChatError, chatSend as chatSendCore, translateHeadlines as translateHeadlinesCore, type ChatTurnResult, type HeadlineTranslationResult } from "./chat.ts";
 import { templateMatrix, type LlmOverride } from "./runtime_provider.ts";
 import { DebateError, advanceDebate, startDebate, type DebateState } from "./debate.ts";
@@ -372,9 +372,13 @@ function runFetchProcess(
 // ---------------- 研究运行 ----------------
 export interface StartResult { run_id: string; run_dir: string; log: string; pid: number | undefined }
 
-export function startResearch(ctx: ServiceContext, req: { symbol: string; market?: string; stages?: string[]; endpoints?: "full" | "core"; knowledge?: "on" | "off"; run_id?: string; overwrite?: boolean; no_agent?: boolean }): StartResult {
+export function startResearch(ctx: ServiceContext, req: { symbol: string; company_name?: string; market?: string; stages?: string[]; endpoints?: "full" | "core"; knowledge?: "on" | "off"; run_id?: string; overwrite?: boolean; no_agent?: boolean }): StartResult {
   const symbol = assertSymbol(req.symbol, "cn6");
   const market = assertMarket(req.market);
+  const companyName = typeof req.company_name === "string" ? req.company_name.trim() : "";
+  if (companyName.length > 80 || /[\u0000-\u001f\u007f]/.test(companyName)) {
+    throw new ServiceError("bad_company_name", "主体名称格式无效");
+  }
   const stages = Array.isArray(req.stages) ? req.stages.map(String) : [];
   for (const s of stages) if (!packStages().includes(s)) throw new ServiceError("bad_stage", `未知阶段 ${show(s)}`);
   const scope = assertScope(req.endpoints);
@@ -398,12 +402,13 @@ export function startResearch(ctx: ServiceContext, req: { symbol: string; market
   fs.mkdirSync(safePath(ctx, "logs"), { recursive: true });
   const log = safePath(ctx, "logs", `${runId}.log`);  // 最终文件也经 safePath(已存在且为链接 → 拒绝)
   const argv = [path.join(ctx.repoRoot, "orchestrator", "src", "run.ts"), "--symbol", symbol, "--run-id", runId, "--python", ctx.python, "--endpoints", scope, "--knowledge", kn];
+  if (companyName) argv.push("--company-name", companyName);
   if (market) argv.push("--market", market);
   if (stages.length) argv.push("--stages", stages.join(","));
   if (req.overwrite === true) argv.push("--overwrite");
   if (req.no_agent === true) argv.push("--no-agent");
-  const out = fs.openSync(log, fs.constants.O_WRONLY | fs.constants.O_APPEND | fs.constants.O_CREAT | fs.constants.O_NOFOLLOW, 0o600);  // O_NOFOLLOW:纵深防御
-  const child = spawn(ctx.node, argv, { cwd: ctx.repoRoot, detached: true, stdio: ["ignore", out, out], env: researchEnv(ctx) });
+  const out = fs.openSync(log, fs.constants.O_WRONLY | fs.constants.O_APPEND | fs.constants.O_CREAT | NOFOLLOW_FLAG, 0o600);
+  const child = spawn(ctx.node, argv, { cwd: ctx.repoRoot, detached: true, windowsHide: true, stdio: ["ignore", out, out], env: researchEnv(ctx) });
   child.unref();
   fs.closeSync(out);
   return { run_id: runId, run_dir: rel(ctx, runDir), log: rel(ctx, log), pid: child.pid };

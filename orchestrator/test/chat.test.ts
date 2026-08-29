@@ -13,6 +13,7 @@ import type { LlmOverride } from "../src/runtime_provider.ts";
 // ⚠️ 用 fileURLToPath 而不是 new URL(...).pathname —— 本机仓库路径含中文,
 //    pathname 会给出百分号编码的路径,子进程与 fs 都找不到(这条坑本仓库踩过)
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
+const TEST_PYTHON = process.platform === "win32" ? "python" : path.resolve(REPO, "..", ".venv", "bin", "python");
 
 interface Cap {
   opts?: Record<string, unknown>;
@@ -52,7 +53,11 @@ const tmp = (): string => fs.mkdtempSync(path.join(os.tmpdir(), "vra-chat-"));
 test("对话线程的硬约束必须真的传给引擎:无本地工具 / 只读 / 不联网", async () => {
   resetChatSessions();
   const cap: Cap = { prompts: [] };
-  await chatSend({ repoRoot: REPO, dataRoot: tmp() }, { session: "t1", message: "你好" }, fakeCodex("好", cap));
+  const root = tmp();
+  const sessionConfig = path.join(root, "chat", "t1", ".codex");
+  fs.mkdirSync(sessionConfig, { recursive: true });
+  fs.writeFileSync(path.join(sessionConfig, "config.toml"), '[mcp_servers.session_evil]\ncommand = "evil.exe"\n');
+  await chatSend({ repoRoot: REPO, dataRoot: root, python: TEST_PYTHON }, { session: "t1", message: "你好" }, fakeCodex("好", cap));
   const o = cap.opts!;
   // 🔴 这三条不是"配置项"是安全边界:任何一条被改松,对话线程就能写文件 / 联网 / 绕开取数纪律
   assert.equal(o.sandboxMode, "read-only");
@@ -62,13 +67,13 @@ test("对话线程的硬约束必须真的传给引擎:无本地工具 / 只读 
   assert.equal(o.skipGitRepoCheck, true);
   const config = cap.codexOptions?.config as Record<string, unknown>;
   const features = config.features as Record<string, unknown>;
-  for (const key of ["shell_tool", "view_image", "multi_agent", "multi_agent_v2", "apps", "enable_mcp_apps", "plugins", "tool_suggest", "standalone_web_search"]) {
+  for (const key of ["shell_tool", "unified_exec", "view_image", "multi_agent", "multi_agent_v2", "apps", "enable_mcp_apps", "plugins", "tool_suggest", "standalone_web_search", "code_mode"]) {
     assert.equal(features[key], false, `对话线程必须关闭 ${key}`);
   }
-  assert.match(String(cap.codexOptions?.codexPathOverride), /orchestrator\/bin\/codex-chat$/, "对话必须走 --ignore-user-config 启动器");
-  assert.ok(String((cap.codexOptions?.env as Record<string, unknown>)?.VRA_CODEX_REAL_BIN).endsWith("codex"), "启动器必须拿到真实引擎路径");
-  const wrapper = fs.readFileSync(path.join(REPO, "orchestrator", "bin", "codex-chat"), "utf8");
-  assert.match(wrapper, /exec --ignore-user-config --ignore-rules/, "启动器必须真实忽略用户配置与用户规则");
+  assert.match(String(cap.codexOptions?.codexPathOverride), /codex(?:\.exe)?$/, "对话必须直接启动平台对应的官方引擎");
+  assert.ok(!("VRA_CODEX_REAL_BIN" in ((cap.codexOptions?.env as Record<string, unknown>) ?? {})), "不能依赖 POSIX 包装器环境变量");
+  assert.ok((cap.codexOptions?.configOverrides as string[]).some((x) => x.startsWith("mcp_servers=")), "对话轮必须用高优先级 MCP 隔离覆盖，不能靠会被递归合并的空表");
+  assert.ok((cap.codexOptions?.configOverrides as string[]).some((x) => /"session_evil"\s*=\s*\{\s*"enabled"\s*=\s*false/.test(x)), "对话必须用真实 session cwd 发现并禁用项目层 MCP");
   const skills = config.skills as { bundled?: { enabled?: boolean }; config?: { enabled?: boolean }[] };
   assert.equal(skills.bundled?.enabled, false, "对话线程不能加载捆绑 skill");
   assert.ok((skills.config ?? []).every((x) => x.enabled === false), "发现到的用户 skill 必须全部禁用");

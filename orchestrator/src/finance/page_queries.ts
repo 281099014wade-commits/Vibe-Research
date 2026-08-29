@@ -117,7 +117,6 @@ export const FINANCE_PAGE_QUERIES: Record<string, PageQueryDef> = {
     blocks: [
       { id: "comparison", title: "行业涨跌排名", endpoint: "em_industry_comparison" },
       { id: "board_flow", title: "行业资金流", note: "主力净额;取全 496 个板块,流出侧才看得到", endpoint: "em_board_fund_flow", args: BOARD_FLOW_ARGS },
-      { id: "sw", title: "申万行业分类", note: "当前归属与变迁史(消除前视偏差)", endpoint: "sw_industry", symbol: "300308" },
     ],
   },
 };

@@ -17,6 +17,7 @@ import crypto from "node:crypto";
 
 import { IMPORT_MAX_TOTAL_BYTES, ServiceError, chatSend, translateHeadlines, evidenceAlerts, guidedToolTurn, listTools, runTool, fetchEndpoint, ingestFiles, debateAdvance, debateStart, ledgerKinds, ledgerLabels, ledgerList, localAgents, productInfo, ledgerRemove, ledgerSnapshot, ledgerUpsert, pageQuery, getEvidence, getReport, knowledgeRecall, listEndpoints, listRuns, readRunFile, redact, reportDelete, reportDownload, reportUpload, reportsList, researchStatus, safePath, serviceContext, startCodexSubscriptionLogin, startResearch, thermoSeries, type ServiceContext } from "./service.ts";
 import { REPORT_MAX_BYTES } from "./report_library.ts";
+import { NOFOLLOW_FLAG, restrictPrivateFile } from "./fsutil.ts";
 
 
 // **composition root**:插件在入口注册,Core 模块一律不 import 它
@@ -34,7 +35,7 @@ function send(res: http.ServerResponse, code: number, body: unknown, type = "app
 function sendFile(res: http.ServerResponse, file: string, name: string, type: string): void {
   // 校验和打开必须落在同一个文件描述符上；若在 lstat 与读取之间把文件换成符号链接，
   // 仅靠路径检查仍可能把资料库之外的文件下载出去。
-  const fd = fs.openSync(file, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
+  const fd = fs.openSync(file, fs.constants.O_RDONLY | NOFOLLOW_FLAG);
   try {
     const stat = fs.fstatSync(fd);
     if (!stat.isFile()) throw new Error("download target is not a regular file");
@@ -335,14 +336,16 @@ export function resolveToken(ctx: ServiceContext, env: NodeJS.ProcessEnv = proce
   if (env.VRA_API_TOKEN && env.VRA_API_TOKEN.length >= 16) return { token: env.VRA_API_TOKEN, source: "env", file };
   if (fs.existsSync(file)) {
     if (!fs.lstatSync(file).isFile()) throw new ServiceError("path_symlink", "api.token 不是普通文件");
+    restrictPrivateFile(file);
     const t = fs.readFileSync(file, "utf8").trim();
     if (t.length >= 16) return { token: t, source: "file", file };
   }
   const token = crypto.randomBytes(24).toString("hex");
   fs.mkdirSync(path.dirname(file), { recursive: true });
-  const fd = fs.openSync(file, fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_TRUNC | fs.constants.O_NOFOLLOW, 0o600);
+  const fd = fs.openSync(file, fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_TRUNC | NOFOLLOW_FLAG, 0o600);
   fs.writeSync(fd, token + "\n");
   fs.closeSync(fd);
+  restrictPrivateFile(file);
   return { token, source: "generated", file };
 }
 

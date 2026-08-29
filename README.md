@@ -11,8 +11,8 @@
   <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-yellow"></a>
   <img alt="Version" src="https://img.shields.io/badge/version-v1.0.0-F35D2B">
   <img alt="UI" src="https://img.shields.io/badge/UI-React%20%2B%20Vite-646cff">
-  <img alt="Orchestrator tests" src="https://img.shields.io/badge/orchestrator-525%20tests-passing">
-  <img alt="Desktop tests" src="https://img.shields.io/badge/desktop-22%20tests-passing">
+  <img alt="Orchestrator tests" src="https://img.shields.io/badge/orchestrator-537%20checks-passing">
+  <img alt="Desktop tests" src="https://img.shields.io/badge/desktop-25%20tests-passing">
   <img alt="Codex Harness" src="https://img.shields.io/badge/runtime-Codex%20Harness-black">
 </p>
 
@@ -91,13 +91,27 @@ API 问答，长任务能力、工具使用、上下文保持和推理质量都�
 
 | 项目 | 要求 |
 |---|---|
-| 操作系统 | macOS 或 Linux；当前主要验证环境为 Apple Silicon macOS |
+| 操作系统 | Windows 11、macOS 或 Linux；Windows 原生运行，不要求 WSL |
 | Node.js | ≥ 22.18，推荐 24 LTS |
-| Python | ≥ 3.10，当前验证版本为 3.12 |
+| Python | ≥ 3.11，推荐并已验证 3.12 |
 | Codex CLI | 已验证 0.149.0；版本锚点见 `codex-version.json` |
 | 模型 | ChatGPT / Claude.ai 订阅登录，或支持 Responses API 的模型服务 |
 
 ### 安装依赖
+
+Windows（PowerShell / CMD）：
+
+```bat
+git clone https://github.com/simonlin1212/Vibe-Research.git vibe-research-agent
+cd vibe-research-agent
+scripts\setup-windows.cmd
+scripts\start.cmd
+```
+
+`setup-windows.cmd` 会创建 `.venv`、安装 Node/Python 依赖、初始化产品私有目录并运行体检；
+`start.cmd` 会启动本地 API、浏览器 UI 并打开 `http://127.0.0.1:5930`。
+
+macOS / Linux：
 
 ```bash
 git clone https://github.com/simonlin1212/Vibe-Research.git vibe-research-agent
@@ -119,6 +133,8 @@ scripts/init --python "$(pwd)/.venv/bin/python"
 OpenAI 官方页面完成授权；页面自动识别登录结果后，点击“测试并保存”。产品使用独立的
 `.local/codex-home`，不会读取或覆盖用户的 `~/.codex`。浏览器未自动打开时，可用
 `CODEX_HOME="$(pwd)/.local/codex-home" codex login` 作为后备方式。
+Windows 后备命令为
+`$env:CODEX_HOME="$PWD\.local\codex-home"; codex login`。
 
 使用 Claude.ai 订阅：先安装并登录 Claude Code；设置页会自动检测，不需要把 Claude 的 key 填进产品。
 
@@ -128,7 +144,7 @@ API 接入：进入“接入 AI”→“API 接入”，选择供应商并填写
 
 ### 启动浏览器 UI
 
-打开两个终端：
+Windows 已由 `scripts\start.cmd` 一键启动。macOS / Linux 打开两个终端：
 
 ```bash
 # 终端 1：本地 API
@@ -146,6 +162,20 @@ Vite 只在本机代理 `/api/*`，并在服务端补上鉴权信息。若设置
 同一个值。
 
 ### 命令行运行一次研究
+
+Windows PowerShell：
+
+```powershell
+node orchestrator/src/run.ts `
+  --symbol 300308 `
+  --market SZ `
+  --python "$PWD\.venv\Scripts\python.exe"
+```
+
+Windows 会自动使用 `controlled_mcp` 执行层：研究线程没有 Shell、没有写目录权限，只能通过受控工具读取
+净化后的运行文件、调用确定性计算并写当前阶段产物。macOS / Linux 继续使用既有 hooks 执行层。
+
+macOS / Linux：
 
 ```bash
 node orchestrator/src/run.ts \
@@ -260,9 +290,9 @@ npm run build --prefix desktop
 
 当前验证基线：
 
-- orchestrator：**525/525**，Core 行业词 **0**，TypeScript 类型检查通过。
-- desktop：**22/22**，TypeScript 类型检查与 Vite 生产构建通过。
-- Python（计算库、回测、数据脚本）：**569/569**。
+- orchestrator：**537 项**（本机 536 通过 + 1 项 Windows ACL 专项按平台跳过），Core 行业词 **0**，TypeScript 类型检查通过。
+- desktop：**25/25**，TypeScript 类型检查与 Vite 生产构建通过。
+- Python（计算库、回测、数据脚本）：**571/571**。
 - V1.0.0 发布改动经 Codex 独立复审，末轮无可操作 P1/P2。
 
 项目约定：每个环节完成后先测试，再做 Codex 独立审计、逐条核实、修复和复审；审计完成前不把
@@ -273,7 +303,8 @@ npm run build --prefix desktop
 - V1.0.0 的交付形态是开源源码 + 本地浏览器 UI，需要分别启动本地 API 与浏览器界面。
 - MiMo API 已完成从空配置到真实业务报告的端到端验证；其他第三方模型仍需使用者自己的 key，
   没有真实跑过兼容矩阵的模板不会标成“已实测”。
-- Windows 尚未完成同等级验证。
+- Windows 11 原生支持已接入：PowerShell 初始化/启动脚本、Windows 路径与进程处理、受控研究工具链，
+  并纳入 `windows-latest` / `macos-latest` / `ubuntu-latest` CI。Windows 10 仅按 Codex 上游能力尽力兼容。
 
 ## 更新日志
 

@@ -19,7 +19,7 @@ import {
 import { cn } from "@/lib/utils";
 
 // 金额格式化（后端资金单位：元 / 万元）
-const yi = (v: number) => `${(v / 1e8).toFixed(2)} 亿`;
+const yi = (v: number | null) => v == null ? "—" : `${(v / 1e8).toFixed(2)} 亿`;
 
 const fmt = (v: number | null | undefined, suffix = "") =>
   v === null || v === undefined ? "—" : `${v}${suffix}`;
@@ -215,8 +215,8 @@ export function StockData() {
   ] : [];
 
   const aiContext = val
-    ? `个股：${val.name}（${val.code}）\n现价 ${val.price} · PE(TTM) ${val.pe_ttm} · PB ${val.pb} · 市值 ${val.mcap_yi}亿\n` +
-      `${val.base_year ? `FY${val.base_year}` : "基年未知"} 一致预期 EPS ${val.eps_26e ?? "—"} · 前向PE ${val.pe_26e ?? "—"} · PEG ${val.peg ?? "—"} · 机构覆盖 ${val.analyst_count} 家\n` +
+    ? `个股：${val.name}（${val.code}）\n现价 ${fmt(val.price)} · PE(TTM) ${fmt(val.pe_ttm)} · PB ${fmt(val.pb)} · 市值 ${fmt(val.mcap_yi, " 亿")}\n` +
+      `${val.base_year ? `FY${val.base_year}` : "基年未知"} 一致预期 EPS ${val.eps_26e ?? "—"} · 前向PE ${val.pe_26e ?? "—"} · PEG ${val.peg ?? "—"} · 机构覆盖 ${val.analyst_count ?? "—"} 家\n` +
       // 🔴 消化年数按**四情景**给模型，不给单点 —— 给一个数它会当事实用，
       //    而这个数依赖"合理 PE 锚在多少倍"这个假设（30 倍 0.05 年 vs 18 倍 1.14 年）。
       (digest?.length
@@ -394,7 +394,7 @@ export function StockData() {
                   「基年一致预期 + 行情现价」派生 —— 两者的口径与时刻都写在这里。 */}
               <span className="ml-auto text-xs text-muted-foreground">
                 {val.base_year ? `一致预期 FY${val.base_year}–FY${val.base_year + 2}` : "一致预期基年未知"}
-                {val.analyst_count > 0 ? ` · 机构覆盖 ${val.analyst_count} 家` : ""}
+                {val.analyst_count != null && val.analyst_count > 0 ? ` · 机构覆盖 ${val.analyst_count} 家` : ""}
                 {val.quote_at ? ` · 行情 ${val.quote_at.slice(0, 16).replace("T", " ")}` : ""}
               </span>
             </div>
@@ -562,9 +562,20 @@ export function StockData() {
               <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
                 {margin[0] && <Metric k="融资余额" v={yi(margin[0].rzye)} sub={margin[0].date} />}
                 {margin[0] && <Metric k="融券余额" v={yi(margin[0].rqye)} />}
-                {holders[0] && <Metric k="股东户数" v={Number(holders[0].holder_num).toLocaleString()} sub={`环比 ${pct(holders[0].change_ratio)}`} />}
-                {fundFlow.length > 0 && <Metric k="近20日主力净流入" v={yi(fundFlow.slice(-20).reduce((s, r) => s + r.main_net, 0))} />}
-                {dividend[0] && <Metric k="最近派息(每10股)" v={`${dividend[0].bonus_rmb} 元`} sub={dividend[0].date} />}
+                {holders[0] && <Metric k="股东户数" v={holders[0].holder_num == null ? "—" : holders[0].holder_num.toLocaleString()} sub={`环比 ${pct(holders[0].change_ratio)}`} />}
+                {fundFlow.length > 0 && (() => {
+                  // fundFlowOf 已按日期倒序；只在最近 20 个交易日全部有值时才合计。
+                  // 缺失值不能静默少算后继续挂“近20日”的标签。
+                  const window = fundFlow.slice(0, 20);
+                  const known = window.map((r) => r.main_net).filter((v): v is number => v !== null);
+                  const complete = window.length === 20 && known.length === 20;
+                  return <Metric
+                    k="近20日主力净流入"
+                    v={complete ? yi(known.reduce((s, v) => s + v, 0)) : "—"}
+                    sub={complete ? undefined : `仅 ${known.length}/20 日有效，未合计`}
+                  />;
+                })()}
+                {dividend[0] && <Metric k="最近派息(每10股)" v={dividend[0].bonus_rmb == null ? "—" : `${dividend[0].bonus_rmb} 元`} sub={dividend[0].date} />}
               </div>
               {blockT.length > 0 && (
                 <div className="mt-3 border-t border-border/40 pt-3">
@@ -573,8 +584,8 @@ export function StockData() {
                     {blockT.slice(0, 5).map((b, i) => (
                       <div key={i} className="flex items-center gap-3 text-xs">
                         <span className="w-20 shrink-0 font-mono text-muted-foreground">{b.date}</span>
-                        <span className="w-14 shrink-0">{b.price} 元</span>
-                        <span className={cn("w-20 shrink-0", b.premium_pct >= 0 ? "text-danger" : "text-success")}>折溢 {b.premium_pct}%</span>
+                        <span className="w-14 shrink-0">{b.price ?? "—"} 元</span>
+                        <span className={cn("w-20 shrink-0", pctColor(b.premium_pct))}>折溢 {pct(b.premium_pct)}</span>
                         <span className="flex-1 truncate text-muted-foreground">买 {b.buyer} · 卖 {b.seller}</span>
                       </div>
                     ))}
@@ -594,7 +605,7 @@ export function StockData() {
                   <div key={i} className="flex items-center gap-3 border-b border-border/40 pb-2 text-sm last:border-0">
                     <span className="w-20 shrink-0 font-mono text-xs text-muted-foreground">{r.date}</span>
                     <span className="flex-1 truncate">{r.reason}</span>
-                    <span className={cn("shrink-0 font-mono text-xs", r.net_buy >= 0 ? "text-danger" : "text-success")}>净买 {r.net_buy} 万</span>
+                    <span className={cn("shrink-0 font-mono text-xs", pctColor(r.net_buy))}>净买 {r.net_buy ?? "—"} 万</span>
                   </div>
                 ))}
               </div>

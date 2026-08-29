@@ -21,6 +21,20 @@ const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", ".
 const PY = process.env.VRA_PYTHON ?? detectPython(REPO) ?? detectPython(path.join(REPO, "..")) ?? "python3";
 const TOKEN = "t".repeat(32);
 
+function fakeNodeExecutable(dir: string, name: string, source: string): string {
+  if (process.platform !== "win32") {
+    const bin = path.join(dir, name);
+    fs.writeFileSync(bin, `#!${process.execPath}\n${source}`, { mode: 0o700 });
+    return bin;
+  }
+  const script = path.join(dir, `${name}.cjs`);
+  const bin = path.join(dir, `${name}.ps1`);
+  fs.writeFileSync(script, source);
+  const quote = (s: string) => s.replaceAll("'", "''");
+  fs.writeFileSync(bin, `& '${quote(process.execPath)}' '${quote(script)}' @args\r\nexit $LASTEXITCODE\r\n`);
+  return bin;
+}
+
 /** 假仓库:真实注册表 + 假取数器(fetch_endpoint.py 替身,不联网,回显 args 与选定环境变量)+ 假运行目录 */
 function fakeCtx(): ServiceContext {
   const repo = fs.mkdtempSync(path.join(os.tmpdir(), "vra-svc-"));
@@ -155,6 +169,7 @@ test("service:startResearch 立即返回相对路径;子进程最小环境(resea
   assert.deepEqual(Object.keys(env).sort(), ["HOME", "HTTPS_PROXY", "OPENAI_API_KEY", "PATH", "VRA_SEC_CONTACT"]);
   assert.throws(() => startResearch(ctx, { symbol: "300308", market: "XX" }), (e: unknown) => e instanceof ServiceError && e.code === "bad_market");
   assert.throws(() => startResearch(ctx, { symbol: "300308", stages: ["nope"] }), (e: unknown) => e instanceof ServiceError && e.code === "bad_stage");
+  assert.throws(() => startResearch(ctx, { symbol: "300308", company_name: `中际旭创\n${"x".repeat(80)}` }), (e: unknown) => e instanceof ServiceError && e.code === "bad_company_name");
   assert.throws(() => startResearch(ctx, { symbol: "300308", run_id: "../x" }), (e: unknown) => e instanceof ServiceError && e.code === "bad_run_id");
   assert.throws(() => startResearch(ctx, { symbol: "300308", endpoints: "all" as never }), (e: unknown) => e instanceof ServiceError && e.code === "bad_scope");
 });
@@ -478,13 +493,12 @@ test("🔴 /chat 的 llm 在**边界**上校验形状 —— 畸形负载给可�
 
 test("浏览器断开 /chat 后，API 会把取消信号传到底层并结束本机 Claude 进程", async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "vra-api-abort-"));
-  const bin = path.join(root, "claude");
   const pidFile = path.join(root, "claude.pid");
-  fs.writeFileSync(bin, `#!${process.execPath}
+  const bin = fakeNodeExecutable(root, "claude", `
 const fs=require('node:fs');
 fs.writeFileSync(process.env.TEST_CLAUDE_PID,String(process.pid));
 setInterval(()=>{},1000);
-`, { mode: 0o700 });
+`);
   const ctx: ServiceContext = {
     repoRoot: REPO, dataRoot: path.join(root, "data"), python: "python3",
     node: process.execPath, providerEnvKey: null,
@@ -504,9 +518,12 @@ setInterval(()=>{},1000);
     });
     request.on("error", () => { /* 主动 destroy 的预期结果 */ });
     request.end(JSON.stringify({ session: "abort-live", message: "等待", llm: { provider: "cli-claude" } }));
-    for (let i = 0; i < 50 && !fs.existsSync(pidFile); i += 1) {
+    // 全量测试会并行启动较多 Node 子进程；给假 CLI 足够的调度时间，避免把负载抖动
+    // 误报成取消链路失败。若仍未启动，先销毁请求，不能让 finally 等满 180 秒。
+    for (let i = 0; i < 500 && !fs.existsSync(pidFile); i += 1) {
       await new Promise((resolve) => setTimeout(resolve, 20));
     }
+    if (!fs.existsSync(pidFile)) request.destroy();
     assert.ok(fs.existsSync(pidFile), "假 Claude 必须真的启动，才能证明取消链路");
     const pid = Number(fs.readFileSync(pidFile, "utf8"));
     request.destroy();

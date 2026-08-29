@@ -17,8 +17,9 @@ test("parseArgs:键值 / 开关 / 混合", () => {
 });
 
 test("configFromArgs:阶段解析与非法阶段", () => {
-  const { cfg, stages } = configFromArgs({ symbol: "300308", "repo-root": "/tmp/repo", stages: "profile, financials", "turn-timeout-min": "5" });
+  const { cfg, stages } = configFromArgs({ symbol: "300308", "company-name": "中际旭创", "repo-root": "/tmp/repo", stages: "profile, financials", "turn-timeout-min": "5" });
   assert.deepEqual(stages, ["profile", "financials"]);
+  assert.equal(cfg.companyName, "中际旭创");
   assert.equal(cfg.turnTimeoutMs, 5 * 60_000);
   assert.throws(() => configFromArgs({ symbol: "1", "repo-root": "/tmp/repo", stages: "nope" }));
   assert.throws(() => configFromArgs({}));
@@ -74,4 +75,11 @@ test("CLI 新旗标(M1/M2):--endpoints 默认 full / core 合法 / 其它拒绝;
   assert.equal(b.knowledgeRecall, false);
   assert.equal(b.knowledgeArchive, false);
   assert.throws(() => configFromArgs({ symbol: "300308", "repo-root": "/tmp/repo", endpoints: "all" }), /--endpoints/);
+});
+
+test("CLI 执行层:controlled_mcp 强制关 hooks，非法值当场拒绝", () => {
+  const cfg = configFromArgs({ symbol: "300308", "repo-root": "/tmp/repo", "execution-mode": "controlled_mcp" }).cfg;
+  assert.equal(cfg.executionMode, "controlled_mcp");
+  assert.equal(cfg.hooksEnabled, false);
+  assert.throws(() => configFromArgs({ symbol: "300308", "repo-root": "/tmp/repo", "execution-mode": "powershell" }), /--execution-mode/);
 });

@@ -9,25 +9,37 @@ import {
   probeCodex, runLocalAgent, startCodexLogin,
 } from "../src/local_agent_runtime.ts";
 
+function fakeNodeExecutable(dir: string, name: string, source: string): string {
+  if (process.platform !== "win32") {
+    const bin = path.join(dir, name);
+    fs.writeFileSync(bin, `#!${process.execPath}\n${source}`, { mode: 0o700 });
+    return bin;
+  }
+  const script = path.join(dir, `${name}.cjs`);
+  const bin = path.join(dir, `${name}.ps1`);
+  fs.writeFileSync(script, source);
+  const quote = (s: string) => s.replaceAll("'", "''");
+  fs.writeFileSync(bin, `& '${quote(process.execPath)}' '${quote(script)}' @args\r\nexit $LASTEXITCODE\r\n`);
+  return bin;
+}
+
 function fakeClaude(): { dir: string; bin: string } {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "vra-fake-claude-"));
-  const bin = path.join(dir, "claude");
-  fs.writeFileSync(bin, `#!${process.execPath}
+  const bin = fakeNodeExecutable(dir, "claude", `
 const a=process.argv.slice(2);
 if(a[0]==='--version'){console.log('2.1.226 (Claude Code)');process.exit(0)}
 if(a[0]==='--help'){console.log(process.env.FAKE_OLD_HELP==='1'?'--output-format':'--safe-mode --tools --strict-mcp-config --no-session-persistence --output-format --system-prompt --json-schema');process.exit(0)}
 if(a[0]==='auth'&&a[1]==='status'){console.log(JSON.stringify({loggedIn:true,authMethod:process.env.FAKE_AUTH_METHOD||'claude.ai',apiProvider:process.env.FAKE_API_PROVIDER||'firstParty',email:'hidden@example.com'}));process.exit(0)}
 let input='';process.stdin.setEncoding('utf8');process.stdin.on('data',x=>input+=x);process.stdin.on('end',()=>console.log(JSON.stringify({result:input+'|keys='+Boolean(process.env.ANTHROPIC_API_KEY)+'|oauth='+Boolean(process.env.CLAUDE_CODE_OAUTH_TOKEN)})));
-`, { mode: 0o700 });
+`);
   return { dir, bin };
 }
 
 test("Codex 订阅登录只写产品 CODEX_HOME，并合并重复启动", async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "vra-fake-codex-login-"));
-  const bin = path.join(dir, "codex");
   const codexHome = path.join(dir, "product-home");
   const launchFile = path.join(dir, "launch.json");
-  fs.writeFileSync(bin, `#!${process.execPath}
+  const bin = fakeNodeExecutable(dir, "codex", `
 const fs=require('node:fs');
 const path=require('node:path');
 const a=process.argv.slice(2);
@@ -38,7 +50,7 @@ if(a[0]==='login'){
   fs.writeFileSync(process.env.TEST_LAUNCH_FILE,JSON.stringify({home:process.env.CODEX_HOME,args:a}));
   setTimeout(()=>{fs.writeFileSync(path.join(process.env.CODEX_HOME,'auth.ok'),'ok');process.exit(0)},120);
 }
-`, { mode: 0o700 });
+`);
   try {
     const before = await probeCodex(bin, codexHome, { TEST_LAUNCH_FILE: launchFile });
     assert.equal(before.status, "not_authenticated");
@@ -62,13 +74,12 @@ if(a[0]==='login'){
   }
 });
 
-test("Codex 登录超时后必须杀掉整组进程，父进程先退但子进程活着时仍不允许重开", async () => {
+test("Codex 登录超时后必须杀掉整组进程，父进程先退但子进程活着时仍不允许重开", { skip: process.platform === "win32" ? "中间态断言只适用于 POSIX 进程组；Windows 由 taskkill /T 直接终止树" : false }, async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "vra-stubborn-codex-login-"));
-  const bin = path.join(dir, "codex");
   const codexHome = path.join(dir, "product-home");
   const parentPidFile = path.join(dir, "parent-pid");
   const childPidFile = path.join(dir, "child-pid");
-  fs.writeFileSync(bin, `#!${process.execPath}
+  const bin = fakeNodeExecutable(dir, "codex", `
 const fs=require('node:fs');
 const {spawn}=require('node:child_process');
 if(process.env.TEST_IS_CHILD==='1'){
@@ -80,7 +91,7 @@ if(process.env.TEST_IS_CHILD==='1'){
   spawn(process.execPath,[__filename],{env:{...process.env,TEST_IS_CHILD:'1'},stdio:'ignore'});
   setInterval(()=>{},1000);
 }
-`, { mode: 0o700 });
+`);
   try {
     const env = { TEST_PARENT_PID_FILE: parentPidFile, TEST_CHILD_PID_FILE: childPidFile };
     assert.equal(startCodexLogin(bin, codexHome, env, { timeoutMs: 1_500 }).state, "started");
@@ -94,8 +105,10 @@ if(process.env.TEST_IS_CHILD==='1'){
     assert.throws(() => process.kill(parentPid, 0), /ESRCH/, "父进程应先响应 TERM 退出");
     assert.doesNotThrow(() => process.kill(childPid, 0), "顽固子进程仍活着时 job 必须保持 pending");
     assert.equal(startCodexLogin(bin, codexHome, env, { timeoutMs: 1_500 }).state, "pending");
-    for (let i = 0; i < 40; i += 1) {
-      try { process.kill(childPid, 0); } catch { break; }
+    for (let i = 0; i < 80; i += 1) {
+      let alive = true;
+      try { process.kill(childPid, 0); } catch { alive = false; }
+      if (!alive && codexLoginProgress(codexHome)?.state === "failed") break;
       await new Promise((r) => setTimeout(r, 75));
     }
     assert.throws(() => process.kill(childPid, 0), /ESRCH/);
@@ -160,10 +173,9 @@ test("Claude JSON 输出优先 structured_output，坏输出明确失败", () =>
 
 test("Claude 超时后会清掉忽略 TERM 的整个派生进程组，再返回错误", async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "vra-stubborn-claude-"));
-  const bin = path.join(dir, "claude");
   const parentPidFile = path.join(dir, "parent-pid");
   const childPidFile = path.join(dir, "child-pid");
-  fs.writeFileSync(bin, `#!${process.execPath}
+  const bin = fakeNodeExecutable(dir, "claude", `
 const fs=require('node:fs');
 const {spawn}=require('node:child_process');
 if(process.env.TEST_IS_CHILD==='1'){
@@ -174,11 +186,13 @@ if(process.env.TEST_IS_CHILD==='1'){
 }
 process.on('SIGTERM',()=>{});
 setInterval(()=>{},1000);
-`, { mode: 0o700 });
+`);
   try {
     await assert.rejects(
       () => runLocalAgent("claude", {
-        systemPrompt: "规则", userPrompt: "等待", timeoutMs: 1_000,
+        // 全量测试并行启动大量 Node 子进程；1 秒可能在假进程真正获得调度前就到期，
+        // 那只测到了机器负载，不是“已启动的顽固进程树能否被清理”。
+        systemPrompt: "规则", userPrompt: "等待", timeoutMs: 5_000,
         env: {
           CLAUDE_BIN: bin, PATH: process.env.PATH,
           TEST_PARENT_PID_FILE: parentPidFile, TEST_CHILD_PID_FILE: childPidFile,
@@ -195,10 +209,7 @@ setInterval(()=>{},1000);
 
 test("一次性任务也受本机 Agent 全局并发上限约束，不能绕过会话表无限启动", async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "vra-busy-claude-"));
-  const bin = path.join(dir, "claude");
-  fs.writeFileSync(bin, `#!${process.execPath}
-setInterval(()=>{},1000);
-`, { mode: 0o700 });
+  const bin = fakeNodeExecutable(dir, "claude", `setInterval(()=>{},1000);\n`);
   const controllers = Array.from({ length: 4 }, () => new AbortController());
   const runs = controllers.map((ac) => runLocalAgent("claude", {
     systemPrompt: "规则", userPrompt: "等待", signal: ac.signal,

@@ -107,6 +107,41 @@ report.md           最终报告:原始事实标 evidence id,派生数字标 cal
 - provider 模板存在不等于已接通；只有从设置页完成接入并在实际业务页面成功运行的通道才能标为已验证。
 - MiMo 是可选运行时模型，不是本项目代码审计替代品；代码审计仍只走 Codex。
 
+## 5.3 官网与公开口径
+
+- 产品官网为 `https://viberesearch.wiki`，源码只从当前活动仓库 `website/` 维护；不要写回旧 checkout。
+- 官网可以介绍 Vibe-Research，但本地工作台 UI 不列 Phoenix Tree 网站，也不做公司导流。两条口径不得混为一谈。
+- 对外定位为“基于开源 Codex Harness 打造的本地金融研究 Agent / 工作台”；必须区分 Agent Runtime 与
+  Model Provider，不能把产品说成一次 API 问答的包装。
+- 交付形态是开源源码 + 本地浏览器 UI；不要恢复 Electron / DMG，也不要在官网承诺当前仓库不存在的客户端。
+- 官网具体版本优先读取 GitHub latest release；固定版本号只能作为部署时兜底，下一次发版要同步检查。
+- 用户要求“打开给我看”时必须打开可见浏览器或 Codex 浏览器页；无头浏览器只用于短时自动化验证，完成后关闭，
+  不得让长期存活的 `--headless` 实例占用浏览器会话。
+
+## 5.4 公开发布前隐私检查
+
+- 每次公开 push / tag / Release 前必须同时扫描：当前工作树、当前 HEAD 快照和完整 Git 历史；不能只扫未提交 diff。
+- 扫描命中必须人工核实，不把测试假 key、固定公开查询参数或安全用例误报成真实凭据；但未经核实不得直接放行。
+- 产品登录态、API key、`.env`、私钥和本机账号文件必须保持 ignored + untracked，并确认完整历史从未出现；
+  `.local/codex-home/auth.json` 只能留在本机、权限须为 `0600`。
+- 发布前同时检查 GitHub Issues / PR / Release 正文、Actions artifacts、截图文字与图片元数据，避免密钥、持仓、研报名、
+  本机路径、账号或设备信息从非代码入口泄露。
+- 当前 README / 官网公开的作者名、GitHub、X、联系邮箱和 Buy Me a Coffee 属有意公开身份；删当前页面不等于删历史。
+  未来 Git 提交优先使用 GitHub noreply 邮箱；历史作者邮箱如需清除必须单独授权重写历史，不得顺手处理。
+- GitHub Secret Scanning 与 Push Protection 应保持开启；若平台显示未启用，发布检查必须明确列为待办，不能假定平台在兜底。
+
+## 5.5 对外内容与社交资料
+
+- Vibe-Research 的抖音正式封面统一使用 **9:16、2160×3840**。首屏信息层级固定为：最大字号产品名
+  `Vibe-Research` → 副标题 `个人投研 Agent` → Star 背书。Codex Harness 是底层技术叙事，不能在封面上
+  抢走产品名的第一视觉；旧封面与尝试版保留为版本化旁支，不直接覆盖。
+- Simon 当前对外身份是：**独立开发者，使用 AI 构建开源市场数据工具与本地 Agent**。主项目口径为
+  `a-stock-data`、`TradingAgents-astock`、`Vibe-Research`；X 简介不再用 `global-stock-data` 占第三个位置。
+- Star 数属于实时数据。写 X、YouTube、封面、README 或官网前必须重新查询 GitHub；允许展示稳定的整数档
+  （如 `2,200+ Stars`），但不得把旧快照写成当前精确值。
+- YouTube 频道说明不再沿用 `Everyone need a Jarvis` / OpenClaw 单一分享定位。当前说明应覆盖真实开发过程、
+  AI Agent、金融数据、Codex Harness 与开源产品；保留“不卖课，不收徒”的边界。
+
 ## 6. 输出
 
 中文;数字带单位与报告期;表格优先;不用表情符号。

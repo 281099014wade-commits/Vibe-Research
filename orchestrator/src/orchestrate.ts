@@ -235,8 +235,9 @@ async function runResearchInner(cfg: RunConfig, deps: Deps, onlyStages?: Stage[]
     runner.log("orchestrator", "hooks.installed", { hooks_json: inst.hooksJsonPath, config_toml: inst.configTomlPath, states: inst.states });
   }
   const hookCtx = (stage: Stage, attempt: number) => {
-    if (!cfg.hooksEnabled) return;
-    clearStopFailed(cfg.runDir);
+    // Windows 受控 MCP 也复用这份逐 turn 上下文；它不执行 hook，只用 stage/attempt 约束工具写入范围。
+    if (!cfg.hooksEnabled && cfg.executionMode !== "controlled_mcp") return;
+    if (cfg.hooksEnabled) clearStopFailed(cfg.runDir);
     if (cfg.scenario?.hook_fault === "context_missing" && stage === (cfg.scenario.probe_stage ?? "profile")) {
       // 故障注入:本阶段不写钩子上下文 → 钩子应放行但出声(hooks.log error),编排器 validator 兜底
       const p = path.join(cfg.runDir, HOOK_CONTEXT_REL); if (fs.existsSync(p)) fs.rmSync(p); delete protectedFiles[HOOK_CONTEXT_REL];
@@ -264,7 +265,7 @@ async function runResearchInner(cfg: RunConfig, deps: Deps, onlyStages?: Stage[]
   // M2 知识层召回:只在未由 scenario 注入且开启时;注入文本进全阶段提示词,由 knowledge_conflicts 裁决
   if (shouldRecall(cfg)) {
     const k = recallKnowledge(cfg);
-    const reports = reportsForSymbol(cfg.dataRoot, cfg.symbol, { maxChars: 10_000 });
+    const reports = reportsForSymbol(cfg.dataRoot, cfg.symbol, { maxChars: 10_000, companyName: cfg.companyName });
     manifest.user_reports = reports?.hits.map((x) => ({ id: x.id, name: x.name, page: x.page })) ?? [];
     if (k || reports) {
       const reportText = reports ? `\n\n## 用户资料库命中（上传时间不是资料期）\n${reports.text}` : "";

@@ -64,6 +64,8 @@ export interface Scenario {
 
 export interface RunConfig {
   symbol: string;
+  /** 可选主体名：用于补充召回“只写名称、没写标识符”的用户资料。 */
+  companyName?: string;
   market: string;
   runId: string;
   /** 产品根(安装后 = app/);AGENTS.md / skills / calc 均相对它 */
@@ -100,6 +102,8 @@ export interface RunConfig {
   noAgent: boolean;
   /** 安装并启用 Codex lifecycle hooks(Stop / PreToolUse;hooks.json + trusted_hash 写入产品 CODEX_HOME) */
   hooksEnabled: boolean;
+  /** 执行层:shell_hooks = POSIX 成熟链路;controlled_mcp = Windows 原生受控工具链(无 Shell / 无 lifecycle hooks) */
+  executionMode?: "shell_hooks" | "controlled_mcp";
   /** 运行目录已存在且非空时是否清空重来 */
   overwrite: boolean;
   /** 硬测试数据夹具目录:播种前几个阶段的产物并跳过它们(见 fixture.ts)。**播种运行一律按测试运行隔离** */
@@ -159,12 +163,13 @@ export const gateStagePatterns = (): string[] => {
 /** 命令中出现即判违规的关键词(防确认偏误:既有研究 / 交接资料;防越界:../) */
 export const DEFAULT_FORBIDDEN_PATHS = ["交接资料", "既有研究", "../"];
 /** 命令中的绝对路径允许落在这些前缀(系统目录 / 临时目录);仓库根与解释器目录在运行时追加 */
-export const DEFAULT_ALLOWED_PATH_PREFIXES = ["/bin", "/usr", "/opt", "/sbin", "/tmp", "/private/tmp", "/private/var", "/var/folders", "/dev", "/System", "/Library", "/Applications", "/nix"];
+export const DEFAULT_ALLOWED_PATH_PREFIXES = ["/bin", "/usr", "/opt", "/sbin", "/tmp", "/private/tmp", "/private/var", "/var/folders", "/dev", "/System", "/Library", "/Applications", "/nix", "C:\\Windows", "C:\\Program Files", "C:\\Program Files (x86)"];
 /** 只有这些前缀下的仓库外路径才被视为"读取他人文件"(用户主目录);其余绝对路径不扫描,避免 shell 变量误报 */
-export const HOME_PREFIXES = ["/Users/", "/home/", "/root/"];
+export const HOME_PREFIXES = ["/Users/", "/home/", "/root/", "C:\\Users\\"];
 
 /** 基础环境(取数与 Codex 子进程共用)。 */
-const BASE_ENV_KEYS = ["PATH", "HOME", "USER", "LOGNAME", "SHELL", "TERM", "LANG", "LC_ALL", "LC_CTYPE", "TMPDIR", "TZ"];
+const BASE_ENV_KEYS = ["PATH", "HOME", "USER", "LOGNAME", "SHELL", "TERM", "LANG", "LC_ALL", "LC_CTYPE", "TMPDIR", "TZ",
+  "USERPROFILE", "HOMEDRIVE", "HOMEPATH", "SYSTEMROOT", "WINDIR", "COMSPEC", "PATHEXT", "TEMP", "TMP", "APPDATA", "LOCALAPPDATA"];
 /** 取数脚本(联网进程)的最小环境:只加代理与证书;**不含任何 Codex 凭据 / 配置目录**(AGENTS.md §5) */
 export const FETCH_ENV_KEYS = [...BASE_ENV_KEYS, "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "http_proxy", "https_proxy", "no_proxy", "ALL_PROXY", "all_proxy",
   "SSL_CERT_FILE", "REQUESTS_CA_BUNDLE"];
@@ -178,6 +183,7 @@ export function makeConfig(partial: Partial<RunConfig> & { symbol: string; repoR
   if (!RUN_ID_RE.test(runId)) throw new Error(`run-id 非法:${runId}(只允许字母数字 . _ -,≤64 字符)`);
   const repoRoot = path.resolve(partial.repoRoot);
   const dataRoot = path.resolve(partial.dataRoot ?? path.join(repoRoot, ".local"));
+  const executionMode = partial.executionMode ?? (process.platform === "win32" ? "controlled_mcp" : "shell_hooks");
   // 🔴 根路径里不许有空白。执行层的命令扫描器按空白切 token 找绝对路径,路径里带空格就会被切断:
   //    `~/Library/Application Support/X/runs/…` 只剩 `/Users/…/Library/Application`,与允许前缀永远对不上,
   //    于是 agent 每一条引用运行目录绝对路径的命令都被拒(实测)。
@@ -188,7 +194,7 @@ export function makeConfig(partial: Partial<RunConfig> & { symbol: string; repoR
     // 根目录本身不行:`dataRoot="/"` 时钩子的边界判定会拼出 `"//"`,而 `/runs/x` 不以它开头 ⇒
     // 每次钩子调用都判"上下文不一致"并放行,执行层全程 fail-open(全审 r1-P3-7)。
     if (p === path.parse(p).root) throw new Error(`${what}不能是文件系统根目录:${p}`);
-    if (/\s/.test(p)) throw new Error(`${what}路径不能含空格 / 制表符:${p}(执行层的命令扫描器按空白切分,带空格的路径会被切断,导致 agent 引用运行目录的命令全被拒);请换成无空格路径,如 ~/.vibe-research`);
+    if (executionMode === "shell_hooks" && /\s/.test(p)) throw new Error(`${what}路径不能含空格 / 制表符:${p}(执行层的命令扫描器按空白切分,带空格的路径会被切断,导致 agent 引用运行目录的命令全被拒);请换成无空格路径,如 ~/.vibe-research`);
   }
   // 解释器路径规范化:带目录的路径一律 resolve(折叠 ../ 与重复斜杠)。否则 "repo/../.venv/bin/python" 会原样进提示词与允许前缀——
   // agent 照抄它就撞「命令越界含 ../」,改写成绝对路径又撞「仓库外路径」(前缀按未规范化字符串比对),calc 一条都跑不了(硬测试 ht4 真踩)。
@@ -213,6 +219,7 @@ export function makeConfig(partial: Partial<RunConfig> & { symbol: string; repoR
   }
   return {
     symbol: partial.symbol,
+    companyName: partial.companyName,
     market: partial.market ?? "",
     runId,
     repoRoot,
@@ -238,7 +245,8 @@ export function makeConfig(partial: Partial<RunConfig> & { symbol: string; repoR
     //    (临时目录测不出这条:`/var/folders` 恰好在默认白名单里。)
     allowedPathPrefixes: partial.allowedPathPrefixes ?? [...DEFAULT_ALLOWED_PATH_PREFIXES, repoRoot, dataRoot, interpreterRoot(python)],
     noAgent: partial.noAgent ?? false,
-    hooksEnabled: partial.hooksEnabled ?? true,
+    hooksEnabled: executionMode === "controlled_mcp" ? false : (partial.hooksEnabled ?? true),
+    executionMode,
     overwrite: partial.overwrite ?? false,
     seedFrom: partial.seedFrom,
     allowStaleFixture: partial.allowStaleFixture ?? false,
@@ -258,13 +266,19 @@ export function makeConfig(partial: Partial<RunConfig> & { symbol: string; repoR
 /** 带目录分隔符的解释器路径 → path.resolve(折叠 ../);裸命令(python3)原样保留交 PATH 解析 */
 export function normalizeInterpreter(python: string): string {
   const p = String(python ?? "").trim();
-  return p.includes("/") ? path.resolve(p) : p;
+  if (!/[\\/]/.test(p)) return p;
+  // `path.win32.isAbsolute("/Users/…")` 也会返回 true；只用真正的盘符 / UNC
+  // 判断 Windows 路径，否则会在 macOS/Linux 上把 POSIX 路径错误改成反斜杠。
+  if (/^[A-Za-z]:[\\/]/.test(p) || p.startsWith("\\\\")) return path.win32.normalize(p);
+  return path.resolve(p);
 }
 
 export function interpreterRoot(python: string): string {
-  if (!path.isAbsolute(python)) return "";
-  const bin = path.dirname(python);
-  return path.basename(bin) === "bin" ? path.dirname(bin) : bin;
+  const win = /^[A-Za-z]:[\\/]/.test(python) || python.startsWith("\\\\");
+  const api = win ? path.win32 : path;
+  if (!api.isAbsolute(python)) return "";
+  const bin = api.dirname(python);
+  return ["bin", "scripts"].includes(api.basename(bin).toLowerCase()) ? api.dirname(bin) : bin;
 }
 
 export function defaultRunId(symbol: string, now: Date = new Date()): string {
@@ -274,16 +288,16 @@ export function defaultRunId(symbol: string, now: Date = new Date()): string {
   return `${stamp}-${symbol}`;
 }
 
-function pickEnv(keys: string[], extra: Record<string, string>): Record<string, string> {
+function pickEnv(keys: string[], extra: Record<string, string>, source: NodeJS.ProcessEnv = process.env): Record<string, string> {
   const env: Record<string, string> = {};
   for (const k of keys) {
-    const v = process.env[k];
+    const v = source[k];
     if (v !== undefined) env[k] = v;
   }
   return { ...env, ...extra };
 }
-export const codexEnv = (extra: Record<string, string> = {}) => pickEnv(CODEX_ENV_KEYS, extra);
-export const fetchEnv = (extra: Record<string, string> = {}) => pickEnv(FETCH_ENV_KEYS, extra);
+export const codexEnv = (extra: Record<string, string> = {}, source: NodeJS.ProcessEnv = process.env) => pickEnv(CODEX_ENV_KEYS, extra, source);
+export const fetchEnv = (extra: Record<string, string> = {}, source: NodeJS.ProcessEnv = process.env) => pickEnv(FETCH_ENV_KEYS, extra, source);
 /**
  * Codex 子进程环境:显式 CODEX_HOME = 产品自己的目录;provider.auth=api_key 且环境里有 env_key 时注入为 CODEX_API_KEY(值不落盘);
  * chatgpt_login 则依赖 CODEX_HOME 内的登录态。代码不假设任何一种登录方式(v2.1 §5 ⑤)。
@@ -297,7 +311,7 @@ export function codexEnvFor(cfg: Pick<RunConfig, "codexHome" | "provider"> & { p
     if (!key) throw new Error(`provider.auth=api_key 但环境变量 ${cfg.provider.env_key} 为空(密钥只从环境变量读,不进配置文件)`);
     extra.CODEX_API_KEY = key;
   }
-  return codexEnv(extra);
+  return codexEnv(extra, env);
 }
 /** 需要在日志中脱敏的密钥值(auth=api_key 时为该 key;否则空) */
 export function secretsFor(cfg: Pick<RunConfig, "provider">, env: NodeJS.ProcessEnv = process.env): string[] {

@@ -46,8 +46,9 @@ test("init:幂等建 .local 目录 + 配置骨架 + .gitignore;已有配置不�
   assert.equal(cfg3.python, "/x/python"); assert.deepEqual(cfg3.provider, { profile: "deepseek" });
   assert.throws(() => runInit({ repoRoot: repo, provider: "../evil" }), /非法 provider id/);
   // python 自动探测 .venv
-  fs.mkdirSync(path.join(repo, ".venv", "bin"), { recursive: true }); fs.writeFileSync(path.join(repo, ".venv", "bin", "python"), "");
-  assert.equal(detectPython(repo), path.join(repo, ".venv", "bin", "python"));
+  const pyRel = process.platform === "win32" ? path.join(".venv", "Scripts", "python.exe") : path.join(".venv", "bin", "python");
+  fs.mkdirSync(path.dirname(path.join(repo, pyRel)), { recursive: true }); fs.writeFileSync(path.join(repo, pyRel), "");
+  assert.equal(detectPython(repo), path.join(repo, pyRel));
   assert.equal(detectPython(repo, "/explicit"), "/explicit");
   // 数据根逃出产品根 → 拒绝(词法 / 符号链接 / realpath 三种)
   const repo2 = tmpRepo(); fs.writeFileSync(path.join(repo2, "vibe-research.config.json"), JSON.stringify({ paths: { data_root: "../outside" } }));
@@ -138,6 +139,14 @@ test("doctor:真实仓库 + 假 exec → 全绿(除 api_token / net skip);引擎
   const f = await runDoctor({ repoRoot: REPO, env: fakeEnv, exec: badPy, python: "/fake/python", writeReport: false });
   const fb = Object.fromEntries(f.checks.map((c) => [c.id, c]));
   assert.equal(fb.python.status, "fail"); assert.match(fb.python.fix ?? "", /pip install -r/); assert.equal(fb.calc.status, "skip"); assert.equal(f.exit_code, 3);
+  // 受控 MCP 与 skills 配置隔离使用标准库 tomllib；3.10 即使取数依赖都能导入，也不能标成可用。
+  const oldPy: Exec = (cmd, args) => args[0] === "-c" ? { status: 0, stdout: "3.10.14\n", stderr: "" } : good(cmd, args);
+  const old = await runDoctor({ repoRoot: REPO, env: fakeEnv, exec: oldPy, python: "/fake/python", writeReport: false });
+  const oldBy = Object.fromEntries(old.checks.map((c) => [c.id, c]));
+  assert.equal(oldBy.python.status, "fail");
+  assert.match(oldBy.python.detail, /3\.11/);
+  assert.equal(oldBy.calc.status, "skip");
+  assert.equal(old.exit_code, 3);
   // api_key 模式:环境变量缺失 → fail;有 → ok(不再查登录态)
   const keyEnv = { PATH: "/usr/bin", HOME: FAKE_HOME, VRA_PROVIDER: "deepseek", VRA_PROVIDER_AUTH: "api_key" };  // 显式 auth:不依赖本机 .local/config.json 里有没有写 auth
   const k1 = await runDoctor({ repoRoot: REPO, env: keyEnv, exec: good, python: "/fake/python", writeReport: false });

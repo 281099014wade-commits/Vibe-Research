@@ -20,7 +20,7 @@ export const REPORT_MAX_BYTES = 25 * 1024 * 1024;
 export const REPORT_MAX_TEXT_CHARS = 1_000_000;
 export const REPORT_CONTEXT_MAX_CHARS = 12_000;
 const REPORT_ID_RE = /^[0-9a-f]{32}$/;
-const REPORT_INDEX_VERSION = 1;
+const REPORT_INDEX_VERSION = 2;
 const SUPPORTED = new Set([".pdf", ".docx", ".txt", ".md", ".markdown", ".csv"]);
 
 export class ReportLibraryError extends Error {
@@ -203,8 +203,20 @@ function loadIndex(dataRoot: string): ReportIndex {
   try { parsed = JSON.parse(fs.readFileSync(p, "utf8")); }
   catch { throw new ReportLibraryError("report_index_corrupt", "资料索引已损坏；原文件没有被改动，请先人工检查 manifest.json"); }
   const idx = parsed as Partial<ReportIndex> | null;
-  if (idx?.schema_version !== REPORT_INDEX_VERSION || !Array.isArray(idx.reports) || !idx.reports.every(validRecord)) {
+  if ((idx?.schema_version !== 1 && idx?.schema_version !== REPORT_INDEX_VERSION) || !Array.isArray(idx.reports) || !idx.reports.every(validRecord)) {
     throw new ReportLibraryError("report_index_corrupt", "资料索引格式不完整；原文件没有被改动，请先人工检查 manifest.json");
+  }
+  if (idx.schema_version === 1) {
+    const reports = idx.reports.map((rec) => {
+      const textPath = inside(dataRoot, rec.text_file);
+      const symbols = fs.existsSync(textPath) && fs.lstatSync(textPath).isFile()
+        ? symbolsOf(rec.name, fs.readFileSync(textPath, "utf8"))
+        : rec.symbols;
+      return { ...rec, symbols };
+    });
+    const migrated: ReportIndex = { schema_version: REPORT_INDEX_VERSION, reports };
+    atomicWrite(p, JSON.stringify(migrated, null, 2) + "\n");
+    return migrated;
   }
   return idx as ReportIndex;
 }
@@ -220,8 +232,19 @@ function inside(dataRoot: string, rel: string): string {
 
 function symbolsOf(name: string, text: string): string[] {
   const found = new Set<string>();
-  const sample = `${name}\n${text.slice(0, 120_000)}`;
-  for (const m of sample.matchAll(/(?<!\d)([0-9]{6})(?!\d)/g)) found.add(m[1]);
+  const body = text.slice(0, 120_000);
+  const sixDigitId = "((?:0|3|6|8)\\d{5})";
+  // 文件名是用户主动给出的元数据，可直接识别合法形状的六位主体标识；正文里的任意六位数
+  // 可能是装机量、合同额或样本编号，只有带明确“代码 / 交易所”语境时才认。
+  for (const m of name.matchAll(new RegExp(`(?<!\\d)${sixDigitId}(?!\\d)`, "g"))) found.add(m[1]);
+  const bodyPatterns = [
+    new RegExp(`(?:公司)?代码\\s*[:：#-]?\\s*${sixDigitId}(?!\\d)`, "gi"),
+    new RegExp(`(?:SH|SZ|BJ)\\s*[:：#.-]?\\s*${sixDigitId}(?!\\d)`, "gi"),
+    new RegExp(`(?<!\\d)${sixDigitId}\\s*\\.(?:SH|SZ|BJ)\\b`, "gi"),
+    new RegExp(`[\\u3400-\\u9fffA-Za-z]{2,30}[（(]\\s*${sixDigitId}\\s*[）)]`, "g"),
+  ];
+  for (const re of bodyPatterns) for (const m of body.matchAll(re)) found.add(m[1]);
+  const sample = `${name}\n${body}`;
   for (const m of sample.matchAll(/\b([0-9]{1,5})\.HK\b/gi)) found.add(m[1].padStart(5, "0"));
   for (const m of sample.matchAll(/(?:港股|HK)\s*[:：#-]?\s*([0-9]{1,5})(?!\d)/gi)) found.add(m[1].padStart(5, "0"));
   for (const m of sample.matchAll(/(?:NASDAQ|NYSE|AMEX|TICKER|SYMBOL|代码)\s*[:：#-]?\s*([A-Z]{1,5})\b/g)) found.add(m[1]);
@@ -386,11 +409,13 @@ function snippetAt(text: string, terms: string[]): { snippet: string; page: numb
   return { snippet: `${start > 0 ? "…" : ""}${snippet}${end < text.length ? "…" : ""}`, page: pageAt(text, pos) };
 }
 
-export function searchReports(dataRoot: string, query: string, opts: { limit?: number } = {}): ReportSearchHit[] {
+export function searchReports(dataRoot: string, query: string, opts: { limit?: number; reportIds?: readonly string[] } = {}): ReportSearchHit[] {
   const terms = termsOf(query);
   if (!terms.length) return [];
+  const allowed = opts.reportIds ? new Set(opts.reportIds) : null;
   const hits: ReportSearchHit[] = [];
   for (const rec of listReports(dataRoot)) {
+    if (allowed && !allowed.has(rec.id)) continue;
     const textPath = inside(dataRoot, rec.text_file);
     if (!fs.existsSync(textPath) || !fs.lstatSync(textPath).isFile()) continue;
     const text = fs.readFileSync(textPath, "utf8");
@@ -410,8 +435,8 @@ export function searchReports(dataRoot: string, query: string, opts: { limit?: n
   return hits.sort((a, b) => b.score - a.score || b.uploaded_at.localeCompare(a.uploaded_at)).slice(0, Math.min(Math.max(opts.limit ?? 5, 1), 20));
 }
 
-export function reportContext(dataRoot: string, query: string, opts: { limit?: number; maxChars?: number } = {}): ReportContext | null {
-  const hits = searchReports(dataRoot, query, { limit: opts.limit ?? 5 });
+export function reportContext(dataRoot: string, query: string, opts: { limit?: number; maxChars?: number; reportIds?: readonly string[] } = {}): ReportContext | null {
+  const hits = searchReports(dataRoot, query, { limit: opts.limit ?? 5, reportIds: opts.reportIds });
   if (!hits.length) return null;
   const max = Math.min(Math.max(opts.maxChars ?? REPORT_CONTEXT_MAX_CHARS, 1_000), 40_000);
   const head = [
@@ -469,8 +494,15 @@ export function reportCitationErrors(text: string, sources: readonly ReportSourc
   return errors;
 }
 
-export function reportsForSymbol(dataRoot: string, symbol: string, opts: { maxChars?: number } = {}): ReportContext | null {
+export function reportsForSymbol(dataRoot: string, symbol: string, opts: { maxChars?: number; companyName?: string } = {}): ReportContext | null {
   const exact = listReports(dataRoot).filter((r) => r.symbols.includes(symbol));
-  if (!exact.length) return reportContext(dataRoot, symbol, { limit: 5, maxChars: opts.maxChars ?? 10_000 });
-  return reportContext(dataRoot, symbol, { limit: Math.min(exact.length, 5), maxChars: opts.maxChars ?? 10_000 });
+  if (exact.length) return reportContext(dataRoot, symbol, {
+    limit: Math.min(exact.length, 5), maxChars: opts.maxChars ?? 10_000, reportIds: exact.map((r) => r.id),
+  });
+  const companyName = String(opts.companyName ?? "").trim();
+  if (companyName) {
+    const byName = reportContext(dataRoot, companyName, { limit: 5, maxChars: opts.maxChars ?? 10_000 });
+    if (byName) return byName;
+  }
+  return reportContext(dataRoot, symbol, { limit: 5, maxChars: opts.maxChars ?? 10_000 });
 }

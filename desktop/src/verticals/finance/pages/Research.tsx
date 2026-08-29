@@ -114,7 +114,14 @@ export function Research() {
     if (!/^\d{6}$/.test(code)) { setErr("请输入 6 位 A 股代码"); return; }
     setStarting(true);
     try {
-      const r = await backend.startResearch({ symbol: code, endpoints: scope, knowledge: "on" });
+      const quote = await backend.fetch("tx_quote", { symbol: code }).catch(() => null);
+      const companyName = quote?.envelope.evidence.find((e) => e.field === "security_name")?.value;
+      const r = await backend.startResearch({
+        symbol: code,
+        ...(typeof companyName === "string" && companyName.trim() ? { company_name: companyName.trim() } : {}),
+        endpoints: scope,
+        knowledge: "on",
+      });
       setActive({
         run_id: r.run_id, exists: true, status: "running", exit_code: null,
         stages: [], evidence_count: null, calculation_count: null, finished_at: null,

@@ -39,6 +39,115 @@ export interface AgentRunner {
 
 const GENERIC_KEY_RE = /\bsk-[A-Za-z0-9_-]{12,}\b/g;
 
+function tomlValue(value: unknown): string {
+  if (typeof value === "string") return JSON.stringify(value);
+  if (typeof value === "boolean" || typeof value === "number") return String(value);
+  if (Array.isArray(value)) return `[${value.map(tomlValue).join(", ")}]`;
+  if (value && typeof value === "object") {
+    return `{${Object.entries(value as Record<string, unknown>)
+      .map(([key, child]) => `${JSON.stringify(key)} = ${tomlValue(child)}`)
+      .join(", ")}}`;
+  }
+  throw new Error(`MCP 隔离配置含不支持的值:${String(value)}`);
+}
+
+/**
+ * 列出 Codex 实际会读到的 MCP 名。
+ *
+ * 不能只传 `mcp_servers={}`。Codex 对配置表做递归合并，空表不会删掉
+ * config.toml 里已有的 server。仅扫文件也不够：Codex 还会合并 system / admin /
+ * cloud / profile / cwd / tree / repo 层。因此以同一引擎、同一 CODEX_HOME、同一 cwd
+ * 运行官方 `codex mcp list --json`，把它报出的有效集合当真理源；再与可读本地 TOML
+ * 的保守扫描取并集（连未启用 profile 里的同名伏笔也禁用）。任一步无法核验就失败关闭。
+ */
+export function configuredMcpServerNames(cfg: RunConfig, engineEnv: NodeJS.ProcessEnv = codexEnvFor(cfg)): string[] {
+  const candidates = new Set<string>([path.join(cfg.codexHome, "config.toml")]);
+  let cursor = path.resolve(cfg.runDir);
+  const stop = path.resolve(cfg.dataRoot);
+  while (cursor === stop || cursor.startsWith(stop + path.sep)) {
+    candidates.add(path.join(cursor, ".codex", "config.toml"));
+    if (cursor === stop) break;
+    const parent = path.dirname(cursor);
+    if (parent === cursor) break;
+    cursor = parent;
+  }
+  const files = [...candidates].filter((file) => fs.existsSync(file));
+  const code = [
+    "import json, pathlib, sys, tomllib",
+    "names=set()",
+    "def walk(value):",
+    " if not isinstance(value, dict): return",
+    " for key, child in value.items():",
+    "  if key == 'mcp_servers':",
+    "   if not isinstance(child, dict): raise TypeError('mcp_servers must be a table')",
+    "   names.update(str(x) for x in child.keys())",
+    "  walk(child)",
+    "for raw in sys.argv[1:]:",
+    " p=pathlib.Path(raw)",
+    " with p.open('rb') as f: data=tomllib.load(f)",
+    " walk(data)",
+    "print(json.dumps(sorted(names)))",
+  ].join("\n");
+  const names = new Set<string>();
+  if (files.length > 0) {
+    const result = spawnSync(cfg.python, ["-c", code, ...files], { encoding: "utf8", timeout: 20_000, windowsHide: true });
+    if (result.error || result.status !== 0) {
+      const detail = String(result.stderr || result.error?.message || "unknown error").trim().slice(0, 300);
+      throw new Error(`无法核验 MCP 隔离配置:${detail}`);
+    }
+    try {
+      const parsed = JSON.parse(String(result.stdout || "[]"));
+      if (!Array.isArray(parsed) || parsed.some((x) => typeof x !== "string")) throw new Error("bad result");
+      for (const name of parsed) names.add(name);
+    } catch {
+      throw new Error("无法核验 MCP 隔离配置:Python 返回格式错误");
+    }
+  }
+
+  const codexBin = cfg.codexPath ?? sdkCodexVersion().binary;
+  if (!codexBin) throw new Error("无法核验 MCP 隔离配置:找不到官方 Codex 引擎");
+  // 配置预检也会在建立 run 目录前被调用（如对话和单测）。spawn 的 cwd
+  // 不存在时 Node 会把它报成近似“二进制 ENOENT”，所以退到最近的已存在祖先；
+  // 真实研究运行在 runner 构造前已建好 runDir，仍会用精确 cwd。
+  const configCwd = fs.existsSync(cfg.runDir) ? cfg.runDir : fs.existsSync(cfg.dataRoot) ? cfg.dataRoot : cfg.repoRoot;
+  const effective = spawnSync(codexBin, ["mcp", "list", "--json"], {
+    cwd: configCwd,
+    env: engineEnv,
+    encoding: "utf8",
+    timeout: 20_000,
+    windowsHide: true,
+  });
+  if (effective.error || effective.status !== 0) {
+    const detail = String(effective.stderr || effective.error?.message || "unknown error").trim().slice(0, 300);
+    throw new Error(`无法核验 Codex 有效 MCP 配置:${detail}`);
+  }
+  try {
+    const parsed = JSON.parse(String(effective.stdout || "[]"));
+    if (!Array.isArray(parsed)) throw new Error("bad result");
+    for (const item of parsed) {
+      if (!item || typeof item !== "object" || typeof (item as { name?: unknown }).name !== "string") throw new Error("bad item");
+      names.add((item as { name: string }).name);
+    }
+    return [...names].sort();
+  } catch {
+    throw new Error("无法核验 Codex 有效 MCP 配置:引擎返回格式错误");
+  }
+}
+
+/** 生成一条原子 CLI 覆盖：禁用所有旧 MCP，可选加入本轮唯一的受控 MCP。 */
+export function mcpIsolationOverride(cfg: RunConfig, ownServer?: Record<string, unknown>, engineEnv: NodeJS.ProcessEnv = codexEnvFor(cfg)): { override: string; ownName: string | null } {
+  const existing = configuredMcpServerNames(cfg, engineEnv);
+  const servers: Record<string, unknown> = Object.fromEntries(existing.map((name) => [name, { enabled: false }]));
+  let ownName: string | null = null;
+  if (ownServer) {
+    const stem = `vra_run_${crypto.createHash("sha256").update(cfg.runDir).digest("hex").slice(0, 12)}`;
+    ownName = stem;
+    for (let i = 1; Object.prototype.hasOwnProperty.call(servers, ownName); i += 1) ownName = `${stem}_${i}`;
+    servers[ownName] = { ...ownServer, enabled: true };
+  }
+  return { override: `mcp_servers=${tomlValue(servers)}`, ownName };
+}
+
 /** events.jsonl 写入器:每条 fsync,维护全文 sha256 摘要;已知密钥值与常见 key 形态在落盘前脱敏(纵深防御,主防线是工具环境不含密钥) */
 /**
  * 环境类脱敏:主目录路径中的**用户名**、内网地址、`user:pass@` 形式的凭据。
@@ -94,9 +203,37 @@ export class EventsLog {
 export function codexOptionsFor(cfg: RunConfig, env: NodeJS.ProcessEnv = process.env): CodexOptions {
   // M4:非 openai provider 注入 model_provider + model_providers.<id>(base_url / env_key / wire_api / requires_openai_auth=false …);openai 原生沿用引擎默认
   const providerCfg = cfg.providerProfile ? codexProviderConfig(cfg.providerProfile) : {};
+  const controlled = cfg.executionMode === "controlled_mcp";
+  const engineEnv = codexEnvFor(cfg, env);
+  const controlledMcp = controlled ? mcpIsolationOverride(cfg, {
+    command: process.execPath,
+    args: [path.join(cfg.repoRoot, "orchestrator", "src", "finance", "run_tools_mcp.ts")],
+    cwd: cfg.runDir,
+    env: { VRA_RUN_DIR: cfg.runDir, VRA_REPO_ROOT: cfg.repoRoot, VRA_PYTHON: cfg.python },
+    required: true,
+    startup_timeout_sec: 20,
+    tool_timeout_sec: 130,
+    default_tools_approval_mode: "approve",
+    enabled_tools: ["list_run_files", "read_run_file", "calculate", "write_stage", "write_report"],
+  }, engineEnv) : null;
+  const controlledConfig = controlled ? {
+    features: {
+      shell_tool: false,
+      unified_exec: false,
+      view_image: false,
+      multi_agent: false,
+      multi_agent_v2: false,
+      apps: false,
+      enable_mcp_apps: false,
+      plugins: false,
+      code_mode: false,
+      standalone_web_search: false,
+    },
+  } : {};
   return {
-    env: codexEnvFor(cfg, env),
-    config: { ...(CODEX_SHELL_ENV_POLICY as unknown as Record<string, unknown>), ...providerCfg } as unknown as NonNullable<CodexOptions["config"]>,
+    env: engineEnv,
+    config: { ...(CODEX_SHELL_ENV_POLICY as unknown as Record<string, unknown>), ...providerCfg, ...controlledConfig } as unknown as NonNullable<CodexOptions["config"]>,
+    ...(controlledMcp ? { configOverrides: [controlledMcp.override] } : {}),
     ...(cfg.codexPath ? { codexPathOverride: cfg.codexPath } : {}),
   };
 }
@@ -131,8 +268,9 @@ export class CodexRunner implements AgentRunner {
   private ensureThread(): Thread {
     if (this.thread) return this.thread;
     this.thread = this.codex.startThread({
-      workingDirectory: this.cfg.runDir,    // cwd = 运行目录:workspace-write 沙箱只放行运行目录写入,产品代码 / 契约 / skills 只读(宪法与 .agents/skills 的发现见 instructions_root.ts)
-      sandboxMode: "workspace-write",
+      workingDirectory: this.cfg.runDir,
+      // Windows 原生模式不把可写目录交给模型；所有落盘只经受控 MCP 工具完成。
+      sandboxMode: this.cfg.executionMode === "controlled_mcp" ? "read-only" : "workspace-write",
       // 🔴 必开。引擎在 `exec` 入口有一道门:cwd 不在 git 仓库里就直接 exit 1,报
       //    `Not inside a trusted directory and --skip-git-repo-check was not specified.`
       //    (codex-rs/exec/src/lib.rs:798 —— 判据其实**只是 `get_git_repo_root(cwd).is_none()`**,

@@ -8,11 +8,11 @@
  * 🔴 三条纪律:
  *  ① 接不上的一律 `notWired()` **抛错**,不返回空数组 ——
  *     返回空会让页面显示"这里没有数据",而真相是"这条链路还没做"。
- *  ② 取不到的数给 `null` 不给 `0`(上游类型写死 number 的地方才用 num0,并在那里说明)。
+ *  ② 取不到的数给 `null` 不给 `0`；接口类型必须如实允许 null。
  *  ③ 鉴权与密钥都不在浏览器:Bearer 由 Vite 代理注入(见 vite.config.ts)。
  */
 import {
-  ApiError, backend, noteKV, notWired, num, num0, round2, rows, scalar, str, throwNotWired,
+  ApiError, backend, noteKV, notWired, num, round2, rows, scalar, str, throwNotWired,
   type Envelope,
 } from "./backend";
 import {
@@ -80,8 +80,8 @@ export interface Quote {
 }
 
 export interface Valuation {
-  name: string; code: string; price: number; mcap_yi: number;
-  pe_ttm: number; pb: number;
+  name: string; code: string; price: number | null; mcap_yi: number | null;
+  pe_ttm: number | null; pb: number | null;
   eps_26e: number | null; eps_27e: number | null; pe_26e: number | null;
   /** 一致预期的**基年**(FY(T))。🔴 界面标签必须由它拼,不许写死 "26E" ——
    *  基年跟着上游走(跨年 / 上游少给一年都会变),写死的标签会出现
@@ -97,7 +97,7 @@ export interface Valuation {
   price_evidence_id: string | null;
   eps_evidence_id: string | null;
   cagr_pct: number | null; peg: number | null; digest_years: number | null;
-  analyst_count: number; forecast_note?: string;
+  analyst_count: number | null; forecast_note?: string;
 }
 
 export interface Report {
@@ -130,7 +130,7 @@ export interface NewsItem {
 }
 
 export interface IndexQuote {
-  name: string; price: number; change_pct: number; change_amt: number;
+  name: string; price: number | null; change_pct: number | null; change_amt: number | null;
 }
 
 export interface MarketSentiment {
@@ -150,7 +150,7 @@ export interface SectorFlow {
    *    我们的板块资金端点只给"主力净流入",没有分开的流入 / 流出与家数 ——
    *    填 0 会被读成"今天一分钱没流入",那是假的。
    */
-  name: string; pct: number; net: number;
+  name: string; pct: number | null; net: number | null;
   inflow: number | null; outflow: number | null; firms: number | null;
 }
 export interface MarketOverview {
@@ -161,7 +161,7 @@ export interface MarketOverview {
 export interface EmotionTier { boards: number; count: number; plus: boolean }
 export interface LianbanStock {
   code: string; name: string; boards: number;
-  price: number; pct: number; amount: number | null; float_cap: number | null; industry: string;
+  price: number | null; pct: number | null; amount: number | null; float_cap: number | null; industry: string;
 }
 export interface ShortTermEmotion {
   date: string;
@@ -274,24 +274,24 @@ export interface PortfolioData {
 }
 
 // 资金面 / 筹码 / 信号（v3.3 并入，均为「用户查的那只股」的公开数据）
-export interface MarginRow { date: string; rzye: number; rzmre: number; rzche: number; rqye: number; rqmcl: number; rzrqye: number }
-export interface BlockTradeRow { date: string; price: number; close: number; premium_pct: number; vol: number; amount: number; buyer: string; seller: string }
-export interface HolderRow { date: string; holder_num: number; change_ratio: number; avg_shares: number }
-export interface DividendRow { date: string; bonus_rmb: number; transfer_ratio: number; bonus_ratio: number | null; plan: string }
-export interface FundFlowRow { date: string; main_net: number; small_net: number; mid_net: number; large_net: number; super_net: number }
+export interface MarginRow { date: string; rzye: number | null; rzmre: number | null; rzche: number | null; rqye: number | null; rqmcl: number | null; rzrqye: number | null }
+export interface BlockTradeRow { date: string; price: number | null; close: number | null; premium_pct: number | null; vol: number | null; amount: number | null; buyer: string; seller: string }
+export interface HolderRow { date: string; holder_num: number | null; change_ratio: number | null; avg_shares: number | null }
+export interface DividendRow { date: string; bonus_rmb: number | null; transfer_ratio: number | null; bonus_ratio: number | null; plan: string }
+export interface FundFlowRow { date: string; main_net: number | null; small_net: number | null; mid_net: number | null; large_net: number | null; super_net: number | null }
 export interface DtSeat { name: string; buy_amt: number; sell_amt: number; net: number }
 export interface DragonTiger {
-  records: { date: string; reason: string; net_buy: number; turnover: number }[];
+  records: { date: string; reason: string; net_buy: number | null; turnover: number | null }[];
   seats: { buy: DtSeat[]; sell: DtSeat[] };
   institution: { buy_amt: number; sell_amt: number; net_amt: number };
 }
-export interface LockupRow { date: string; type: string; shares: number; able_shares: number; ratio: number }
+export interface LockupRow { date: string; type: string; shares: number | null; able_shares: number | null; ratio: number | null }
 export interface Lockup { history: LockupRow[]; upcoming: LockupRow[] }
 export interface Board { name: string; code: string; change_pct: number | string; lead_stock: string }
 export interface Blocks { total: number; boards: Board[]; concept_tags: string[] }
 export interface HotConcept { concept: string; bk: string; hit: number }
 export interface QaRow { company: string; question: string; answer: string | null; answerer: string; ask_time: string }
-export interface IndustryRow { rank: number; name: string; change_pct: number; code: string; up_count: number; down_count: number }
+export interface IndustryRow { rank: number; name: string; change_pct: number | null; code: string; up_count: number | null; down_count: number | null }
 export interface IndustryData { top: IndustryRow[]; bottom: IndustryRow[]; total: number }
 
 // 全球市场（美股 / 港股，移植自 global-stock-data · 东财域内源）
@@ -331,10 +331,10 @@ export interface HkCashflow {
 const env = async (endpoint: string, opts: { symbol?: string; args?: Record<string, unknown>; refresh?: boolean } = {}): Promise<Envelope> =>
   (await backend.fetch(endpoint, opts)).envelope;
 
-/** 上游把"元"当数字用,我们的证据带单位。**只在上游类型写死 number 的地方**用它兜底为 0。 */
-const n0 = num0;
 /** 换算单位。**null 进 null 出** —— 直接写 `x * k` 会把"没有"变成 0，页面就显示成「0.00 亿」 */
 const mul = (v: number | null, k: number): number | null => (v === null ? null : v * k);
+const subtract = (a: number | null, b: number | null): number | null => (a === null || b === null ? null : a - b);
+const descNullable = (a: number | null, b: number | null): number => (b ?? Number.NEGATIVE_INFINITY) - (a ?? Number.NEGATIVE_INFINITY);
 
 /* ---------- 行情 / 估值 ---------- */
 
@@ -377,7 +377,7 @@ async function valuationOf(code: string): Promise<Valuation> {
     env("fetch_estimates", { symbol: code }).catch(() => undefined),
   ]);
   const f = (name: string) => scalar(q, name);
-  const price = n0(f("price"));
+  const price = num(f("price"));
 
   /**
    * 🔴 一致预期是**同一个字段 `eps_consensus_mean` 分三个资料期**(FY2026/27/28),
@@ -413,7 +413,7 @@ async function valuationOf(code: string): Promise<Valuation> {
   const eps26 = num(atYear(0));   // FY(T)   当年
   const eps27 = num(atYear(1));   // FY(T+1) 次年
   const eps28 = num(atYear(2));   // FY(T+2) 后年
-  const pe26 = eps26 && eps26 > 0 ? round2(price / eps26) : null;
+  const pe26 = price !== null && eps26 && eps26 > 0 ? round2(price / eps26) : null;
   /**
    * 前瞻 CAGR = **两年年化** = (FY(T+2) / FY(T))^(1/2) − 1。
    *
@@ -432,9 +432,9 @@ async function valuationOf(code: string): Promise<Valuation> {
     name: str(f("security_name")),
     code,
     price,
-    mcap_yi: n0(f("market_cap")),
-    pe_ttm: n0(f("pe_ttm")),
-    pb: n0(f("pb")),
+    mcap_yi: num(f("market_cap")),
+    pe_ttm: num(f("pe_ttm")),
+    pb: num(f("pb")),
     eps_26e: eps26,
     eps_27e: eps27,
     pe_26e: pe26,
@@ -448,7 +448,7 @@ async function valuationOf(code: string): Promise<Valuation> {
     digest_years:
       pe26 && cagr && cagr > 0 && pe26 > 30 ? round2(Math.log(pe26 / 30) / Math.log(1 + cagr / 100)) : null,
     // 取**当年**那一期的机构数;没有资料期约束的 find() 会拿到证据里的第一条(可能是别的年份)
-    analyst_count: n0(
+    analyst_count: num(
       baseYear === null
         ? undefined
         : est?.evidence.find((x) => x.field === "eps_analyst_count" && yearOf(x.period) === baseYear),
@@ -589,12 +589,12 @@ async function marginOf(code: string): Promise<MarginRow[]> {
     .filter((r) => /^\d{4}-\d{2}-\d{2}$/.test(r.key))
     .map((r) => ({
       date: r.key,
-      rzye: n0(r.fields.margin_financing_balance),
-      rzmre: n0(r.fields.margin_financing_buy),
-      rzche: n0(r.fields.margin_financing_repay),
-      rqye: n0(r.fields.margin_short_balance),
-      rqmcl: n0(r.fields.margin_short_sell_volume),
-      rzrqye: n0(r.fields.margin_total_balance),
+      rzye: num(r.fields.margin_financing_balance),
+      rzmre: num(r.fields.margin_financing_buy),
+      rzche: num(r.fields.margin_financing_repay),
+      rqye: num(r.fields.margin_short_balance),
+      rqmcl: num(r.fields.margin_short_sell_volume),
+      rzrqye: num(r.fields.margin_total_balance),
     }))
     .sort((a, b) => b.date.localeCompare(a.date));
 }
@@ -603,11 +603,11 @@ async function blockTradeOf(code: string): Promise<BlockTradeRow[]> {
   const e = await env("em_block_trade", { symbol: code });
   return rows(e).map((r) => ({
     date: r.fields.block_trade_price?.period ?? r.key,
-    price: n0(r.fields.block_trade_price),
-    close: n0(r.fields.block_trade_close),
-    premium_pct: n0(r.fields.block_trade_premium_pct),
-    vol: n0(r.fields.block_trade_volume),
-    amount: n0(r.fields.block_trade_amount),
+    price: num(r.fields.block_trade_price),
+    close: num(r.fields.block_trade_close),
+    premium_pct: num(r.fields.block_trade_premium_pct),
+    vol: num(r.fields.block_trade_volume),
+    amount: num(r.fields.block_trade_amount),
     // 🔴 买卖方在 **note** 里,不是字段(端点只给 price / premium / volume / amount / count)。
     //    原来取不存在的字段 → 空串 → 界面上显示成「买 · 卖」,像是渲染坏了而不是没数据。
     buyer: noteKV(r.note).买方 ?? "",
@@ -619,9 +619,9 @@ async function holdersOf(code: string): Promise<HolderRow[]> {
   const e = await env("em_holder_num", { symbol: code });
   return rows(e).map((r) => ({
     date: r.key,
-    holder_num: n0(r.fields.shareholder_count),
-    change_ratio: n0(r.fields.shareholder_count_change_pct),
-    avg_shares: n0(r.fields.shareholder_avg_free_shares),
+    holder_num: num(r.fields.shareholder_count),
+    change_ratio: num(r.fields.shareholder_count_change_pct),
+    avg_shares: num(r.fields.shareholder_avg_free_shares),
   }));
 }
 
@@ -631,8 +631,8 @@ async function dividendOf(code: string): Promise<DividendRow[]> {
     const kv = noteKV(r.note);
     return {
       date: r.key.split("|")[0] ?? "",
-      bonus_rmb: n0(r.fields.dividend_pretax_per_share),
-      transfer_ratio: n0(r.fields.transfer_per_10_shares),
+      bonus_rmb: num(r.fields.dividend_pretax_per_share),
+      transfer_ratio: num(r.fields.transfer_per_10_shares),
       bonus_ratio: num(r.fields.bonus_per_10_shares),
       plan: kv["进度"] ?? "",
     };
@@ -645,11 +645,11 @@ async function fundFlowOf(code: string): Promise<FundFlowRow[]> {
     .filter((r) => /^\d{4}-\d{2}-\d{2}$/.test(r.key))
     .map((r) => ({
       date: r.key,
-      main_net: n0(r.fields.fund_flow_main_net),
-      small_net: n0(r.fields.fund_flow_small_net),
-      mid_net: n0(r.fields.fund_flow_mid_net),
-      large_net: n0(r.fields.fund_flow_large_net),
-      super_net: n0(r.fields.fund_flow_super_net),
+      main_net: num(r.fields.fund_flow_main_net),
+      small_net: num(r.fields.fund_flow_small_net),
+      mid_net: num(r.fields.fund_flow_mid_net),
+      large_net: num(r.fields.fund_flow_large_net),
+      super_net: num(r.fields.fund_flow_super_net),
     }))
     .sort((a, b) => b.date.localeCompare(a.date));
 }
@@ -725,14 +725,14 @@ async function marketOverviewOf(pre?: { sentiment?: Envelope; board_flow?: Envel
   const sectors: SectorFlow[] = (flow ? rows(flow) : [])
     .map((r) => ({
       name: r.note.replace(/\s*排名\s*\d+\s*$/, "").trim() || r.key,
-      pct: n0(r.fields.board_change_pct_today),
+      pct: num(r.fields.board_change_pct_today),
       // 元 → 亿元。上游这几个字段当"亿"用
-      net: round2(n0(r.fields.board_main_net_today) / 1e8)!,
+      net: round2(mul(num(r.fields.board_main_net_today), 1e-8)),
       inflow: null,   // 端点只给净额,拆不出流入 / 流出
       outflow: null,
       firms: null,
     }))
-    .sort((a, b) => b.net - a.net);
+    .sort((a, b) => descNullable(a.net, b.net));
 
   return {
     sentiment: {
@@ -767,7 +767,7 @@ async function emotionOf(): Promise<ShortTermEmotion> {
         code: p?.code ?? r.key,
         name: p?.name ?? "",
         boards: num(r.fields.pool_limit_days) ?? p?.boards ?? 1,
-        pct: n0(r.fields.pool_change_pct),
+        pct: num(r.fields.pool_change_pct),
         industry: p?.industry ?? "",
       };
     })
@@ -781,7 +781,7 @@ async function emotionOf(): Promise<ShortTermEmotion> {
     const hit = q[x.code];
     return {
       ...x,
-      price: hit?.price ?? 0,
+      price: hit?.price ?? null,
       /**
        * 涨停池本身**没有**成交额与流通市值（它只给涨幅 / 板数 / 封板资金 / 换手），
        * 所以从上面那次批量行情里取 —— 这两列以前写死 null，结果是"列在、永远是横杠"。
@@ -1024,8 +1024,8 @@ async function dragonTigerOf(code: string): Promise<DragonTiger> {
   const records = rows(e).map((r) => ({
     date: r.fields.dt_net_buy?.period ?? r.key,
     reason: noteKV(r.note).reason ?? r.note,
-    net_buy: n0(r.fields.dt_net_buy),
-    turnover: n0(r.fields.dt_turnover),
+    net_buy: num(r.fields.dt_net_buy),
+    turnover: num(r.fields.dt_turnover),
   }));
   return { records, seats: { buy: [], sell: [] }, institution: { buy_amt: 0, sell_amt: 0, net_amt: 0 } };
 }
@@ -1036,9 +1036,9 @@ async function lockupOf(code: string): Promise<Lockup> {
   const all: LockupRow[] = rows(e).map((r) => ({
     date: r.fields.lockup_shares?.period ?? r.key,
     type: noteKV(r.note).type ?? r.note,
-    shares: n0(r.fields.lockup_shares),
-    able_shares: n0(r.fields.lockup_able_shares),
-    ratio: n0(r.fields.lockup_ratio),
+    shares: num(r.fields.lockup_shares),
+    able_shares: num(r.fields.lockup_able_shares),
+    ratio: num(r.fields.lockup_ratio),
   }));
   return {
     history: all.filter((x) => x.date < today),
@@ -1356,9 +1356,9 @@ export const api = {
     const e = await env("tx_quotes_batch");
     return rows(e).map((r) => ({
       name: str(r.fields.security_name),
-      price: n0(r.fields.price),
-      change_pct: n0(r.fields.change_pct),
-      change_amt: n0(r.fields.price) - n0(r.fields.last_close),
+      price: num(r.fields.price),
+      change_pct: num(r.fields.change_pct),
+      change_amt: subtract(num(r.fields.price), num(r.fields.last_close)),
     }));
   },
 
@@ -1368,12 +1368,12 @@ export const api = {
       .map((r, i) => ({
         rank: i + 1,
         name: r.note.replace(/^\S+\s/, "") || r.key,
-        change_pct: n0(r.fields.industry_board_change_pct),
+        change_pct: num(r.fields.industry_board_change_pct),
         code: r.key,
-        up_count: n0(r.fields.industry_board_up_count),
-        down_count: n0(r.fields.industry_board_down_count),
+        up_count: num(r.fields.industry_board_up_count),
+        down_count: num(r.fields.industry_board_down_count),
       }))
-      .sort((a, b) => b.change_pct - a.change_pct)
+      .sort((a, b) => descNullable(a.change_pct, b.change_pct))
       .map((x, i) => ({ ...x, rank: i + 1 }));
     return { top: all.slice(0, top), bottom: all.slice(-top).reverse(), total: all.length };
   },

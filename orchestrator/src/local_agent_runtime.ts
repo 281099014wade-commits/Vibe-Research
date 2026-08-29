@@ -6,7 +6,7 @@
  * Open Design 对 Qwen / DeepSeek 使用自动批准模式；本产品的对话通道承诺“无本地工具”，
  * 所以在没有等价的禁工具调用方式与实测之前，不能照搬后把按钮点亮。
  */
-import { execFile, spawn } from "node:child_process";
+import { execFile, spawn, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -39,6 +39,16 @@ const CODEX_LOGIN_TIMEOUT_MS = 10 * 60 * 1_000;
 const CODEX_LOGIN_FAILURE_TTL_MS = 60 * 1_000;
 const codexLoginJobs = new Map<string, CodexLoginProgress>();
 
+/** Windows 没有 POSIX 进程组；taskkill /T 是对应的整棵进程树终止语义。 */
+function signalProcessTree(child: { pid?: number; kill: (signal?: NodeJS.Signals) => boolean }, signal: NodeJS.Signals): void {
+  try {
+    if (process.platform === "win32" && child.pid) {
+      spawnSync("taskkill.exe", ["/PID", String(child.pid), "/T", ...(signal === "SIGKILL" ? ["/F"] : [])], { windowsHide: true, stdio: "ignore" });
+    } else if (child.pid) process.kill(-child.pid, signal);
+    else child.kill(signal);
+  } catch { /* 整棵已经退出 */ }
+}
+
 function codexHomeKey(codexHome: string): string {
   return path.resolve(codexHome);
 }
@@ -66,7 +76,7 @@ export function startCodexLogin(
     throw new LocalAgentError("agent_not_installed", "产品自带的 Codex 引擎不存在");
   }
   try {
-    fs.accessSync(bin, fs.constants.X_OK);
+    fs.accessSync(bin, process.platform === "win32" ? fs.constants.F_OK : fs.constants.X_OK);
   } catch {
     throw new LocalAgentError("agent_start_failed", "产品自带的 Codex 引擎无法启动");
   }
@@ -77,8 +87,10 @@ export function startCodexLogin(
   const progress: CodexLoginProgress = { state: "pending", startedAt: Date.now() };
   codexLoginJobs.set(key, progress);
 
-  const child = spawn(bin, ["login"], {
-    env: { ...env, CODEX_HOME: key },
+  const runEnv = { ...env, CODEX_HOME: key };
+  const launch = executableInvocation(bin, ["login"], runEnv);
+  const child = spawn(launch.file, launch.args, {
+    env: runEnv,
     stdio: "ignore",
     shell: false,
     detached: process.platform !== "win32",
@@ -96,10 +108,7 @@ export function startCodexLogin(
     codexLoginJobs.set(key, { ...progress, state: "failed", finishedAt: Date.now() });
   };
   const signalTree = (signal: NodeJS.Signals) => {
-    try {
-      if (process.platform !== "win32" && child.pid) process.kill(-child.pid, signal);
-      else child.kill(signal);
-    } catch { /* 整组已经退出 */ }
+    signalProcessTree(child, signal);
   };
   const processTreeAlive = (): boolean => {
     if (process.platform === "win32") return child.exitCode === null;
@@ -151,14 +160,16 @@ export async function probeCodex(
   }
   let version: string | null = null;
   try {
-    const v = await execFileAsync(bin, ["--version"], { env, timeout: 5_000, maxBuffer: 64 * 1024 });
+    const versionCall = executableInvocation(bin, ["--version"], env);
+    const v = await execFileAsync(versionCall.file, versionCall.args, { env, timeout: 5_000, maxBuffer: 64 * 1024 });
     version = oneLine(v.stdout);
   } catch {
     return { provider: "cli-codex", name: "Codex", installed: true, authenticated: false, available: false,
       version: null, status: "probe_failed", detail: "Codex 已安装，但版本检测失败" };
   }
   try {
-    await execFileAsync(bin, ["login", "status"], {
+    const statusCall = executableInvocation(bin, ["login", "status"], { ...env, CODEX_HOME: codexHome });
+    await execFileAsync(statusCall.file, statusCall.args, {
       env: { ...env, CODEX_HOME: codexHome }, timeout: 5_000, maxBuffer: 64 * 1024,
     });
     return { provider: "cli-codex", name: "Codex", installed: true, authenticated: true, available: true,
@@ -199,22 +210,52 @@ const EXTRA_PATH_DIRS = [
   path.join(os.homedir(), ".local/share/pnpm"),
 ];
 
+function executableDirs(env: NodeJS.ProcessEnv, platform: NodeJS.Platform): string[] {
+  return [...(platform === "win32" ? [] : EXTRA_PATH_DIRS),
+    env.APPDATA ? path.join(env.APPDATA, "npm") : "",
+    env.LOCALAPPDATA ? path.join(env.LOCALAPPDATA, "Programs") : "",
+    env.USERPROFILE ? path.join(env.USERPROFILE, "AppData", "Roaming", "npm") : "",
+  ].filter(Boolean);
+}
+
 /** GUI 启动时 PATH 往往比终端短；按 OD 的做法补常见全局安装目录。 */
-export function findExecutable(bin: string, env: NodeJS.ProcessEnv = process.env): string | null {
+export function findExecutable(bin: string, env: NodeJS.ProcessEnv = process.env, platform: NodeJS.Platform = process.platform): string | null {
   const override = bin === "claude" ? String(env.CLAUDE_BIN ?? "").trim() : "";
-  const candidates = override
-    ? [override]
-    : [...new Set(String(env.PATH ?? "").split(path.delimiter).concat(EXTRA_PATH_DIRS).filter(Boolean))]
-      .map((dir) => path.join(dir, bin));
+  const extensions = platform === "win32"
+    ? [...new Set([".exe", ".ps1", ".cmd", ".bat", "", ...String(env.PATHEXT ?? "").split(";").map((x) => x.toLowerCase()).filter(Boolean)])]
+    : [""];
+  const delimiter = platform === "win32" ? ";" : path.delimiter;
+  const candidates = override ? [override] : [...new Set(String(env.PATH ?? "").split(delimiter).concat(executableDirs(env, platform)).filter(Boolean))]
+    .flatMap((dir) => extensions.map((ext) => path.join(dir, `${bin}${ext}`)));
   for (const candidate of candidates) {
     try {
-      fs.accessSync(candidate, fs.constants.X_OK);
-      if (fs.statSync(candidate).isFile()) return candidate;
+      // npm 在 Windows 通常同时生成 claude.cmd 与 claude.ps1。优先返回可由
+      // powershell.exe -File 安全传参的 ps1；不要把含提示词的 argv 拼进 cmd.exe 命令串。
+      const ext = path.extname(candidate).toLowerCase();
+      const ps1 = platform === "win32" && [".cmd", ".bat"].includes(ext) ? candidate.slice(0, -ext.length) + ".ps1" : candidate;
+      fs.accessSync(ps1, platform === "win32" ? fs.constants.F_OK : fs.constants.X_OK);
+      if (fs.statSync(ps1).isFile()) return ps1;
     } catch {
       // 继续找下一处；设置页会把“未安装”说清楚。
     }
   }
   return null;
+}
+
+export function executableInvocation(
+  bin: string, args: string[], env: NodeJS.ProcessEnv = process.env, platform: NodeJS.Platform = process.platform,
+): { file: string; args: string[] } {
+  if (platform !== "win32") return { file: bin, args };
+  const ext = path.extname(bin).toLowerCase();
+  if (ext !== ".ps1") {
+    if ([".cmd", ".bat"].includes(ext)) throw new LocalAgentError("agent_start_failed", "Windows CLI 缺少安全的 PowerShell 启动器");
+    return { file: bin, args };
+  }
+  const windowsRoot = env.SystemRoot ?? env.SYSTEMROOT ?? env.WINDIR;
+  const powershell = windowsRoot
+    ? path.win32.join(windowsRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe")
+    : "powershell.exe";
+  return { file: powershell, args: ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", bin, ...args] };
 }
 
 function oneLine(value: unknown): string | null {
@@ -250,9 +291,11 @@ export async function probeClaude(env: NodeJS.ProcessEnv = process.env): Promise
   const runEnv = subscriptionEnv(env);
   let version: string | null = null;
   try {
-    const v = await execFileAsync(bin, ["--version"], { env: runEnv, timeout: 5_000, maxBuffer: 64 * 1024 });
+    const versionCall = executableInvocation(bin, ["--version"], runEnv);
+    const v = await execFileAsync(versionCall.file, versionCall.args, { env: runEnv, timeout: 5_000, maxBuffer: 64 * 1024 });
     version = oneLine(v.stdout);
-    const h = await execFileAsync(bin, ["--help"], { env: runEnv, timeout: 5_000, maxBuffer: 128 * 1024 });
+    const helpCall = executableInvocation(bin, ["--help"], runEnv);
+    const h = await execFileAsync(helpCall.file, helpCall.args, { env: runEnv, timeout: 5_000, maxBuffer: 128 * 1024 });
     const help = String(h.stdout);
     if (!REQUIRED_CLAUDE_FLAGS.every((flag) => help.includes(flag))) {
       return {
@@ -267,7 +310,8 @@ export async function probeClaude(env: NodeJS.ProcessEnv = process.env): Promise
     };
   }
   try {
-    const a = await execFileAsync(bin, ["auth", "status"], { env: runEnv, timeout: 5_000, maxBuffer: 64 * 1024 });
+    const authCall = executableInvocation(bin, ["auth", "status"], runEnv);
+    const a = await execFileAsync(authCall.file, authCall.args, { env: runEnv, timeout: 5_000, maxBuffer: 64 * 1024 });
     const authenticated = parseAuthStatus(String(a.stdout));
     return {
       provider: "cli-claude", name: "Claude Code", installed: true, authenticated,
@@ -369,9 +413,11 @@ export async function runLocalAgent(agent: LocalAgentId, opts: RunLocalAgentOpti
   activeLocalAgents += 1;
 
   return await new Promise<string>((resolve, reject) => {
-    const child = spawn(bin, claudeArgs(opts.systemPrompt, opts.outputSchema), {
+    const runEnv = subscriptionEnv(baseEnv);
+    const launch = executableInvocation(bin, claudeArgs(opts.systemPrompt, opts.outputSchema), runEnv);
+    const child = spawn(launch.file, launch.args, {
       cwd: tmpDir,
-      env: subscriptionEnv(baseEnv),
+      env: runEnv,
       stdio: ["pipe", "pipe", "pipe"],
       // POSIX 下创建独立进程组。Claude CLI 可能继续派生 node / shell 子进程；
       // 只杀直接 child 会让后代留在后台继续消耗订阅额度。
@@ -400,10 +446,7 @@ export async function runLocalAgent(agent: LocalAgentId, opts: RunLocalAgentOpti
       fn();
     };
     const signalTree = (signal: NodeJS.Signals) => {
-      try {
-        if (process.platform !== "win32" && child.pid) process.kill(-child.pid, signal);
-        else child.kill(signal);
-      } catch { /* 整组已经退出 */ }
+      signalProcessTree(child, signal);
     };
     const processTreeAlive = (): boolean => {
       if (process.platform === "win32") return child.exitCode === null;

@@ -56,6 +56,35 @@ test("条件齐备后真实调用工具，并用工具返回生成完整报告",
   assert.deepEqual(calls, [{ action: "catalog" }, { start: "2020-01-01" }]);
 });
 
+test("工具声明的强制披露由服务端确定性附加，不能依赖模型自觉", async () => {
+  const chats = [model("ready"), model("complete", { document: "## 核心结果\n\n模型漏写了口径。" })];
+  const deps: GuidedToolDeps = {
+    chat: async () => ({ session: "x", reply: chats.shift()!, redacted: 0, duration_ms: 1 }),
+    runTool: async (_name, body) => (body as { action?: string }).action === "catalog"
+      ? { ok: true, catalog: {} }
+      : { ok: true, result: { required_disclosures: ["本次基准是所测标的自身的等权买入持有，不是独立外部基准。"] } },
+  };
+  const out = await guidedToolTurn(opts, req, deps);
+  assert.match(out.report ?? "", /## 工具口径披露/);
+  assert.match(out.report ?? "", /不是独立外部基准/);
+});
+
+test("模型把强制披露藏进 HTML 注释时，服务端仍追加可见披露", async () => {
+  const disclosure = "本次基准是所测标的自身的等权买入持有，不是独立外部基准。";
+  const chats = [model("ready"), model("complete", {
+    document: `## 核心结果\n\n结果正文。\n\n<!-- ${disclosure} -->`,
+  })];
+  const deps: GuidedToolDeps = {
+    chat: async () => ({ session: "x", reply: chats.shift()!, redacted: 0, duration_ms: 1 }),
+    runTool: async (_name, body) => (body as { action?: string }).action === "catalog"
+      ? { ok: true, catalog: {} }
+      : { ok: true, result: { required_disclosures: [disclosure] } },
+  };
+  const out = await guidedToolTurn(opts, req, deps);
+  assert.match(out.report ?? "", /## 工具口径披露\n\n- 本次基准/);
+  assert.equal((out.report ?? "").split(disclosure).length - 1, 2, "注释里的文本不能让可见披露消失");
+});
+
 test("工具拒绝时回到补问，不伪装成完成", async () => {
   const chats = [model("ready"), model("needs_input", { message: "样本太短，请扩大时间范围。" })];
   const deps: GuidedToolDeps = {

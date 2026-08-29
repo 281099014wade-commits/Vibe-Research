@@ -4,6 +4,20 @@
 
 ## [Unreleased]
 
+- 新增 Windows 11 原生支持，不依赖 WSL：提供 PowerShell/CMD 初始化、体检和一键启动入口，补齐
+  Windows venv、PATH/PATHEXT、用户目录、临时目录、DNS 探针、进程树终止和文件打开语义。
+- Windows 六阶段研究采用受控 MCP 执行层：关闭 Shell、unified exec、图片读取、子代理、插件、应用和
+  联网搜索，线程只读，只能读取净化后的运行产物、调用确定性 calc、写当前阶段 JSON 与最终报告。
+  该设计绕开上游 native Windows PowerShell lifecycle hook 尚不完整的问题，同时保留编排器与 validator
+  的机器校验边界；macOS/Linux 继续走既有 hooks 链路。
+- 新增 `windows-latest` / `macos-latest` / `ubuntu-latest` CI 矩阵；orchestrator 新增 Windows 路径、
+  环境、只读线程、受控工具读写、NTFS 私密 ACL 与真实 calc 回归，当前 **537 项**（本机 536 通过 + 1 项 Windows 专项跳过），Core 行业词仍为 0。
+- 开源版审计修复：研报索引升级到 v2，收紧 A 股代码识别并支持公司名召回；删除板块页写死的
+  `300308`；缺失行情不再伪装成 0，二十日资金流只有数据完整时才合计，官网 Star 获取失败显示未知。
+- 合规 gate 补齐常见动作建议与个股评级赋予语境，同时保留机构评级篇数统计；回测工具把自标的基准和
+  换手不足口径作为服务端强制可见披露，不能由模型省略或藏进 HTML 注释。
+- 最终验证：orchestrator **537 项**（536 通过、1 项平台跳过）、desktop **25/25**、Python **571/571**；
+  两端类型检查与前端生产构建通过，联网体检 **20/20**，Codex 收敛复审无可操作 P1/P2。
 - 重建 [viberesearch.wiki](https://viberesearch.wiki) 官方网站，主叙事升级为“基于 OpenAI Codex Harness
   打造的本地金融研究 Agent”，并展示当前工作台、模型接入、回测 Agent、研报库与证据纪律。
 - 官网源码迁入 `website/`，中英文 README 恢复官网入口；Release 链接使用稳定的 `releases/latest`，

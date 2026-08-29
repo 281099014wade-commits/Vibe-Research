@@ -1,7 +1,65 @@
 /** 文件工具:原子写入(临时文件 → fsync → 替换)、sha256、JSON 读写、追加 JSONL。*/
 import { createHash } from "node:crypto";
+import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
+
+/** O_NOFOLLOW 在 Windows 不受支持；Windows 路径由 safePath/lstat 的逐级链接检查保护。 */
+export const NOFOLLOW_FLAG = process.platform === "win32" ? 0 : fs.constants.O_NOFOLLOW;
+
+const WINDOWS_PRIVATE_ACL = String.raw`
+$ErrorActionPreference = "Stop"
+$file = $env:VRA_PRIVATE_FILE
+$sid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User
+$acl = New-Object System.Security.AccessControl.FileSecurity
+$acl.SetOwner($sid)
+$acl.SetAccessRuleProtection($true, $false)
+$rule = New-Object System.Security.AccessControl.FileSystemAccessRule($sid, [System.Security.AccessControl.FileSystemRights]::FullControl, [System.Security.AccessControl.AccessControlType]::Allow)
+$acl.AddAccessRule($rule)
+Set-Acl -LiteralPath $file -AclObject $acl
+`;
+
+const WINDOWS_CHECK_ACL = String.raw`
+$ErrorActionPreference = "Stop"
+$file = $env:VRA_PRIVATE_FILE
+$sid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+$acl = Get-Acl -LiteralPath $file
+if (-not $acl.AreAccessRulesProtected) { exit 3 }
+foreach ($rule in $acl.Access) {
+  if ($rule.AccessControlType -eq [System.Security.AccessControl.AccessControlType]::Allow) {
+    $ruleSid = $rule.IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]).Value
+    if ($ruleSid -ne $sid) { exit 4 }
+  }
+}
+exit 0
+`;
+
+function windowsAcl(script: string, file: string): { status: number | null; error?: Error } {
+  const result = spawnSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script], {
+    env: { ...process.env, VRA_PRIVATE_FILE: path.resolve(file) }, encoding: "utf8", windowsHide: true, timeout: 10_000,
+  });
+  return { status: result.status, error: result.error };
+}
+
+/** Windows 的 mode 0600 不会改变 NTFS DACL；敏感文件必须显式断开继承并只授权当前 SID。 */
+export function restrictPrivateFile(file: string): void {
+  if (process.platform !== "win32") { fs.chmodSync(file, 0o600); return; }
+  const result = windowsAcl(WINDOWS_PRIVATE_ACL, file);
+  if (result.error || result.status !== 0) throw new Error(`无法收紧 Windows 文件权限(${result.error?.message ?? `exit ${result.status}`})`);
+}
+
+export function privateFilePermissions(file: string): { secure: boolean; detail: string } {
+  if (process.platform !== "win32") {
+    const mode = fs.statSync(file).mode & 0o777;
+    return { secure: (mode & 0o077) === 0, detail: `mode ${mode.toString(8)}` };
+  }
+  const result = windowsAcl(WINDOWS_CHECK_ACL, file);
+  if (result.error) return { secure: false, detail: `Windows ACL 检查失败:${result.error.message}` };
+  if (result.status === 0) return { secure: true, detail: "Windows ACL 已断开继承，仅当前用户 SID 可读写" };
+  if (result.status === 3) return { secure: false, detail: "Windows ACL 仍在继承父目录权限" };
+  if (result.status === 4) return { secure: false, detail: "Windows ACL 还授权了其他账户" };
+  return { secure: false, detail: `Windows ACL 检查异常(exit ${result.status})` };
+}
 
 export function sha256File(p: string): string {
   return createHash("sha256").update(fs.readFileSync(p)).digest("hex");

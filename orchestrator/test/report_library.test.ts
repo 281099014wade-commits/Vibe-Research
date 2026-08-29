@@ -127,6 +127,39 @@ test("A股 / 港股 / 美股代码都能成为归档与对话检索键", async (
   assert.ok(reportsForSymbol(root, "NVDA")?.hits.some((x) => x.id === us.id));
 });
 
+test("普通六位业务数字不能冒充 A 股代码；只有公司名的研报仍能按主体召回", async () => {
+  const root = tmp();
+  const macro = await addReport(root, {
+    name: "电力行业月报.md",
+    content: b64(Buffer.from("本月新增并网装机 300308 千瓦，累计利用小时 128900。")),
+  });
+  const company = await addReport(root, {
+    name: "中际旭创跟踪笔记.txt",
+    content: b64(Buffer.from("中际旭创的高速光模块订单与产能跟踪。")),
+  });
+  assert.deepEqual(macro.symbols, [], "单位前的六位数字不是证券代码");
+  assert.deepEqual(company.symbols, [], "正文没有明确代码时不应猜代码");
+  const recalled = reportsForSymbol(root, "300308", { companyName: "中际旭创" });
+  assert.ok(recalled?.hits.some((x) => x.id === company.id), "公司名必须参与无代码研报的召回");
+  assert.ok(!recalled?.hits.some((x) => x.id === macro.id), "业务数字相同的无关报告不能被召回");
+});
+
+test("旧版索引会按新规则重建代码标签，精确召回也不会混入正文偶遇同号的报告", async () => {
+  const root = tmp();
+  const exact = await addReport(root, { name: "300308-公司报告.md", content: b64(Buffer.from("公司代码：300308，收入增长。")) });
+  const macro = await addReport(root, { name: "行业统计.md", content: b64(Buffer.from("新增装机 300308 千瓦。")) });
+  const manifest = path.join(root, "knowledge", "reports", "manifest.json");
+  const old = JSON.parse(fs.readFileSync(manifest, "utf8"));
+  old.schema_version = 1;
+  old.reports.find((r: { id: string }) => r.id === macro.id).symbols = ["300308"];
+  fs.writeFileSync(manifest, JSON.stringify(old));
+  const records = listReports(root);
+  assert.deepEqual(records.find((r) => r.id === macro.id)?.symbols, []);
+  assert.equal(JSON.parse(fs.readFileSync(manifest, "utf8")).schema_version, 2);
+  const recalled = reportsForSymbol(root, "300308");
+  assert.deepEqual(recalled?.hits.map((x) => x.id), [exact.id]);
+});
+
 test("研报目录里的符号链接不能把上传写到用户数据根之外", async () => {
   const root = tmp();
   const outside = tmp();

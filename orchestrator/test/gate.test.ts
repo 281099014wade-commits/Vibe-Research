@@ -71,6 +71,21 @@ test("gate 正则规则:审计列出的绕过说法必须全拦,真实语料零�
   }
 });
 
+test("开源审计补充:常见建议话术全拦，机构评级分布在最终报告中放行", () => {
+  const blocked = [
+    "建议减持", "维持买入", "重点推荐", "建议超配", "可以低吸", "介入位置 80 元",
+    "具有配置价值", "适合中长期持有", "现在可以上车", "这是首选标的", "可择机参与",
+    "给予该公司买入评级", "建议给予增持评级", "维持卖出评级",
+    "中际旭创：首次覆盖，买入评级", "对该公司评级为买入", "中际旭创：买入评级",
+    "中际旭创获减持评级", "对中际旭创给出减持评级", "中际旭创被评为减持评级",
+  ];
+  for (const text of blocked) assert.equal(complianceGate(text).ok, false, `应被拦:${text}`);
+  const ratingDistribution = "近一年机构报告 38 篇，其中买入评级 31 篇、增持评级 7 篇；仅作覆盖分布线索。";
+  assert.equal(complianceGate(ratingDistribution).ok, true, "合法的机构评级统计不应被最终报告 gate 误拦");
+  assert.equal(complianceGate("机构评级：买入评级 31 篇、增持评级 7 篇。 ").ok, true, "标题式聚合统计也应合法");
+  assert.equal(complianceGate("近一年机构评级为买入 31 篇、增持评级 7 篇。 ").ok, true, "赋值式聚合统计也应合法");
+});
+
 test("阶段产物 gate:词表收窄后既拦得住建议、又放得过免责与统计(全审 r3-P1-2)", () => {
   const sub = gateStagePatterns();
   assert.ok(!sub.includes("目标价") && !sub.includes("止损"), "会出现在'提及'语境的词必须去掉");

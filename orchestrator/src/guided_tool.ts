@@ -131,6 +131,23 @@ function parseArgs(text: string): Record<string, unknown> {
   return raw;
 }
 
+function requiredDisclosures(toolResult: unknown): string[] {
+  if (!object(toolResult) || !object(toolResult.result)) return [];
+  const raw = toolResult.result.required_disclosures;
+  if (raw === undefined) return [];
+  if (!Array.isArray(raw) || raw.length > 12 || !raw.every((x) => typeof x === "string" && x.trim().length > 0 && x.trim().length <= 500)) {
+    throw new GuidedToolError("bad_tool_result", "工具返回的强制披露格式不合法");
+  }
+  return [...new Set(raw.map((x) => x.trim()))];
+}
+
+function appendRequiredDisclosures(document: string, disclosures: readonly string[]): string {
+  if (!disclosures.length) return document;
+  // 工具声明的口径必须由服务端放进可见正文。不能用 includes 去重：模型可能把同一句
+  // 藏进 HTML 注释、代码块或别的不可见位置，从而绕过披露。
+  return `${document.trim()}\n\n## 工具口径披露\n\n${disclosures.map((line) => `- ${line}`).join("\n")}`;
+}
+
 async function ask(
   opts: { repoRoot: string; dataRoot?: string; python?: string; signal?: AbortSignal },
   session: string,
@@ -181,19 +198,25 @@ export async function guidedToolTurn(
   const args = parseArgs(first.tool_args_json);
   const toolResult = await deps.runTool(req.name, args);
   const explicitFailure = object(toolResult) && toolResult.ok === false;
+  const disclosures = explicitFailure ? [] : requiredDisclosures(toolResult);
+  const disclosureInstruction = disclosures.length
+    ? `\n【必须逐字披露】\n${disclosures.map((line) => `- ${line}`).join("\n")}`
+    : "";
   const follow = explicitFailure
     ? `【工具没有完成任务】\n${safeJson(toolResult, "工具返回")}\n请解释原因并追问修正所需的信息，status 必须是 needs_input。`
-    : `【工具已执行，以下是唯一可用的真实结果】\n${safeJson(toolResult, "工具返回")}\n请据此完成报告，status 必须是 complete。`;
+    : `【工具已执行，以下是唯一可用的真实结果】\n${safeJson(toolResult, "工具返回")}${disclosureInstruction}\n请据此完成报告，status 必须是 complete。`;
   const second = await ask(opts, threadSession, follow, context, req.llm, deps);
   assertVisible(second.message);
   if (explicitFailure) {
     if (second.status !== "needs_input") throw new GuidedToolError("bad_agent_state", "工具拒绝后 Agent 没有回到补问状态");
     return { status: "needs_input", message: second.message };
   }
-  if (second.status !== "complete" || !second.document || second.document.length > MAX_REPORT) {
+  if (second.status !== "complete" || !second.document) {
     throw new GuidedToolError("bad_agent_output", "工具完成后 Agent 没有生成完整报告");
   }
-  assertVisible(second.document);
+  const document = appendRequiredDisclosures(second.document, disclosures);
+  if (document.length > MAX_REPORT) throw new GuidedToolError("bad_agent_output", "工具完成后的报告过长");
+  assertVisible(document);
   return {
     status: "complete",
     message: second.message,
@@ -201,7 +224,7 @@ export async function guidedToolTurn(
     question: first.question,
     hypothesis: first.hypothesis,
     logic: first.logic,
-    report: second.document,
+    report: document,
     tool_result: toolResult,
   };
 }

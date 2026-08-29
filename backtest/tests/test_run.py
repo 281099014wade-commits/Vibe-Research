@@ -13,6 +13,7 @@ sys.path.insert(0, ROOT)
 from backtest.gate import plan_backtest  # noqa: E402
 from backtest.loader import SymbolProvenance  # noqa: E402
 from backtest.run import Result, run  # noqa: E402
+from backtest.cli import _result_view  # noqa: E402
 
 PLAN = plan_backtest(codes=["600519.SH"], start="2021-01-01", end="2025-12-31", style="long")
 BASE = dict(total_return=0.1, annual_return=0.02, max_drawdown=-0.3, sharpe=0.5,
@@ -38,6 +39,18 @@ def test_self_benchmark_is_labelled_as_such():
     名字叫 benchmark，不说清楚就会被当成沪深300 / 标普 —— 那是完全不同的结论。"""
     text = make({"benchmark_return": -0.24}).summary()
     assert "-24.00%" in text and "不是指数" in text
+
+
+def test_agent_result_forces_self_benchmark_and_cash_drag_disclosures():
+    view = _result_view(make({"benchmark_return": -0.24, "total_turnover": 0.874}))
+    lines = view["required_disclosures"]
+    assert any("不是独立外部基准" in line for line in lines)
+    assert any("总换手率为 0.874" in line and "未投入现金" in line for line in lines)
+
+
+def test_external_benchmark_and_full_turnover_do_not_claim_those_limitations():
+    view = _result_view(make({"benchmark_return": -0.1, "benchmark_ticker": "000300.SH", "total_turnover": 1.2}))
+    assert view["required_disclosures"] == []
 
 
 def test_real_index_benchmark_is_named():

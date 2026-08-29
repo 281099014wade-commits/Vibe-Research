@@ -79,7 +79,8 @@ test("硬测试注入 applyVoiceInjection:只追加本脚本的条目、文本�
   assert.deepEqual(applyVoiceInjection({ symbol: "300308", market: "SZ" }, scenario, "exa_market_voice", file), ids);
   assert.deepEqual(applyVoiceInjection({ symbol: "300308", market: "SZ" }, {}, "exa_market_voice", file), []);
   assert.deepEqual(applyVoiceInjection({ symbol: "300308", market: "SZ" }, scenario, "exa_market_voice", path.join(d, "nope.json")), []);
-  assert.equal(neutralizeActions("减持评级 增持 目标价"), "〔动作词〕 增持 〔动作词〕", "裸词「增持」是公司行为事实,不是动作措辞");
+  assert.equal(neutralizeActions("减持评级 增持 目标价"), "减持评级 增持 〔动作词〕",
+    "评级分布与公司行为都是事实语境，只有目标价这类动作措辞需要脱敏");
 });
 
 test("附录链接列 linkOf:从 note 的 link=… 取原文链接(到分号止),没有则空;报告正文不贴 URL、靠附录点回原帖", () => {

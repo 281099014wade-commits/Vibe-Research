@@ -62,6 +62,14 @@ test("🔴 声明里引用的端点必须真的存在于注册表(否则整块�
   if (pc) assert.ok(known.has(pc.endpoint), `pageContext 引用了不存在的端点 ${pc.endpoint}`);
 });
 
+test("页面查询声明不能暗中绑定某一只示例标的", () => {
+  for (const [name, def] of Object.entries(currentPlugin().pageQueries ?? {})) {
+    for (const block of def.blocks) {
+      assert.equal(block.symbol, undefined, `${name}.${block.id} 不应硬编码示例标的 ${block.symbol}`);
+    }
+  }
+});
+
 test("🔴 上下文注入是**按块**的:不吃那个参数的端点不许被硬塞(第一版就是这么把一屏全弄 missing 的)", () => {
   // 🔴 用**代码真正用的那把尺子**(assertArgs),不要自己按注册表的 `args` 推 ——
   //    那个字段是**默认值**不是**允许集**(允许集还含 GLOBAL_ARG_KEYS)。
