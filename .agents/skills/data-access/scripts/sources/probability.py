@@ -130,6 +130,22 @@ def classify(question: Optional[str], kalshi_category: Optional[str] = None) -> 
     return _KALSHI_CAT.get(kalshi_category or "", "其他")
 
 
+def _polymarket_module(row: dict, title: str) -> str:
+    """Polymarket 行先认结构化市场类型，再退回标题分类。
+
+    球队名可能包含别的关键词，例如 ``Borussia`` 内含 ``russia``。只看标题子串会把
+    德甲比赛误归为地缘政治。sportsMarketType / gameStartTime / event.gameId 是上游给出的
+    明确体育标记，优先级必须高于标题启发式。
+    """
+    events = row.get("events")
+    has_game = isinstance(events, list) and any(
+        isinstance(event, dict) and event.get("gameId") is not None for event in events
+    )
+    if row.get("sportsMarketType") or row.get("gameStartTime") or has_game:
+        return "体育"
+    return classify(title)
+
+
 class ProbabilityError(RuntimeError):
     pass
 
@@ -387,7 +403,7 @@ def _poly_shape(rows: list, today: str, dropped: dict, out: list, raw_ref: Optio
         if not isinstance(m, dict):
             continue
         title = str(m.get("question") or "")
-        mod = classify(title)
+        mod = _polymarket_module(m, title)
         if mod not in CORE_MODULES:
             continue
         # 🔴 不能直接拿 `outcomePrices[0]` 当"该事件的概率":`outcomes` 顺序**不保证**是 ["Yes","No"],

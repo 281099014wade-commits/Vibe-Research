@@ -4,6 +4,11 @@
 
 ## [Unreleased]
 
+## [1.0.1] - 2026-08-30
+
+V1.0.1 是 Windows 与公开 Issue 收口版本：补齐 Windows 原生 PowerShell/CMD 接入和受控研究执行层，
+合并 Claude Code 对开源版的审计整改，并复核仓库全部未关闭 Issue。
+
 - 新增 Windows 11 原生支持，不依赖 WSL：提供 PowerShell/CMD 初始化、体检和一键启动入口，补齐
   Windows venv、PATH/PATHEXT、用户目录、临时目录、DNS 探针、进程树终止和文件打开语义。
 - Windows 六阶段研究采用受控 MCP 执行层：关闭 Shell、unified exec、图片读取、子代理、插件、应用和
@@ -11,8 +16,8 @@
   该设计绕开上游 native Windows PowerShell lifecycle hook 尚不完整的问题，同时保留编排器与 validator
   的机器校验边界；macOS/Linux 继续走既有 hooks 链路。
 - 新增 `windows-latest` / `macos-latest` / `ubuntu-latest` CI 矩阵；orchestrator 新增 Windows 路径、
-  环境、只读线程、受控工具读写、NTFS 私密 ACL、JSON 账本路径与真实 calc 回归，当前 **538 项**
-  （本机 537 通过 + 1 项 Windows 专项跳过），Core 行业词仍为 0。Windows 还会以两个真实 Python
+  环境、只读线程、受控工具读写、NTFS 私密 ACL、JSON 账本路径与真实 calc 回归，当前 **539 项**
+  （本机 538 通过 + 1 项 Windows 专项跳过），Core 行业词仍为 0。Windows 还会以两个真实 Python
   进程验证东财请求锁确实互斥；Unix 跑完整 orchestrator 套件，Windows 跑平台契约与全量 Python 回归。
   Windows CI 统一以 UTF-8 解码 Python 的 JSON 管道，Node 动态加载的测试路径改为标准 `file://` URI。
   PowerShell 入口保留 UTF-8 BOM，兼容 Windows PowerShell 5.1 对中文脚本的编码识别。
@@ -20,12 +25,20 @@
   `300308`；缺失行情不再伪装成 0，二十日资金流只有数据完整时才合计，官网 Star 获取失败显示未知。
 - 合规 gate 补齐常见动作建议与个股评级赋予语境，同时保留机构评级篇数统计；回测工具把自标的基准和
   换手不足口径作为服务端强制可见披露，不能由模型省略或藏进 HTML 注释。
-- 最终验证：orchestrator **538 项**（537 通过、1 项平台跳过）、desktop **25/25**、Python **572/572**；
+- 最终验证：orchestrator **539 项**（538 通过、1 项平台跳过）、desktop **25/25**、Python **575/575**；
   两端类型检查与前端生产构建通过，联网体检 **20/20**，Codex 收敛复审无可操作 P1/P2。
 - 重建 [viberesearch.wiki](https://viberesearch.wiki) 官方网站，主叙事升级为“基于 OpenAI Codex Harness
   打造的本地金融研究 Agent”，并展示当前工作台、模型接入、回测 Agent、研报库与证据纪律。
 - 官网源码迁入 `website/`，中英文 README 恢复官网入口；Release 链接使用稳定的 `releases/latest`，
   具体版本号由 GitHub API 动态同步，避免后续发布时出现新旧版本并存。
+- Issue #26：当前全球行情链在搜索接口返回空结构时会自动逐市场直查，美股与港股代码不再因搜索端点
+  异常整块失效；新增搜索空结果和港股短码回归测试。
+- Issue #21：事件概率已接入 Kalshi + Polymarket 实时公开定价；修复 `Borussia` 命中 `russia` 导致
+  体育比赛被误分为地缘政治的问题，结构化体育元数据现在优先于标题子串。
+- Issue #20：API 与 MCP 继续从 `orchestrator/package.json` 读取唯一产品版本，并新增发布元数据一致性测试，
+  强制同步 orchestrator、desktop、两个 lockfile、中英文 README 徽章与 CHANGELOG。
+- Issue #16：旧版直接调用 PATH 中 Codex CLI 的链路已由产品隔离运行时替代；设置页可检测版本与登录状态、
+  启动官方 Codex 授权并执行真实“测试并保存”，失败返回受控且可行动的错误，不再只显示裸退出码。
 
 ## [1.0.0] - 2026-08-28
 

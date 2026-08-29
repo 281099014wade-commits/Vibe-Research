@@ -9,9 +9,9 @@
 
 <p align="center">
   <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-yellow"></a>
-  <img alt="Version" src="https://img.shields.io/badge/version-v1.0.0-F35D2B">
+  <img alt="Version" src="https://img.shields.io/badge/version-v1.0.1-F35D2B">
   <img alt="UI" src="https://img.shields.io/badge/UI-React%20%2B%20Vite-646cff">
-  <img alt="Orchestrator tests" src="https://img.shields.io/badge/orchestrator-538%20checks-passing">
+  <img alt="Orchestrator tests" src="https://img.shields.io/badge/orchestrator-539%20checks-passing">
   <img alt="Desktop tests" src="https://img.shields.io/badge/desktop-25%20tests-passing">
   <img alt="Codex Harness" src="https://img.shields.io/badge/runtime-Codex%20Harness-black">
 </p>
@@ -290,17 +290,17 @@ npm run build --prefix desktop
 
 当前验证基线：
 
-- orchestrator：**538 项**（本机 537 通过 + 1 项 Windows ACL 专项按平台跳过），Core 行业词 **0**，TypeScript 类型检查通过。
+- orchestrator：**539 项**（本机 538 通过 + 1 项 Windows ACL 专项按平台跳过），Core 行业词 **0**，TypeScript 类型检查通过。
 - desktop：**25/25**，TypeScript 类型检查与 Vite 生产构建通过。
-- Python（计算库、回测、数据脚本）：**572/572**。
-- V1.0.0 发布改动经 Codex 独立复审，末轮无可操作 P1/P2。
+- Python（计算库、回测、数据脚本）：**575/575**。
+- V1.0.1 发布改动经 Codex 独立复审，末轮无可操作 P1/P2。
 
 项目约定：每个环节完成后先测试，再做 Codex 独立审计、逐条核实、修复和复审；审计完成前不把
 该环节称为“建成”，也不提交或推送。
 
 ## 当前边界
 
-- V1.0.0 的交付形态是开源源码 + 本地浏览器 UI，需要分别启动本地 API 与浏览器界面。
+- V1.0.1 的交付形态是开源源码 + 本地浏览器 UI，需要分别启动本地 API 与浏览器界面。
 - MiMo API 已完成从空配置到真实业务报告的端到端验证；其他第三方模型仍需使用者自己的 key，
   没有真实跑过兼容矩阵的模板不会标成“已实测”。
 - Windows 11 原生支持已接入：PowerShell 初始化/启动脚本、Windows 路径与进程处理、受控研究工具链，

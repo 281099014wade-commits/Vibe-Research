@@ -32,6 +32,23 @@ def _poly_row(**kw):
     return base
 
 
+def test_polymarket_structured_sports_metadata_overrides_title_substrings():
+    """球队名 Borussia 内含 `russia`，纯子串分类会把德甲比赛误归为地缘政治。
+    Polymarket 已给出 sportsMarketType / gameStartTime，这类结构化体育标记必须优先。"""
+    out, dropped = [], {}
+    row = _poly_row(
+        question="Will BV Borussia 09 Dortmund win on 2026-08-29?",
+        endDate="2026-08-29",
+        outcomes='["Yes","No"]',
+        outcomePrices='["0.87","0.13"]',
+        sportsMarketType="moneyline",
+        gameStartTime="2026-08-29 16:30:00+00",
+        events=[{"gameId": 90118301, "seriesSlug": "bundesliga-2025"}],
+    )
+    P._poly_shape([row], TODAY, dropped, out, "raw/sports.json", "2026-08-24T12:00:00Z")
+    assert out == []
+
+
 def test_polymarket_takes_the_yes_leg_not_the_first_price():
     """🔴 `outcomes` 顺序**不保证**是 ["Yes","No"]。直接拿 `outcomePrices[0]` 当事件概率,
     顺序一反报出去的就是**反向概率** —— 一个静默的错误数字(Codex prob-r1 P1)。"""

@@ -9,9 +9,9 @@
 
 <p align="center">
   <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-yellow"></a>
-  <img alt="Version" src="https://img.shields.io/badge/version-v1.0.0-F35D2B">
+  <img alt="Version" src="https://img.shields.io/badge/version-v1.0.1-F35D2B">
   <img alt="UI" src="https://img.shields.io/badge/UI-React%20%2B%20Vite-646cff">
-  <img alt="Orchestrator tests" src="https://img.shields.io/badge/orchestrator-538%20checks-passing">
+  <img alt="Orchestrator tests" src="https://img.shields.io/badge/orchestrator-539%20checks-passing">
   <img alt="Desktop tests" src="https://img.shields.io/badge/desktop-25%20tests-passing">
   <img alt="Codex Harness" src="https://img.shields.io/badge/runtime-Codex%20Harness-black">
 </p>
@@ -305,17 +305,17 @@ npm run build --prefix desktop
 
 Current verified baseline:
 
-- orchestrator: **538 checks** (537 passed locally plus one Windows-only ACL check skipped off Windows), Core industry-term count **0**, TypeScript typecheck passed.
+- orchestrator: **539 checks** (538 passed locally plus one Windows-only ACL check skipped off Windows), Core industry-term count **0**, TypeScript typecheck passed.
 - desktop: **25/25**, TypeScript typecheck and Vite production build passed.
-- Python (calculation library, backtest, and data scripts): **572/572**.
-- The V1.0.0 release changes passed an independent Codex re-review with no actionable P1/P2 findings.
+- Python (calculation library, backtest, and data scripts): **575/575**.
+- The V1.0.1 release changes passed an independent Codex re-review with no actionable P1/P2 findings.
 
 Project rule: test each completed component, run an independent Codex review, verify every finding, fix valid issues,
 and re-review. A component is not described as complete and is not committed or pushed before that loop closes.
 
 ## Current boundaries
 
-- V1.0.0 is distributed as open-source code plus a local browser UI. The local API and browser UI are started separately.
+- V1.0.1 is distributed as open-source code plus a local browser UI. The local API and browser UI are started separately.
 - MiMo API has passed an end-to-end run from an empty configuration to a real business report. Other third-party
   providers still require the user's own keys and are not marked verified without real compatibility-matrix runs.
 - Native Windows 11 support includes PowerShell setup/start scripts, Windows path and process handling, and the

@@ -13,6 +13,29 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from sources import eastmoney  # noqa: E402
 
 
+def test_global_symbol_resolution_falls_back_when_search_returns_no_quotes(monkeypatch):
+    """Issue #26 回归：搜索接口返回空结构时，美股代码仍须逐市场直查，不能整块失效。"""
+    eastmoney._GLOBAL_SECID.clear()
+    monkeypatch.setattr(eastmoney, "stock_search", lambda *_a, **_k: [])
+    calls = []
+
+    def fake(_path, params=None, headers=None, timeout=None):
+        secid = (params or {}).get("secid")
+        calls.append(secid)
+        return {"data": {"f57": "AAPL", "f58": "Apple"}} if secid == "106.AAPL" else {"data": None}
+
+    monkeypatch.setattr(eastmoney, "_push2_json", fake)
+    assert eastmoney.resolve_global_secid("aapl", "US") == (106, "AAPL")
+    assert calls == ["105.AAPL", "106.AAPL"]
+
+
+def test_hk_short_symbol_resolution_does_not_depend_on_search(monkeypatch):
+    """Issue #26 回归：港股短码直接补足五位，不依赖全球搜索接口。"""
+    eastmoney._GLOBAL_SECID.clear()
+    monkeypatch.setattr(eastmoney, "stock_search", lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("不应调用搜索")))
+    assert eastmoney.resolve_global_secid("700", "HK") == (116, "00700")
+
+
 def test_cross_process_eastmoney_lock_serializes_on_this_platform(tmp_path):
     """两个真实 Python 进程同时起跑，临界区不得重叠（Windows 走 msvcrt，Unix 走 flock）。"""
     script = '''
