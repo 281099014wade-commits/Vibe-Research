@@ -11,6 +11,10 @@ jobs:
   test:
     env:
       VRA_PYTHON: python
+      # Python subprocesses emit UTF-8 JSON. Force the Windows test runner to
+      # decode pipes and default text files with the same encoding.
+      PYTHONUTF8: "1"
+      PYTHONIOENCODING: utf-8
     strategy:
       fail-fast: false
       matrix:
