@@ -2,11 +2,62 @@
 from __future__ import annotations
 
 import os
+import json
+from pathlib import Path
+import subprocess
 import sys
+import time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from sources import eastmoney  # noqa: E402
+
+
+def test_cross_process_eastmoney_lock_serializes_on_this_platform(tmp_path):
+    """两个真实 Python 进程同时起跑，临界区不得重叠（Windows 走 msvcrt，Unix 走 flock）。"""
+    script = '''
+import json
+from pathlib import Path
+import sys
+import time
+import common
+
+lock_file, ready_file, go_file, result_file = sys.argv[1:]
+common.EM_LOCK_PATH = lock_file
+common.EM_MIN_INTERVAL = 0
+Path(ready_file).write_text("ready", encoding="utf-8")
+while not Path(go_file).exists():
+    time.sleep(0.005)
+
+def critical():
+    started = time.monotonic()
+    time.sleep(0.3)
+    return {"started": started, "finished": time.monotonic()}
+
+Path(result_file).write_text(json.dumps(common._em_serial(critical)), encoding="utf-8")
+'''
+    lock_file = tmp_path / "eastmoney.lock"
+    go_file = tmp_path / "go"
+    ready = [tmp_path / f"ready-{i}" for i in range(2)]
+    results = [tmp_path / f"result-{i}.json" for i in range(2)]
+    env = {**os.environ, "PYTHONPATH": os.path.dirname(os.path.dirname(os.path.abspath(__file__)))}
+    procs = [
+        subprocess.Popen(
+            [sys.executable, "-c", script, str(lock_file), str(ready[i]), str(go_file), str(results[i])],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env,
+        )
+        for i in range(2)
+    ]
+    deadline = time.monotonic() + 10
+    while not all(p.exists() for p in ready) and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert all(p.exists() for p in ready), "两个子进程必须先同时抵达起跑线"
+    go_file.write_text("go", encoding="utf-8")
+    for proc in procs:
+        stdout, stderr = proc.communicate(timeout=10)
+        assert proc.returncode == 0, f"stdout={stdout}\nstderr={stderr}"
+    spans = sorted((json.loads(p.read_text(encoding="utf-8")) for p in results), key=lambda x: x["started"])
+    assert spans[1]["started"] >= spans[0]["finished"], spans
 
 
 

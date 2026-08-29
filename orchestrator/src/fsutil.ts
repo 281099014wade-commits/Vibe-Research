@@ -11,11 +11,14 @@ const WINDOWS_PRIVATE_ACL = String.raw`
 $ErrorActionPreference = "Stop"
 $file = $env:VRA_PRIVATE_FILE
 $sid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User
-$acl = New-Object System.Security.AccessControl.FileSecurity
-$acl.SetOwner($sid)
+$acl = Get-Acl -LiteralPath $file
 $acl.SetAccessRuleProtection($true, $false)
+foreach ($existing in @($acl.Access)) {
+  [void]$acl.RemoveAccessRuleSpecific($existing)
+}
 $rule = New-Object System.Security.AccessControl.FileSystemAccessRule($sid, [System.Security.AccessControl.FileSystemRights]::FullControl, [System.Security.AccessControl.AccessControlType]::Allow)
 $acl.AddAccessRule($rule)
+$acl.SetOwner($sid)
 Set-Acl -LiteralPath $file -AclObject $acl
 `;
 

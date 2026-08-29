@@ -11,7 +11,7 @@
   <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-yellow"></a>
   <img alt="Version" src="https://img.shields.io/badge/version-v1.0.0-F35D2B">
   <img alt="UI" src="https://img.shields.io/badge/UI-React%20%2B%20Vite-646cff">
-  <img alt="Orchestrator tests" src="https://img.shields.io/badge/orchestrator-537%20checks-passing">
+  <img alt="Orchestrator tests" src="https://img.shields.io/badge/orchestrator-538%20checks-passing">
   <img alt="Desktop tests" src="https://img.shields.io/badge/desktop-25%20tests-passing">
   <img alt="Codex Harness" src="https://img.shields.io/badge/runtime-Codex%20Harness-black">
 </p>
@@ -305,9 +305,9 @@ npm run build --prefix desktop
 
 Current verified baseline:
 
-- orchestrator: **537 checks** (536 passed locally plus one Windows-only ACL check skipped off Windows), Core industry-term count **0**, TypeScript typecheck passed.
+- orchestrator: **538 checks** (537 passed locally plus one Windows-only ACL check skipped off Windows), Core industry-term count **0**, TypeScript typecheck passed.
 - desktop: **25/25**, TypeScript typecheck and Vite production build passed.
-- Python (calculation library, backtest, and data scripts): **571/571**.
+- Python (calculation library, backtest, and data scripts): **572/572**.
 - The V1.0.0 release changes passed an independent Codex re-review with no actionable P1/P2 findings.
 
 Project rule: test each completed component, run an independent Codex review, verify every finding, fix valid issues,

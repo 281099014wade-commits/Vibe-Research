@@ -14,6 +14,7 @@ import { loadLedgerFromDisk, saveLedger } from "../src/fetchrun.ts";
 
 
 import "../src/finance/register.ts";   // 测试文件也是入口:插件要先注册
+const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 function tmpRun(): string {
   const d = fs.mkdtempSync(path.join(os.tmpdir(), "vra-run-"));
   for (const s of ["raw", "fetch", "calcs", "stages"]) fs.mkdirSync(path.join(d, s), { recursive: true });
@@ -344,7 +345,7 @@ test("账本认证:agent 同时改写 fetch 文件与磁盘账本 → 内存账�
   assert.ok(errs.some((e) => e.includes("fetch/fetch_fake.json 没有编排器账本记录")));
   assert.ok(errs.some((e) => e.includes("raw/evil.json 未经编排器取数记录")));
   // 轨迹
-  const cfg = makeConfig({ symbol: "300308", repoRoot: path.dirname(path.dirname(path.dirname(d))), runDir: d, python: "python3" });
+  const cfg = makeConfig({ symbol: "300308", repoRoot: REPO, runDir: d, python: "python3" });
   assert.ok(!checkAgentTrace({ commands: [], fileChanges: [path.join(d, "fetch", "fetch_quote.json")] }, cfg).ok);
   assert.ok(!checkAgentTrace({ commands: [], fileChanges: [path.join(d, "raw", "x.json")] }, cfg).ok);
   assert.ok(!checkAgentTrace({ commands: [`python3 - <<'EOF'\nopen('${d}/fetch/_ledger.json','w')\nEOF`], fileChanges: [] }, cfg).ok);

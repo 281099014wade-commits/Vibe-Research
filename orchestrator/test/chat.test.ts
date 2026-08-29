@@ -13,7 +13,8 @@ import type { LlmOverride } from "../src/runtime_provider.ts";
 // ⚠️ 用 fileURLToPath 而不是 new URL(...).pathname —— 本机仓库路径含中文,
 //    pathname 会给出百分号编码的路径,子进程与 fs 都找不到(这条坑本仓库踩过)
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
-const TEST_PYTHON = process.platform === "win32" ? "python" : path.resolve(REPO, "..", ".venv", "bin", "python");
+const TEST_PYTHON = process.env.VRA_PYTHON?.trim()
+  || (process.platform === "win32" ? "python" : path.resolve(REPO, "..", ".venv", "bin", "python"));
 
 interface Cap {
   opts?: Record<string, unknown>;

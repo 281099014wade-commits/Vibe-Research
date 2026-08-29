@@ -151,7 +151,10 @@ export function validateFetchIntegrity(run: RunView): ValidationResult {
   }
   // 反向:账本里每个条目的产物文件必须仍在(删除 / 改名 = 破坏认证闭环)
   for (const [script, entry] of Object.entries(run.ledger)) {
-    const expect = path.join("fetch", `${script}.json`);
+    // Ledger paths are a JSON/storage contract, not host-native filesystem
+    // strings. Writers use forward slashes on every platform, so comparing
+    // against path.join() made every genuine Windows run fail validation.
+    const expect = `fetch/${script}.json`;
     if (!entry.file) { errors.push(`账本 ${script} 缺 file 字段(每条账本必须指向 ${expect})`); continue; }
     if (entry.file !== expect) { errors.push(`账本 ${script} 的 file=${entry.file} 与脚本名不符(应为 ${expect})`); continue; }
     const p = path.resolve(run.runDir, entry.file);

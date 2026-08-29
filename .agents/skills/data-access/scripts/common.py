@@ -11,7 +11,7 @@
 from __future__ import annotations
 
 import argparse
-import fcntl
+import errno
 import hashlib
 import json
 import os
@@ -22,6 +22,11 @@ import tempfile
 import time
 from datetime import datetime, timezone, timedelta
 from typing import Any, Optional
+
+if os.name == "nt":
+    import msvcrt
+else:
+    import fcntl
 
 UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"
 TZ_SH = timezone(timedelta(hours=8))
@@ -101,11 +106,45 @@ def _em_session(trust_env: bool):
     return _em_sessions[trust_env]
 
 
+def _lock_em_file(lf) -> None:
+    """Block until the one-byte EastMoney lock is held on this platform."""
+    if os.name == "nt":
+        # Windows byte-range locks need a real byte on the first-ever request.
+        # The timestamp parser already treats this sentinel as epoch zero.
+        lf.seek(0, os.SEEK_END)
+        if lf.tell() == 0:
+            lf.write("0")
+            lf.flush()
+    lf.seek(0)
+    if os.name != "nt":
+        fcntl.flock(lf, fcntl.LOCK_EX)
+        return
+    # msvcrt.locking locks from the current file position. LK_LOCK retries for
+    # roughly ten seconds, so repeat only the documented lock-contention errors
+    # to preserve the POSIX blocking semantics for requests that take longer.
+    while True:
+        try:
+            msvcrt.locking(lf.fileno(), msvcrt.LK_LOCK, 1)
+            return
+        except OSError as exc:
+            deadlock = getattr(errno, "EDEADLOCK", errno.EDEADLK)
+            if exc.errno not in {errno.EACCES, errno.EDEADLK, deadlock}:
+                raise
+
+
+def _unlock_em_file(lf) -> None:
+    lf.seek(0)
+    if os.name == "nt":
+        msvcrt.locking(lf.fileno(), msvcrt.LK_UNLCK, 1)
+    else:
+        fcntl.flock(lf, fcntl.LOCK_UN)
+
+
 def _em_serial(fn):
     """跨进程**串行**执行一次东财请求:文件锁覆盖"等间隔 → 发请求 → 收响应 → 写时间戳"全程,
     并行启动的多个脚本在锁上排队,任一时刻最多一个东财请求在途(手册铁律:绝不对东财并发)。"""
     with open(EM_LOCK_PATH, "a+") as lf:
-        fcntl.flock(lf, fcntl.LOCK_EX)
+        _lock_em_file(lf)
         try:
             lf.seek(0)
             try:
@@ -123,7 +162,7 @@ def _em_serial(fn):
                 lf.write(str(time.time()))
                 lf.flush()
         finally:
-            fcntl.flock(lf, fcntl.LOCK_UN)
+            _unlock_em_file(lf)
 
 
 def em_get(url: str, params: Optional[dict] = None, headers: Optional[dict] = None, timeout: int = 15):

@@ -8,10 +8,11 @@ import { fileURLToPath } from "node:url";
 import "../src/finance/register.ts";
 import { codexEnvFor, interpreterRoot, makeConfig, normalizeInterpreter } from "../src/config.ts";
 import { writeHookContext } from "../src/hooks.ts";
-import { privateFilePermissions, restrictPrivateFile } from "../src/fsutil.ts";
+import { privateFilePermissions, restrictPrivateFile, sha256File, writeJson } from "../src/fsutil.ts";
 import { executableInvocation, findExecutable } from "../src/local_agent_runtime.ts";
 import { CodexRunner, codexOptionsFor } from "../src/runner.ts";
 import { RunToolsError, listRunFiles, readRunFile, runCalculation, writeStageOutput } from "../src/finance/run_tools_mcp.ts";
+import { loadRun, validateFetchIntegrity } from "../src/validator.ts";
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const temp = (prefix = "vra-win-") => fs.mkdtempSync(path.join(os.tmpdir(), prefix));
@@ -55,7 +56,8 @@ test("Windows 研究线程:Shell / unified exec 全关、只读沙箱、只挂�
     'command = "evil.exe"',
     "",
   ].join("\n"));
-  const python = process.platform === "win32" ? "python" : path.resolve(REPO, "..", ".venv", "bin", "python");
+  const python = process.env.VRA_PYTHON?.trim()
+    || (process.platform === "win32" ? "python" : path.resolve(REPO, "..", ".venv", "bin", "python"));
   const cfg = makeConfig({ symbol: "300308", repoRoot: REPO, dataRoot: temp(), codexHome, python, runId: "controlled", executionMode: "controlled_mcp" });
   const options = codexOptionsFor(cfg) as { config: Record<string, unknown>; configOverrides: string[] };
   const features = options.config.features as Record<string, unknown>;
@@ -107,6 +109,24 @@ test("受控 MCP:只能读净化产物、计算用 argv 调 Python、只能写�
   writeHookContext(cfg, "profile", 2);
   assert.throws(() => writeStageOutput(ctx, { stage: "financials" }), (e: unknown) => e instanceof RunToolsError && e.code === "wrong_stage");
   assert.throws(() => writeStageOutput(ctx, { stage: "profile" }), (e: unknown) => e instanceof RunToolsError && e.code === "stage_schema_invalid");
+});
+
+test("Windows 账本路径按 JSON 契约使用正斜杠，不随宿主路径分隔符漂移", () => {
+  const runDir = temp();
+  for (const dir of ["raw", "fetch", "calcs", "stages"]) fs.mkdirSync(path.join(runDir, dir), { recursive: true });
+  const file = path.join(runDir, "fetch", "fetch_quote.json");
+  writeJson(file, {
+    script: "fetch_quote", symbol: "300308", market: "SZ", status: "ok", fetched_at: "2026-08-30T00:00:00Z",
+    primary_source: "fixture", used_sources: ["fixture"], evidence: [], extra: {}, errors: [], missing: [],
+  });
+  const ledger = {
+    fetch_quote: {
+      script: "fetch_quote", argv: [], exit_code: 0, duration_ms: 1, status: "ok" as const,
+      file: "fetch/fetch_quote.json", sha256: sha256File(file), raw_files: {},
+      started_at: "2026-08-30T00:00:00Z", finished_at: "2026-08-30T00:00:01Z", stage: "profile",
+    },
+  };
+  assert.deepEqual(validateFetchIntegrity(loadRun(runDir, ledger)).errors, []);
 });
 
 test("Windows 私密文件权限不用 Unix mode 冒充 ACL 验证", { skip: process.platform !== "win32" }, () => {

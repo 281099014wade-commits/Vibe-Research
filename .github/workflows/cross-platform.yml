@@ -37,9 +37,15 @@ jobs:
           npm ci --prefix desktop
       - name: Install Python dependencies
         run: python -m pip install pytest -r .agents/skills/data-access/scripts/requirements.txt
-      - name: Orchestrator tests and typecheck
+      - name: Orchestrator full suite and typecheck
+        if: runner.os != 'Windows'
         run: |
           npm test --prefix orchestrator
+          npm run typecheck --prefix orchestrator
+      - name: Orchestrator Windows contract and typecheck
+        if: runner.os == 'Windows'
+        run: |
+          node --test orchestrator/test/windows_support.test.ts
           npm run typecheck --prefix orchestrator
       - name: Desktop tests and build
         run: |

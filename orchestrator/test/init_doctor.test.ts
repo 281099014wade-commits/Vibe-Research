@@ -7,6 +7,8 @@ import { fileURLToPath } from "node:url";
 
 import { cmpVersion, isPrerelease, parseCodexVersion, resolveBundledCodex, runDoctor, scanSecrets, type Exec } from "../src/doctor.ts";
 import { assertDataRootInside, detectPython, gitignoreCovers, runInit } from "../src/init.ts";
+import { installProjectRootMarkers } from "../src/instructions_root.ts";
+import { installSkillsIsolation } from "../src/skills_isolation.ts";
 
 
 import "../src/finance/register.ts";   // 测试文件也是入口:插件要先注册
@@ -18,6 +20,25 @@ function tmpRepo(): string {
   const repo = fs.mkdtempSync(path.join(os.tmpdir(), "vra-init-"));
   fs.writeFileSync(path.join(repo, "AGENTS.md"), "# c\n");
   fs.writeFileSync(path.join(repo, "vibe-research.config.json"), JSON.stringify({ paths: { data_root: ".local" } }));
+  return repo;
+}
+
+function tmpDoctorRepo(): string {
+  const repo = tmpRepo();
+  fs.writeFileSync(path.join(repo, ".vibe-research-root"), "");
+  fs.writeFileSync(path.join(repo, ".gitignore"), ".local/\n");
+  fs.copyFileSync(path.join(REPO, "codex-version.json"), path.join(repo, "codex-version.json"));
+  fs.mkdirSync(path.join(repo, "datasources"), { recursive: true });
+  for (const file of ["registry.json", "CATALOG.md"]) {
+    fs.copyFileSync(path.join(REPO, "datasources", file), path.join(repo, "datasources", file));
+  }
+  fs.mkdirSync(path.join(repo, "providers"), { recursive: true });
+  fs.copyFileSync(path.join(REPO, "providers", "deepseek.json"), path.join(repo, "providers", "deepseek.json"));
+  for (const skill of ["data-access", "company-research"]) {
+    const target = path.join(repo, ".agents", "skills", skill);
+    fs.mkdirSync(target, { recursive: true });
+    fs.copyFileSync(path.join(REPO, ".agents", "skills", skill, "SKILL.md"), path.join(target, "SKILL.md"));
+  }
   return repo;
 }
 
@@ -108,7 +129,7 @@ test("doctor:版本解析 / 比较;密钥扫描命中 sk-… / Bearer / 环境�
   assert.equal(resolveBundledCodex(fs.mkdtempSync(path.join(os.tmpdir(), "vra-noeng-"))).path, null);
 });
 
-test("doctor:真实仓库 + 假 exec → 全绿(除 api_token / net skip);引擎失败 / 未登录 / Python 导入失败 → fail / warn 与修复提示;退出码 0 / 2 / 3", async () => {
+test("doctor:真实仓库 + 假 exec → 全绿(除 api_token / net skip);引擎失败 / 未登录 / Python 导入失败 → fail / warn 与修复提示;退出码 0 / 2 / 3", async (t) => {
   const calcOut = JSON.stringify({ calc_version: "0.3.2", output: { status: "ok", value: 20, display: "20.00 倍" } });
   const good: Exec = (cmd, args) => {
     if (args[0] === "--version") return { status: 0, stdout: "codex-cli 0.149.0\n", stderr: "" };
@@ -117,13 +138,19 @@ test("doctor:真实仓库 + 假 exec → 全绿(除 api_token / net skip);引擎
     if (String(args[0]).endsWith("cli.py")) return { status: 0, stdout: calcOut, stderr: "" };
     return { status: 1, stdout: "", stderr: `unexpected ${cmd} ${args.join(" ")}` };
   };
-  // 🔴 这条测试跑的是**真实仓库**,会读开发者本机的 .local/config.json。
-  //    本机把 provider 配成 api_key 那类(如 MiMo)时,假环境里没有对应密钥 → auth fail;
-  //    而下面几个子用例测的又是 **chatgpt_login 的语义**(未登录 → warn),api_key 模式下根本不适用。
-  //    ⇒ 把 provider 在假环境里**钉死成 openai/chatgpt_login**:测的是 doctor 的行为,
-  //      不该随开发者怎么配 provider 而变。(实测:切到 MiMo 后这条测试就红了。)
-  const fakeEnv: Record<string, string> = { PATH: "/usr/bin", HOME: FAKE_HOME, VRA_PROVIDER: "openai", VRA_PROVIDER_AUTH: "chatgpt_login" };
-  const r = await runDoctor({ repoRoot: REPO, env: fakeEnv, exec: good, python: "/fake/python", writeReport: false });
+  // 真实仓库在 CI 中没有开发者的 .local。为这条测试安装一份最小、隔离且可回收的
+  // CODEX_HOME，避免测试结果取决于执行机器之前有没有跑过 init / login。
+  const doctorRepo = tmpDoctorRepo();
+  t.after(() => fs.rmSync(doctorRepo, { recursive: true, force: true }));
+  const doctorDataRoot = path.join(doctorRepo, ".local");
+  fs.mkdirSync(doctorDataRoot, { recursive: true });
+  const doctorCodexHome = fs.mkdtempSync(path.join(doctorDataRoot, "doctor-home-"));
+  installSkillsIsolation({ codexHome: doctorCodexHome, repoRoot: doctorRepo, python: null }, { homeDir: FAKE_HOME });
+  installProjectRootMarkers({ codexHome: doctorCodexHome });
+  const doctorPaths = { VRA_DATA_ROOT: doctorDataRoot, VRA_CODEX_HOME: doctorCodexHome, VRA_CODEX_PATH: process.execPath };
+  // provider 也在假环境里钉死:测的是 doctor 行为，不随开发者本地 provider 配置变化。
+  const fakeEnv: Record<string, string> = { PATH: "/usr/bin", HOME: FAKE_HOME, ...doctorPaths, VRA_PROVIDER: "openai", VRA_PROVIDER_AUTH: "chatgpt_login" };
+  const r = await runDoctor({ repoRoot: doctorRepo, env: fakeEnv, exec: good, python: "/fake/python", writeReport: false });
   const by = Object.fromEntries(r.checks.map((c) => [c.id, c]));
   for (const id of ["node", "config", "engine", "codex_cli", "auth", "constitution", "skills", "python", "calc", "registry", "data_root", "gitignore", "secrets", "skills_isolation"]) assert.equal(by[id].status, "ok", `${id}: ${by[id].detail}`);
   assert.equal(by.net.status, "skip"); assert.ok(by.api_token.status === "skip" || by.api_token.status === "ok");
@@ -131,25 +158,25 @@ test("doctor:真实仓库 + 假 exec → 全绿(除 api_token / net skip);引擎
   assert.ok(by.engine.detail.includes("0.149.0") && /已测区间/.test(by.engine.detail));
   // 引擎版本超出区间 → warn;未登录 → warn;退出码 2
   const warnExec: Exec = (cmd, args) => args[0] === "--version" ? { status: 0, stdout: "codex-cli 0.200.0", stderr: "" } : args[0] === "login" ? { status: 1, stdout: "Not logged in\n", stderr: "" } : good(cmd, args);
-  const w = await runDoctor({ repoRoot: REPO, env: fakeEnv, exec: warnExec, python: "/fake/python", writeReport: false });
+  const w = await runDoctor({ repoRoot: doctorRepo, env: fakeEnv, exec: warnExec, python: "/fake/python", writeReport: false });
   const wb = Object.fromEntries(w.checks.map((c) => [c.id, c]));
   assert.equal(wb.engine.status, "warn"); assert.equal(wb.auth.status, "warn"); assert.match(wb.auth.fix ?? "", /codex login/); assert.equal(w.exit_code, 2);
   // Python 导入失败 → fail + pip 提示;calc skip;退出码 3
   const badPy: Exec = (cmd, args) => args[0] === "-c" ? { status: 1, stdout: "", stderr: "ModuleNotFoundError: No module named 'akshare'" } : good(cmd, args);
-  const f = await runDoctor({ repoRoot: REPO, env: fakeEnv, exec: badPy, python: "/fake/python", writeReport: false });
+  const f = await runDoctor({ repoRoot: doctorRepo, env: fakeEnv, exec: badPy, python: "/fake/python", writeReport: false });
   const fb = Object.fromEntries(f.checks.map((c) => [c.id, c]));
   assert.equal(fb.python.status, "fail"); assert.match(fb.python.fix ?? "", /pip install -r/); assert.equal(fb.calc.status, "skip"); assert.equal(f.exit_code, 3);
   // 受控 MCP 与 skills 配置隔离使用标准库 tomllib；3.10 即使取数依赖都能导入，也不能标成可用。
   const oldPy: Exec = (cmd, args) => args[0] === "-c" ? { status: 0, stdout: "3.10.14\n", stderr: "" } : good(cmd, args);
-  const old = await runDoctor({ repoRoot: REPO, env: fakeEnv, exec: oldPy, python: "/fake/python", writeReport: false });
+  const old = await runDoctor({ repoRoot: doctorRepo, env: fakeEnv, exec: oldPy, python: "/fake/python", writeReport: false });
   const oldBy = Object.fromEntries(old.checks.map((c) => [c.id, c]));
   assert.equal(oldBy.python.status, "fail");
   assert.match(oldBy.python.detail, /3\.11/);
   assert.equal(oldBy.calc.status, "skip");
   assert.equal(old.exit_code, 3);
   // api_key 模式:环境变量缺失 → fail;有 → ok(不再查登录态)
-  const keyEnv = { PATH: "/usr/bin", HOME: FAKE_HOME, VRA_PROVIDER: "deepseek", VRA_PROVIDER_AUTH: "api_key" };  // 显式 auth:不依赖本机 .local/config.json 里有没有写 auth
-  const k1 = await runDoctor({ repoRoot: REPO, env: keyEnv, exec: good, python: "/fake/python", writeReport: false });
+  const keyEnv = { PATH: "/usr/bin", HOME: FAKE_HOME, ...doctorPaths, VRA_PROVIDER: "deepseek", VRA_PROVIDER_AUTH: "api_key" };  // 显式 auth:不依赖本机 .local/config.json 里有没有写 auth
+  const k1 = await runDoctor({ repoRoot: doctorRepo, env: keyEnv, exec: good, python: "/fake/python", writeReport: false });
   const k1b = Object.fromEntries(k1.checks.map((c) => [c.id, c]));
   // 🔴 缺密钥**单独报一条**,不再把配置链整条判死。
   //    旧行为是 config=fail ⇒ 后面所有靠配置的检查跟着 skip 或**报出假原因** ——
@@ -161,7 +188,7 @@ test("doctor:真实仓库 + 假 exec → 全绿(除 api_token / net skip);引擎
   // ⭐ 这条才是这次改动的要害:**不相干的检查不受牵连**
   assert.equal(k1b.python.status, "ok", "缺模型密钥不该让 Python 检查跟着倒");
   assert.equal(k1b.calc.status, "ok");
-  const k2 = await runDoctor({ repoRoot: REPO, env: { ...keyEnv, DEEPSEEK_API_KEY: "k".repeat(20) }, exec: good, python: "/fake/python", writeReport: false });
+  const k2 = await runDoctor({ repoRoot: doctorRepo, env: { ...keyEnv, DEEPSEEK_API_KEY: "k".repeat(20) }, exec: good, python: "/fake/python", writeReport: false });
   const k2b = Object.fromEntries(k2.checks.map((c) => [c.id, c]));
   assert.equal(k2b.config.status, "ok"); assert.equal(k2b.auth.status, "ok"); assert.match(k2b.auth.detail, /api_key 模式/);
   // auth 仍如实报 fail(而不是用默认模式误判成 ok):缺 key 就是跑不起来
@@ -194,6 +221,6 @@ test("doctor:真实仓库 + 假 exec → 全绿(除 api_token / net skip);引擎
   const spy: Exec = (cmd, args, opts) => { if (args[0] === "login") seenEnv = opts?.env; return good(cmd, args); };
   // 钉死 chatgpt_login:doctor 只在这个模式下才去查登录态,而本条要看的正是那次子进程调用的 env。
   // (不钉死的话,本机配成 api_key 类 provider 时 login 压根不会被调,seenEnv 恒为 undefined。)
-  await runDoctor({ repoRoot: REPO, env: { PATH: "/usr/bin", OPENAI_API_KEY: "x".repeat(20), VRA_PROVIDER: "openai", VRA_PROVIDER_AUTH: "chatgpt_login" }, exec: spy, python: "/fake/python", writeReport: false });
+  await runDoctor({ repoRoot: doctorRepo, env: { PATH: "/usr/bin", ...doctorPaths, OPENAI_API_KEY: "x".repeat(20), VRA_PROVIDER: "openai", VRA_PROVIDER_AUTH: "chatgpt_login" }, exec: spy, python: "/fake/python", writeReport: false });
   assert.ok(seenEnv && seenEnv.CODEX_HOME && !("OPENAI_API_KEY" in seenEnv));
 });
