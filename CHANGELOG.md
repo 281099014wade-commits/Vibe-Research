@@ -15,6 +15,7 @@
   （本机 537 通过 + 1 项 Windows 专项跳过），Core 行业词仍为 0。Windows 还会以两个真实 Python
   进程验证东财请求锁确实互斥；Unix 跑完整 orchestrator 套件，Windows 跑平台契约与全量 Python 回归。
   Windows CI 统一以 UTF-8 解码 Python 的 JSON 管道，Node 动态加载的测试路径改为标准 `file://` URI。
+  PowerShell 入口保留 UTF-8 BOM，兼容 Windows PowerShell 5.1 对中文脚本的编码识别。
 - 开源版审计修复：研报索引升级到 v2，收紧 A 股代码识别并支持公司名召回；删除板块页写死的
   `300308`；缺失行情不再伪装成 0，二十日资金流只有数据完整时才合计，官网 Star 获取失败显示未知。
 - 合规 gate 补齐常见动作建议与个股评级赋予语境，同时保留机构评级篇数统计；回测工具把自标的基准和
