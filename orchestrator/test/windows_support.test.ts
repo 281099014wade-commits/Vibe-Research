@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -10,7 +11,7 @@ import { codexEnvFor, interpreterRoot, makeConfig, normalizeInterpreter } from "
 import { writeHookContext } from "../src/hooks.ts";
 import { privateFilePermissions, restrictPrivateFile, sha256File, writeJson } from "../src/fsutil.ts";
 import { executableInvocation, findExecutable } from "../src/local_agent_runtime.ts";
-import { CodexRunner, codexOptionsFor } from "../src/runner.ts";
+import { CodexRunner, codexOptionsFor, mcpIsolationOverride, sdkCodexVersion } from "../src/runner.ts";
 import { RunToolsError, listRunFiles, readRunFile, runCalculation, writeStageOutput } from "../src/finance/run_tools_mcp.ts";
 import { loadRun, validateFetchIntegrity } from "../src/validator.ts";
 
@@ -47,6 +48,36 @@ test("Windows 路径与环境:Scripts venv、反斜杠、用户目录和 PATHEXT
   assert.deepEqual(launch.args.slice(-2), ["--system-prompt", "A&B%PATH%"], "提示词必须作为独立 argv，不经 cmd.exe 拼接展开");
 });
 
+test("对话 MCP 隔离要让真实 Codex 解析通过：未启用 profile 不得被投影成无 transport 的根配置", () => {
+  const codexHome = temp();
+  fs.writeFileSync(path.join(codexHome, "config.toml"), [
+    "[mcp_servers.active]",
+    'url = "https://active.invalid/mcp"',
+    "[profiles.legacy.mcp_servers.codex_app]",
+    'url = "https://inactive.invalid/mcp"',
+    "",
+  ].join("\n"));
+  const dataRoot = temp();
+  const python = process.env.VRA_PYTHON?.trim()
+    || (process.platform === "win32" ? "python" : path.resolve(REPO, "..", ".venv", "bin", "python"));
+  const cfg = makeConfig({ symbol: "300308", repoRoot: REPO, dataRoot, codexHome, python, runId: "mcp-parse", executionMode: "shell_hooks" });
+
+  const isolation = mcpIsolationOverride(cfg, undefined, codexEnvFor(cfg));
+  fs.mkdirSync(cfg.runDir, { recursive: true });
+  const codex = sdkCodexVersion(cfg.codexPath).binary;
+  assert.ok(codex, "回归必须使用产品捆绑的真实 Codex 引擎");
+  const parsed = spawnSync(codex!, ["-c", isolation.override, "mcp", "list", "--json"], {
+    cwd: cfg.runDir,
+    env: codexEnvFor(cfg),
+    encoding: "utf8",
+    timeout: 20_000,
+    windowsHide: true,
+  });
+  assert.equal(parsed.status, 0, String(parsed.stderr || parsed.error?.message || "Codex 配置解析失败"));
+  const servers = JSON.parse(String(parsed.stdout || "[]")) as { name?: string; enabled?: boolean }[];
+  assert.deepEqual(servers.map((x) => [x.name, x.enabled]), [["active", false]]);
+});
+
 test("Windows 研究线程:Shell / unified exec 全关、只读沙箱、只挂受控 MCP", async () => {
   const codexHome = temp();
   fs.writeFileSync(path.join(codexHome, "config.toml"), [
@@ -65,7 +96,7 @@ test("Windows 研究线程:Shell / unified exec 全关、只读沙箱、只挂�
   assert.equal(features.unified_exec, false);
   const mcpOverride = options.configOverrides.at(-1) ?? "";
   assert.match(mcpOverride, /"evil"\s*=\s*\{\s*"enabled"\s*=\s*false\s*\}/);
-  assert.match(mcpOverride, /"dotted\.name"\s*=\s*\{\s*"enabled"\s*=\s*false\s*\}/, "引号键和 profile 内的旧 MCP 也必须被禁用");
+  assert.doesNotMatch(mcpOverride, /dotted\.name/, "未激活 profile 不得被投影到根配置，否则会因缺 transport 让引擎启动失败");
   assert.match(mcpOverride, /"vra_run_[a-f0-9]{12}"\s*=/, "受控 MCP 用本轮专属名称，不与旧配置合并");
   assert.match(mcpOverride, /run_tools_mcp\.ts/);
   for (const tool of ["list_run_files", "read_run_file", "calculate", "write_stage", "write_report"]) assert.ok(mcpOverride.includes(tool));

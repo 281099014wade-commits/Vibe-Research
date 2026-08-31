@@ -74,7 +74,7 @@ test("对话线程的硬约束必须真的传给引擎:无本地工具 / 只读 
   assert.match(String(cap.codexOptions?.codexPathOverride), /codex(?:\.exe)?$/, "对话必须直接启动平台对应的官方引擎");
   assert.ok(!("VRA_CODEX_REAL_BIN" in ((cap.codexOptions?.env as Record<string, unknown>) ?? {})), "不能依赖 POSIX 包装器环境变量");
   assert.ok((cap.codexOptions?.configOverrides as string[]).some((x) => x.startsWith("mcp_servers=")), "对话轮必须用高优先级 MCP 隔离覆盖，不能靠会被递归合并的空表");
-  assert.ok((cap.codexOptions?.configOverrides as string[]).some((x) => /"session_evil"\s*=\s*\{\s*"enabled"\s*=\s*false/.test(x)), "对话必须用真实 session cwd 发现并禁用项目层 MCP");
+  assert.ok((cap.codexOptions?.configOverrides as string[]).every((x) => !x.includes("session_evil")), "未受信任、未生效的项目 MCP 不得被提升成缺 transport 的根配置");
   const skills = config.skills as { bundled?: { enabled?: boolean }; config?: { enabled?: boolean }[] };
   assert.equal(skills.bundled?.enabled, false, "对话线程不能加载捆绑 skill");
   assert.ok((skills.config ?? []).every((x) => x.enabled === false), "发现到的用户 skill 必须全部禁用");

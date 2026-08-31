@@ -55,62 +55,28 @@ function tomlValue(value: unknown): string {
  * 列出 Codex 实际会读到的 MCP 名。
  *
  * 不能只传 `mcp_servers={}`。Codex 对配置表做递归合并，空表不会删掉
- * config.toml 里已有的 server。仅扫文件也不够：Codex 还会合并 system / admin /
- * cloud / profile / cwd / tree / repo 层。因此以同一引擎、同一 CODEX_HOME、同一 cwd
- * 运行官方 `codex mcp list --json`，把它报出的有效集合当真理源；再与可读本地 TOML
- * 的保守扫描取并集（连未启用 profile 里的同名伏笔也禁用）。任一步无法核验就失败关闭。
+ * config.toml 里已有的 server。仅扫文件也不对：未启用 profile 和 Apps 运行时名称
+ * 并不是当前 bootstrap 配置的 server，把它们投影成只含 `{ enabled = false }` 的根表会让
+ * Codex 在发起模型请求前因缺少 command / url 报 `invalid transport`。
+ *
+ * 因此以同一引擎、同一 CODEX_HOME、同一 cwd 运行官方 `codex mcp list --json`，
+ * 并先关闭本轮本就不允许的 Apps / MCP Apps / plugins；只禁用它报出的当前有效集合。
+ * 官方命令报出的集合就是该引擎入口当前真正有效的集合；未激活 profile 不影响当前线程。
+ * 引擎无法核验时仍失败关闭。
  */
 export function configuredMcpServerNames(cfg: RunConfig, engineEnv: NodeJS.ProcessEnv = codexEnvFor(cfg)): string[] {
-  const candidates = new Set<string>([path.join(cfg.codexHome, "config.toml")]);
-  let cursor = path.resolve(cfg.runDir);
-  const stop = path.resolve(cfg.dataRoot);
-  while (cursor === stop || cursor.startsWith(stop + path.sep)) {
-    candidates.add(path.join(cursor, ".codex", "config.toml"));
-    if (cursor === stop) break;
-    const parent = path.dirname(cursor);
-    if (parent === cursor) break;
-    cursor = parent;
-  }
-  const files = [...candidates].filter((file) => fs.existsSync(file));
-  const code = [
-    "import json, pathlib, sys, tomllib",
-    "names=set()",
-    "def walk(value):",
-    " if not isinstance(value, dict): return",
-    " for key, child in value.items():",
-    "  if key == 'mcp_servers':",
-    "   if not isinstance(child, dict): raise TypeError('mcp_servers must be a table')",
-    "   names.update(str(x) for x in child.keys())",
-    "  walk(child)",
-    "for raw in sys.argv[1:]:",
-    " p=pathlib.Path(raw)",
-    " with p.open('rb') as f: data=tomllib.load(f)",
-    " walk(data)",
-    "print(json.dumps(sorted(names)))",
-  ].join("\n");
-  const names = new Set<string>();
-  if (files.length > 0) {
-    const result = spawnSync(cfg.python, ["-c", code, ...files], { encoding: "utf8", timeout: 20_000, windowsHide: true });
-    if (result.error || result.status !== 0) {
-      const detail = String(result.stderr || result.error?.message || "unknown error").trim().slice(0, 300);
-      throw new Error(`无法核验 MCP 隔离配置:${detail}`);
-    }
-    try {
-      const parsed = JSON.parse(String(result.stdout || "[]"));
-      if (!Array.isArray(parsed) || parsed.some((x) => typeof x !== "string")) throw new Error("bad result");
-      for (const name of parsed) names.add(name);
-    } catch {
-      throw new Error("无法核验 MCP 隔离配置:Python 返回格式错误");
-    }
-  }
-
   const codexBin = cfg.codexPath ?? sdkCodexVersion().binary;
   if (!codexBin) throw new Error("无法核验 MCP 隔离配置:找不到官方 Codex 引擎");
-  // 配置预检也会在建立 run 目录前被调用（如对话和单测）。spawn 的 cwd
-  // 不存在时 Node 会把它报成近似“二进制 ENOENT”，所以退到最近的已存在祖先；
-  // 真实研究运行在 runner 构造前已建好 runDir，仍会用精确 cwd。
+  // 配置预检也会在建立 run 目录前被调用（如研究入口与单测）。spawn 的 cwd
+  // 不存在时 Node 会把它报成近似“二进制 ENOENT”，因此退到已存在的数据根；
+  // 对话入口会先建立会话目录，仍使用精确 cwd。
   const configCwd = fs.existsSync(cfg.runDir) ? cfg.runDir : fs.existsSync(cfg.dataRoot) ? cfg.dataRoot : cfg.repoRoot;
-  const effective = spawnSync(codexBin, ["mcp", "list", "--json"], {
+  const effective = spawnSync(codexBin, [
+    "-c", "features.apps=false",
+    "-c", "features.enable_mcp_apps=false",
+    "-c", "features.plugins=false",
+    "mcp", "list", "--json",
+  ], {
     cwd: configCwd,
     env: engineEnv,
     encoding: "utf8",
@@ -126,9 +92,8 @@ export function configuredMcpServerNames(cfg: RunConfig, engineEnv: NodeJS.Proce
     if (!Array.isArray(parsed)) throw new Error("bad result");
     for (const item of parsed) {
       if (!item || typeof item !== "object" || typeof (item as { name?: unknown }).name !== "string") throw new Error("bad item");
-      names.add((item as { name: string }).name);
     }
-    return [...names].sort();
+    return parsed.map((item) => (item as { name: string }).name).sort();
   } catch {
     throw new Error("无法核验 Codex 有效 MCP 配置:引擎返回格式错误");
   }

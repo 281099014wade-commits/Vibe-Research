@@ -4,6 +4,23 @@
 
 ## [Unreleased]
 
+## [1.0.2] - 2026-08-31
+
+V1.0.2 修复 Windows 用户在 V1.0.1 接入 API 后，Agent 对话可能全部报“本地 Agent 暂时没有连接成功”的问题。
+故障发生在模型请求之前，与 DeepSeek 等 API key 是否有效无关。
+
+- 修复 MCP 隔离配置生成：不再递归扫描并提升未启用 profile 或 Apps 运行时中的 MCP 名称，避免生成只有
+  `enabled = false`、却缺少 `command` / `url` transport 的根配置，触发 Codex 0.149
+  `invalid transport in mcp_servers.<name>` 启动错误。
+- MCP 隔离改为以产品捆绑的官方 Codex 在相同 `CODEX_HOME` 与工作目录下解析出的当前有效集合为准；
+  预检阶段同步关闭 Apps、MCP Apps 与 plugins，只禁用该引擎入口实际报告的有效 MCP，无法核验时继续
+  失败关闭。
+- 新增真实引擎回归：构造“根配置有有效 MCP、未启用 profile 含 `codex_app`”的配置，要求产品生成的
+  覆盖能被捆绑 Codex 直接解析，并且只禁用当前有效 MCP，不再把休眠配置投影到根层。该测试会在
+  Windows、macOS 与 Ubuntu CI 中随平台契约运行。
+- 最终验证：orchestrator **540 项**（539 通过、1 项 Windows ACL 专项在 macOS 跳过）、desktop
+  **25/25**、Python **575/575**；两端类型检查与前端生产构建通过，联网体检 **20/20**。
+
 ## [1.0.1] - 2026-08-30
 
 V1.0.1 是 Windows 与公开 Issue 收口版本：补齐 Windows 原生 PowerShell/CMD 接入和受控研究执行层，
