@@ -32,6 +32,14 @@
 
 ---
 
+## The Author Is Open to Opportunities
+
+The author is open to AI roles at Tencent and other leading technology companies in Shenzhen, and hopes to join a team passionate about AI development. Areas of interest include AI / Agent product development, real-world deployment, and AI consulting.
+
+Contact: [simonlin0423@gmail.com](mailto:simonlin0423@gmail.com)
+
+---
+
 ## What it is
 
 Vibe Research is a **local financial research workbench built on the
