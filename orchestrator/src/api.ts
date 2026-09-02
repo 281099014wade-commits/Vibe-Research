@@ -15,7 +15,7 @@ import path from "node:path";
 
 import crypto from "node:crypto";
 
-import { IMPORT_MAX_TOTAL_BYTES, ServiceError, chatSend, translateHeadlines, evidenceAlerts, guidedToolTurn, listTools, runTool, fetchEndpoint, ingestFiles, debateAdvance, debateStart, ledgerKinds, ledgerLabels, ledgerList, localAgents, productInfo, ledgerRemove, ledgerSnapshot, ledgerUpsert, pageQuery, getEvidence, getReport, knowledgeRecall, listEndpoints, listRuns, readRunFile, redact, reportDelete, reportDownload, reportUpload, reportsList, researchStatus, safePath, serviceContext, startCodexSubscriptionLogin, startResearch, thermoSeries, type ServiceContext } from "./service.ts";
+import { IMPORT_MAX_TOTAL_BYTES, ServiceError, chatSend, llmProbe, translateHeadlines, evidenceAlerts, guidedToolTurn, listTools, runTool, fetchEndpoint, ingestFiles, debateAdvance, debateStart, ledgerKinds, ledgerLabels, ledgerList, localAgents, productInfo, ledgerRemove, ledgerSnapshot, ledgerUpsert, pageQuery, getEvidence, getReport, knowledgeRecall, listEndpoints, listRuns, readRunFile, redact, reportDelete, reportDownload, reportUpload, reportsList, researchStatus, safePath, serviceContext, startCodexSubscriptionLogin, startResearch, thermoSeries, type ServiceContext } from "./service.ts";
 import { REPORT_MAX_BYTES } from "./report_library.ts";
 import { NOFOLLOW_FLAG, restrictPrivateFile } from "./fsutil.ts";
 
@@ -244,6 +244,13 @@ export function createApiServer(ctx: ServiceContext, opts: { token: string; cook
         return await withRequestAbort(req, res, async (signal) => {
           const b = await readBody(req);
           return send(res, 200, await translateHeadlines(ctx, b as never, signal));
+        });
+      }
+      // 连接探针：后端固定令牌、不召回资料、不复用线程 —— 设置页「测试并保存」专用，不是第二个聊天入口（#40）。
+      if (req.method === "POST" && url.pathname === "/llm-probe") {
+        return await withRequestAbort(req, res, async (signal) => {
+          const b = await readBody(req);
+          return send(res, 200, await llmProbe(ctx, b as never, signal));
         });
       }
       // 资料导入:上传截图 / 文本 → agent 转写成台账**草稿**(不直接落库,见 ingest.ts)。

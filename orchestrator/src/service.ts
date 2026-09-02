@@ -13,7 +13,7 @@ import { fileURLToPath } from "node:url";
 import { FETCH_ENV_KEYS, RUN_ID_RE, stages as packStages, fetchEnv } from "./config.ts";
 import { runAlerts, type AlertDiff } from "./alerts.ts";
 import { NOFOLLOW_FLAG, nowIso, readJsonIfExists } from "./fsutil.ts";
-import { ChatError, chatSend as chatSendCore, translateHeadlines as translateHeadlinesCore, type ChatTurnResult, type HeadlineTranslationResult } from "./chat.ts";
+import { ChatError, chatSend as chatSendCore, llmProbe as llmProbeCore, translateHeadlines as translateHeadlinesCore, type ChatTurnResult, type HeadlineTranslationResult, type LlmProbeResult } from "./chat.ts";
 import { templateMatrix, type LlmOverride } from "./runtime_provider.ts";
 import { DebateError, advanceDebate, startDebate, type DebateState } from "./debate.ts";
 import { IngestError, MAX_TOTAL_BYTES, ingestFiles as ingestFilesCore, type IngestFileInput, type IngestResult } from "./ingest.ts";
@@ -24,7 +24,7 @@ import { REGISTRY_REL, buildStagePlan, fetchArgv, loadRegistry, type EndpointDef
 import { productVersion } from "./version.ts";
 import { DEFAULT_CONSISTENCY, readSnapshot, snapshotKey, snapshotUsable, writeSnapshot, type Consistency } from "./snapshot.ts";
 import { currentPlugin } from "./plugin.ts";
-import { ReportLibraryError, addReport, listReports as listStoredReports, removeReport, reportCitations, reportContext, reportFile, type ReportRecord } from "./report_library.ts";
+import { ReportLibraryError, addReport, listReports as listStoredReports, removeReport, reportCitations, reportContext, reportFile, reportRecallPlan, type ReportRecord } from "./report_library.ts";
 import { GuidedToolError, guidedToolTurn as guidedToolTurnCore, type GuidedToolReply } from "./guided_tool.ts";
 import { LocalAgentError, probeClaude, probeCodex, startCodexLogin, type LocalAgentStatus } from "./local_agent_runtime.ts";
 import { sdkCodexVersion } from "./runner.ts";
@@ -1036,15 +1036,37 @@ export async function chatSend(
 ): Promise<ChatServiceResult> {
   const llm = checkLlmShape(req.llm);
   try {
-    const reports = reportContext(ctx.dataRoot, String(req.message ?? ""), { limit: 5 });
+    const message = String(req.message ?? "");
+    // 🔴 不再对每条消息全库检索：泛词会误召回无关报告并把资料发给模型（#39，判据见 reportRecallPlan）。
+    // 不做「跟进沿用上一轮范围」(理由见 reportRecallPlan 文档):不带目标、只是跟进的句子不召回,线程按既有设计随召回集合变化重开。
+    const plan = reportRecallPlan(ctx.dataRoot, message, currentPlugin().reportRecall ?? {});
+    const reports = plan
+      // 明确选中了几份就给几份的位置与字数:「比较这六份报告」选中六份却只注入五份、或 12k 字上限在第六份处停住,
+      //   模型会把不完整的比较当成功交出去(Codex r17 / r18 P2)。仍放不下时在上下文末尾明说,让回答带上「比较不完整」。
+      ? reportContext(ctx.dataRoot, plan.query, {
+        limit: Math.max(5, plan.reportIds?.length ?? 0),
+        ...(plan.reportIds ? { reportIds: plan.reportIds, maxChars: Math.min(40_000, Math.max(12_000, plan.reportIds.length * 4_000)) } : {}),
+        // 「所有报告」= 计划已圈定全库:选中的不再按相关性过滤,打 0 分的也注入(Codex r24 P1)
+        ...(plan.wantsAll ? { mustInclude: true } : {}),
+      })
+      : null;
+    // 不完整的几种情形都要明说:字数上限中途停住(truncated);选中份数超过检索的 20 份硬上限 / 有几份没进来
+    //   —— 后者 truncated 仍是 false,只看它会把「看了 20 份」当成「看全了 25 份」(Codex r19 / r24)。
+    const selected = plan?.reportIds?.length ?? 0;
+    const incomplete = reports ? (reports.truncated || (selected > 0 && reports.hits.length < selected)) : false;
+    const contextText = reports
+      ? (incomplete
+        ? `${reports.text}\n\n⚠️ 本轮只放进了 ${reports.hits.length} 份资料${selected ? `(明确选中 ${selected} 份)` : ""};回答里要明确说明比较 / 汇总不完整,不要装作看全了。`
+        : reports.text)
+      : undefined;
     const turn = await chatSendCore(
       {
         repoRoot: ctx.repoRoot,
         dataRoot: ctx.dataRoot,
         python: ctx.python,
         signal,
-        ...(reports ? {
-          contextText: reports.text,
+        ...(reports && contextText ? {
+          contextText,
           reportSources: reports.hits.map((x) => ({ id: x.id, name: x.name, page: x.page })),
         } : {}),
       },
@@ -1108,6 +1130,24 @@ export async function translateHeadlines(
     return await translateHeadlinesCore(
       { repoRoot: ctx.repoRoot, dataRoot: ctx.dataRoot, python: ctx.python, signal },
       { items: req.items, ...(llm ? { llm } : {}) },
+    );
+  } catch (e) {
+    if (e instanceof ChatError) throw new ServiceError(e.code, e.message);
+    throw e;
+  }
+}
+
+/**
+ * 连接探针（设置页「测试并保存」专用）。与 /chat 分开：固定令牌、不召回资料、一次性线程。
+ * 不接收客户端任意 message —— 否则它就成了绕开资料纪律的第二个聊天入口。
+ */
+export async function llmProbe(ctx: ServiceContext, req: { llm?: LlmOverride }, signal?: AbortSignal): Promise<LlmProbeResult> {
+  if (!req || typeof req !== "object" || Array.isArray(req)) throw new ServiceError("bad_probe_request", "连接检测请求必须是对象");
+  const llm = checkLlmShape(req.llm);
+  try {
+    return await llmProbeCore(
+      { repoRoot: ctx.repoRoot, dataRoot: ctx.dataRoot, python: ctx.python, signal },
+      llm ? { llm } : {},
     );
   } catch (e) {
     if (e instanceof ChatError) throw new ServiceError(e.code, e.message);

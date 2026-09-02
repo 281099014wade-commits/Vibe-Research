@@ -36,6 +36,8 @@ const SAFE_AGENT_MESSAGE_CODES = new Set([
   "bad_provider", "unknown_provider", "missing_base_url", "missing_key", "needs_base_url", "bad_base_url",
   "unsupported_cli", "bad_session", "empty_message", "message_too_long", "bad_message",
   "bad_translation_items", "bad_translation_output", "report_citation_invalid",
+  // 探针「有响应但没回填令牌」是可行动的产品文案(换个守结构化输出的模型),不能吞成「连接失败」(Codex r1 P2)
+  "probe_bad_output", "bad_probe_request",
   "chat_engine_unsupported", "chat_engine_missing", "chat_capacity", "chat_busy", "chat_cancelled", "timeout",
   "agent_quota", "agent_not_installed", "agent_busy", "agent_timeout", "agent_output_too_large",
   "agent_bad_output", "agent_failed", "agent_empty_output", "agent_cancelled", "agent_start_failed",
@@ -64,7 +66,7 @@ export function friendlyAgentError(error: unknown): string {
 }
 
 const isAgentPath = (path: string): boolean =>
-  path === "/chat" || path === "/translate-headlines" || path === "/local-agents/codex/login" || path.startsWith("/guided-tool/");
+  path === "/chat" || path === "/llm-probe" || path === "/translate-headlines" || path === "/local-agents/codex/login" || path.startsWith("/guided-tool/");
 
 /** 一条证据。所有端点的 evidence 元素都是这个形状,所以一套读法能服务全部端点。 */
 export interface Evidence {
@@ -251,6 +253,20 @@ export const backend = {
       //    照样回落到后端默认。后端刚把这条堵上，前端这个**兄弟编译点**不能漏
       //    （Codex 复审 r4：同一根因，两处各判各的）。
       body: JSON.stringify({ session, message, ...(use !== undefined ? { llm: use } : {}) }),
+      signal,
+    });
+  },
+
+  /**
+   * 连接探针：后端固定一次性令牌，不召回资料库、不进聊天会话。设置页「测试并保存」专用。
+   * 🔴 别再用 chat() 做连接检测 —— 那会把资料库片段发给正在测试的 provider（#40）。
+   */
+  llmProbe: async (llm: unknown, signal?: AbortSignal) => {
+    const use = requestLlm(llm);
+    await ensureSelectedLocalAgentReady(use);
+    return await call<{ ok: true; duration_ms: number }>("/llm-probe", {
+      method: "POST",
+      body: JSON.stringify(use !== undefined ? { llm: use } : {}),
       signal,
     });
   },

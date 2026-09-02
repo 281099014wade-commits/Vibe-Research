@@ -1,13 +1,17 @@
 {
   "name": "vibe-research-desktop",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "private": true,
   "description": "投研看板前端(投资垂类):与开源 Vibe-Research 同栈,便于搬运既有模块",
   "type": "module",
+  "engines": {
+    "node": ">=22.18"
+  },
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
+    "pretest": "node ../scripts/check-node.mjs",
     "test": "node --test test/*.test.ts",
     "typecheck": "tsc --noEmit"
   },

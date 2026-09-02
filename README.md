@@ -9,7 +9,7 @@
 
 <p align="center">
   <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-yellow"></a>
-  <img alt="Version" src="https://img.shields.io/badge/version-v1.0.2-F35D2B">
+  <img alt="Version" src="https://img.shields.io/badge/version-v1.0.3-F35D2B">
   <img alt="UI" src="https://img.shields.io/badge/UI-React%20%2B%20Vite-646cff">
   <img alt="Orchestrator tests" src="https://img.shields.io/badge/orchestrator-540%20checks-passing">
   <img alt="Desktop tests" src="https://img.shields.io/badge/desktop-25%20tests-passing">
@@ -105,6 +105,8 @@ API 问答，长任务能力、工具使用、上下文保持和推理质量都�
 | Codex CLI | 已验证 0.149.0；版本锚点见 `codex-version.json` |
 | 模型 | ChatGPT / Claude.ai 订阅登录，或支持 Responses API 的模型服务 |
 
+> Node 必须是启用了 TypeScript 支持的构建（nodejs.org 官方安装包、nvm / fnm / Volta 装的都是）：`node -p process.features.typescript` 应输出 `strip` 或 `transform`。部分 Linux 发行版仓库打包的 Node 编译时关闭了这一项，启动或跑测试会报 `ERR_UNKNOWN_FILE_EXTENSION ".ts"` / `ERR_NO_TYPESCRIPT`，请换官方构建。`npm test` 前会先做这项检查并给出同样的提示。
+
 ### 安装依赖
 
 Windows（PowerShell / CMD）：
@@ -155,7 +157,8 @@ API 接入：进入“接入 AI”→“API 接入”，选择供应商并填写
 Windows 已由 `scripts\start.cmd` 一键启动。macOS / Linux 打开两个终端：
 
 ```bash
-# 终端 1：本地 API
+# 终端 1：本地 API（第一行是可选的运行时自检，见上文 Node 说明）
+node scripts/check-node.mjs
 node orchestrator/src/api.ts --port 8765
 ```
 

@@ -6,7 +6,7 @@ import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 
 import "../src/finance/register.ts"; // 测试文件也是入口:插件要先注册
-import { ChatError, chatSend, chatSessionCount, resetChatSessions, translateHeadlines } from "../src/chat.ts";
+import { ChatError, chatSend, chatSessionCount, llmProbe, resetChatSessions, translateHeadlines } from "../src/chat.ts";
 import { LocalAgentError } from "../src/local_agent_runtime.ts";
 import type { LlmOverride } from "../src/runtime_provider.ts";
 
@@ -616,4 +616,64 @@ test("🔴 浏览器 UI 场景：后端默认缺 key，但用户自己配了 —
   } finally {
     if (before === undefined) delete process.env.MIMO_API_KEY; else process.env.MIMO_API_KEY = before;
   }
+});
+
+/** 假 Codex：从提示词里取出令牌再回复 —— 探针令牌是随机的，静态回放做不了这件事 */
+function echoProbeCodex(cap: Cap, transform: (token: string) => string = (t) => t) {
+  return (codexOptions: Record<string, unknown>) => {
+    cap.codexOptions = codexOptions;
+    return ({
+      startThread(opts: Record<string, unknown>) {
+        cap.opts = opts;
+        cap.threadStarts = (cap.threadStarts ?? 0) + 1;
+        return {
+          id: "t-probe",
+          runStreamed(prompt: string, turnOptions?: Record<string, unknown>) {
+            cap.prompts.push(prompt);
+            if (turnOptions) cap.turnOptions = turnOptions;
+            const token = prompt.match(/probe-[0-9a-f]{16}/)?.[0] ?? "";
+            return Promise.resolve({
+              events: (async function* () {
+                yield { type: "item.completed", item: { type: "agent_message", text: transform(token) } };
+              })(),
+            });
+          },
+        };
+      },
+    }) as never;
+  };
+}
+
+test("连接探针：后端固定令牌、不带资料、一次性线程，走业务对话同一条路，且必须回复本次令牌才算通（#40）", async () => {
+  resetChatSessions();
+  const cap: Cap = { prompts: [] };
+  const root = tmp();
+  const one = await llmProbe({ repoRoot: REPO, dataRoot: root }, {}, echoProbeCodex(cap));
+  const two = await llmProbe({ repoRoot: REPO, dataRoot: root }, {}, echoProbeCodex(cap));
+  assert.equal(one.ok, true);
+  assert.equal(two.ok, true);
+  assert.equal(cap.threadStarts, 2, "每次探针必须新建线程");
+  assert.equal(chatSessionCount(), 0, "探针线程不得进入自由对话会话表");
+  assert.equal(cap.prompts.length, 2);
+  const tokens = cap.prompts.map((p) => p.match(/probe-[0-9a-f]{16}/g) ?? []);
+  for (const [i, p] of cap.prompts.entries()) {
+    assert.equal(tokens[i]!.length, 1, "用户层只有后端生成的一次性令牌");
+    assert.ok(!p.includes("【用户资料库检索结果】"), "探针不得携带任何资料片段");
+    assert.match(p, /对话模式/, "探针与业务对话同一份开场白（真实对话测试，AGENTS.md §5.2）");
+  }
+  assert.notEqual(tokens[0]![0], tokens[1]![0], "令牌一次一换");
+  assert.match(String((cap.codexOptions?.config as Record<string, unknown>)?.developer_instructions), /连接检测/);
+  assert.equal(cap.turnOptions?.outputSchema, undefined, "自由文本回复，不用 schema 把模型圈成只会回填 JSON");
+  assert.equal(cap.opts?.sandboxMode, "read-only");
+  assert.equal(cap.opts?.networkAccessEnabled, false);
+});
+
+test("连接探针：有响应但没回复本次令牌 → 判失败；回复里夹着令牌也算通", async () => {
+  resetChatSessions();
+  const root = tmp();
+  const bad = (e: unknown) => e instanceof ChatError && e.code === "probe_bad_output";
+  await assert.rejects(llmProbe({ repoRoot: REPO, dataRoot: root }, {}, echoProbeCodex({ prompts: [] }, () => "连接成功")), bad);
+  await assert.rejects(llmProbe({ repoRoot: REPO, dataRoot: root }, {}, echoProbeCodex({ prompts: [] }, () => "probe-0000000000000000")), bad);
+  const lenient = await llmProbe({ repoRoot: REPO, dataRoot: root }, {}, echoProbeCodex({ prompts: [] }, (t) => `好的，${t}`));
+  assert.equal(lenient.ok, true);
 });

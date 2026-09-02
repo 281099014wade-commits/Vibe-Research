@@ -384,6 +384,19 @@ export interface Plugin {
    */
   readonly topicMerge: Readonly<Record<string, string>>;
   /** 数字判定用的词表(见 `number_fidelity.ts` 的 `Lexicon`) */
+  /**
+   * **资料库召回规则**(可选):普通对话里,哪些措辞算"明确要用资料库",报告文件名里哪些词不构成主体。
+   * Core 自带一份通用规则(资料 / 上传 / 附件 / 原文 + 通用文档词);这里只补垂类词汇 ——
+   * 词表若写进 Core 会被纯净度棘轮拦下,而且换个垂类它们本来就该换。
+   */
+  readonly reportRecall?: {
+    /** 与通用意图正则并列生效:命中任一即视为"明确要用资料库" */
+    readonly intent?: RegExp;
+    /** 与通用停用词合并:文件名里出现这些词不算主体 */
+    readonly titleStopwords?: readonly string[];
+    /** 垂类里指"一份资料"的名词:参与「所有 X」「这三份 X」这类范围判定 */
+    readonly documentNouns?: readonly string[];
+  };
   readonly lexicon: Lexicon;
 }
 
@@ -756,7 +769,7 @@ const UNSAFE_KEYS = ["__proto__", "constructor", "prototype"];
 const NON_SCHEMA_SLOTS = [
   "quoteDecision", "baselinePeriod", "marketRegion", "buildStagePrompt", "buildRewritePrompt",
   "lexicon", "afterFetch", "beforeFetch", "transformFetch", "afterRun", "doctorChecks", "seriesFor",
-  "gate", "pageContext",
+  "gate", "pageContext", "reportRecall",
 ] as const;
 
 /**
@@ -1082,6 +1095,26 @@ function register(plugin: Plugin): void {
   if (doctorChecks !== undefined && typeof doctorChecks !== "function") throw new Error("Plugin.doctorChecks 必须是函数或不提供");
   const seriesFor = plugin.seriesFor;
   if (seriesFor !== undefined && typeof seriesFor !== "function") throw new Error("Plugin.seriesFor 必须是函数或不提供");
+  // 资料召回规则:含 RegExp,进不了 JSON Schema,这里手查并复制成只读快照。
+  //   RegExp 去掉 g / y 标志 —— 带这两个标志的 .test() 是有状态的,同一条消息第二次问会得到相反答案。
+  const rawRecall = plugin.reportRecall;
+  if (rawRecall !== undefined && !isPlainObject(rawRecall)) throw new Error("Plugin.reportRecall 必须是普通对象或不提供");
+  const recallIntent = rawRecall?.intent;
+  if (recallIntent !== undefined && !(recallIntent instanceof RegExp)) throw new Error("Plugin.reportRecall.intent 必须是 RegExp 或不提供");
+  const recallStop = rawRecall?.titleStopwords;
+  if (recallStop !== undefined && (!Array.isArray(recallStop) || recallStop.some((w) => typeof w !== "string" || !w.trim()))) {
+    throw new Error("Plugin.reportRecall.titleStopwords 必须是非空字符串数组或不提供");
+  }
+  const recallNouns = rawRecall?.documentNouns;
+  if (recallNouns !== undefined && (!Array.isArray(recallNouns) || recallNouns.some((w) => typeof w !== "string" || !w.trim()))) {
+    throw new Error("Plugin.reportRecall.documentNouns 必须是非空字符串数组或不提供");
+  }
+  if (rawRecall) assertNoExtraKeys("reportRecall", rawRecall, ["intent", "titleStopwords", "documentNouns"]);
+  const reportRecall = rawRecall === undefined ? undefined : Object.freeze({
+    ...(recallIntent ? { intent: new RegExp(recallIntent.source, recallIntent.flags.replace(/[gy]/g, "")) } : {}),
+    ...(recallStop ? { titleStopwords: Object.freeze([...recallStop]) } : {}),
+    ...(recallNouns ? { documentNouns: Object.freeze([...recallNouns]) } : {}),
+  });
   const beforeFetch = plugin.beforeFetch;
   if (beforeFetch !== undefined && typeof beforeFetch !== "function") throw new Error("Plugin.beforeFetch 必须是函数或不提供");
   const buildRewritePrompt = plugin.buildRewritePrompt;
@@ -1298,6 +1331,7 @@ function register(plugin: Plugin): void {
     afterRun,
     doctorChecks,
     seriesFor,
+    reportRecall,
     baselinePeriod,
     stageLabels: Object.freeze({ ...d.stageLabels }),
     topicSections: Object.freeze({ ...d.topicSections }),

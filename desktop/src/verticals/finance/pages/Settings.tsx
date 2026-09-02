@@ -154,7 +154,7 @@ export function Settings() {
     if (!cfg) return;
     setTesting(true); setMsg(""); setMsgErr("");
     try {
-      await backend.chat("这是连接检测。请只回复：连接成功。", `settings-api-${Date.now()}`, undefined, cfg);
+      await backend.llmProbe(cfg);
       saveLlm(cfg);
       setConfigured(true); say("连接成功并已保存 —— 全站的 Agent 对话现在用这一份");
     } catch (e) {
@@ -169,7 +169,7 @@ export function Settings() {
     const cfg = { provider: m.provider, baseURL: "", apiKey: "", model: m.id };
     setTesting(true); setMsg(""); setMsgErr("");
     try {
-      await backend.chat("这是连接检测。请只回复：连接成功。", `settings-subscription-${Date.now()}`, undefined, cfg);
+      await backend.llmProbe(cfg);
       saveLlm(cfg);
       setConfigured(true); say(`「${m.name}」连接成功并已保存 —— 免 key，使用本机订阅`);
     } catch (e) { oops(friendlyAgentError(e)); }

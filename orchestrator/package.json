@@ -1,15 +1,17 @@
 {
   "name": "vibe-research-orchestrator",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "private": true,
   "description": "薄编排器:用官方 Codex TS SDK 驱动六阶段研究状态机 + validator + 合规 gate(零 fork)",
   "type": "module",
   "engines": {
-    "node": ">=22.6"
+    "node": ">=22.18"
   },
   "scripts": {
+    "prerun": "node ../scripts/check-node.mjs",
     "run": "node src/run.ts",
     "typecheck": "tsc --noEmit -p tsconfig.json",
+    "pretest": "node ../scripts/check-node.mjs",
     "test": "node --test --experimental-test-coverage \"test/*.test.ts\""
   },
   "dependencies": {

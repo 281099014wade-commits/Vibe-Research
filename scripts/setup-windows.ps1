@@ -9,6 +9,8 @@ function Assert-NativeSuccess([string]$Step) {
 
 if (-not (Get-Command node -ErrorAction SilentlyContinue)) { throw "未找到 Node.js。请先安装 Node.js 22 或更高版本。" }
 if (-not (Get-Command npm -ErrorAction SilentlyContinue)) { throw "未找到 npm。请重新安装 Node.js。" }
+& node (Join-Path $root "scripts\check-node.mjs")
+Assert-NativeSuccess "Node 运行时预检"
 
 $venvPython = Join-Path $root ".venv\Scripts\python.exe"
 if (-not (Test-Path $venvPython)) {

@@ -117,3 +117,9 @@ test("不支持的 cli provider 交给后端判定，不误报成未登录", asy
     globalThis.fetch = oldFetch;
   }
 });
+
+test("连接探针「有响应但没回填令牌」是可行动错误，原样显示而不是当成连接失败（#40）", () => {
+  const raw = new ApiError("模型已响应，但没有按探针格式回填本次令牌。请确认所选模型能遵循结构化输出要求后重试", 400, "probe_bad_output");
+  assert.equal(friendlyAgentError(raw), raw.message);
+  assert.doesNotMatch(friendlyAgentError(raw), /连接成功|重新连接/);
+});

@@ -93,7 +93,7 @@ export function MyReports() {
       ? `我的研报（本地归档，共 ${reports.length} 份）：\n` +
         reports.slice(0, 60).map((r) => `- ${r.name}｜标的 ${r.symbols.join("/") || "未识别"}｜已提取 ${r.chars} 字`).join("\n")
       : "我的研报：还没有归档任何文件。",
-    suggestions: ["我归档的研报覆盖了哪些标的", "从我的研报里找核心观点", "帮我排个阅读顺序"],
+    suggestions: ["我归档的研报覆盖了哪些标的", "从我的研报里找核心观点", "帮我给这些资料排个阅读顺序"],
   });
 
   return (
